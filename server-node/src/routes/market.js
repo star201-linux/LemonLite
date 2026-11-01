@@ -54,10 +54,19 @@ function jsonArray(value) {
  */
 function toAppDto(row, origin = '') {
   // 包地址补成绝对地址：客户端要直接拿它去下载，没有 base 可拼。
+  //
+  // 两种情况：
+  //   * 库里存的是完整 http(s) 地址（包放在 CDN / 别的机器上）→ 原样给它；
+  //   * 存的是 packages/<appId>/<version>.zip 这种本机相对路径 → 走下载接口
+  //     `/api/market/<appId>/package?version=<v>`。
+  //     以前这里拼的是 `${origin}/packages/...`，但服务端**并没有**静态托管
+  //     那个目录，结果就是「列表能看、一点开就 404」。走接口还能顺带得到
+  //     ETag / Cache-Control，客户端也能复用缓存。
   const pkgUrl = row.package_url
-    ? row.package_url.startsWith('http') || row.package_url.startsWith('/')
+    ? /^https?:\/\//i.test(row.package_url)
       ? row.package_url
-      : `${origin}/${row.package_url.replace(/^\/+/, '')}`
+      : `${origin}/api/market/${encodeURIComponent(row.id)}/package` +
+        `?version=${encodeURIComponent(row.version)}`
     : '';
 
   return {
