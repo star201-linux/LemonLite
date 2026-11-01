@@ -103,4 +103,4 @@ cd server-node && npm test     # 邮件 MIME / SMTP 对话 / 验证码哈希，�
 
 ## 许可
 
-未定。
+[Apache License 2.0](LICENSE)。
