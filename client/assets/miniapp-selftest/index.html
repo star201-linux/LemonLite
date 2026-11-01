@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SDK 自检</title>
+<style>
+  body {
+    margin: 0;
+    padding: 16px 16px 40px;
+    background: var(--md-surface, #fff);
+    color: var(--md-on-surface, #111);
+    font-family: -apple-system, "Noto Sans SC", system-ui, sans-serif;
+    font-size: 14px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .muted { color: var(--md-on-surface-variant, #555); font-size: 12px; }
+  .summary {
+    margin: 12px 0;
+    padding: 12px 14px;
+    border-radius: 14px;
+    background: var(--md-secondary-container, #e8def8);
+    color: var(--md-on-secondary-container, #1d192b);
+    font-weight: 600;
+  }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 7px 0;
+    border-bottom: 1px solid var(--md-outline-variant, #ddd);
+  }
+  .badge {
+    flex: 0 0 auto;
+    min-width: 44px;
+    text-align: center;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .ok      { background: var(--md-primary-container, #d0e8d0); color: var(--md-on-primary-container, #05310a); }
+  .denied  { background: var(--md-error-container, #ffd8d6);   color: var(--md-on-error-container, #410002); }
+  .failed  { background: var(--md-tertiary-container, #ffd8e4); color: var(--md-on-tertiary-container, #31111d); }
+  .skip    { background: var(--md-surface-container-highest, #e6e0e9); color: var(--md-on-surface-variant, #49454f); }
+  .name { flex: 1 1 auto; word-break: break-all; }
+  .detail { display: block; color: var(--md-on-surface-variant, #555); font-size: 11px; }
+  pre {
+    margin-top: 14px;
+    padding: 10px;
+    border-radius: 10px;
+    background: var(--md-surface-container-high, #ece6f0);
+    font-size: 11px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+</style>
+</head>
+<body>
+<h1>LemonLite SDK 自检</h1>
+<p class="muted" id="subtitle">准备中…</p>
+<div class="summary" id="summary">等待 JSBridge…</div>
+<ul id="list"></ul>
+<pre id="raw"></pre>
+
+<script>
+/*
+ * 自检页：把 0.2 的每个受控能力真调一遍，把结果写成一份报告。
+ *
+ * 为什么要有这个页面：这台机器上的 Android 容器没有 root，adb / logcat / 截图 / 点击
+ * 全都不通，唯一能从设备里带出证据的通道就是**小程序自己的文件沙箱**——
+ * 而这份报告正好也顺带把文件 API 验证了。
+ *
+ * 报告写在 files/appfiles/lemonlite.selftest/report.json（宿主侧可读）。
+ * 另外在「转入后台之后」再写一份 after-background.json：
+ * 那个文件存在本身，就证明后台的 JS 定时器没有被 Chromium 掐死。
+ */
+(function () {
+  'use strict';
+
+  var APP = 'lemonlite.selftest';
+  var ll = window.lemonlite;
+  var steps = [];
+  var listEl = document.getElementById('list');
+  var summaryEl = document.getElementById('summary');
+  var subtitleEl = document.getElementById('subtitle');
+  var rawEl = document.getElementById('raw');
+  var startedAt = new Date().toISOString();
+
+  function render() {
+    listEl.innerHTML = '';
+    steps.forEach(function (s) {
+      var li = document.createElement('li');
+      var badge = document.createElement('span');
+      badge.className = 'badge ' + s.status;
+      badge.textContent = s.status;
+      var body = document.createElement('span');
+      body.className = 'name';
+      body.textContent = s.name;
+      var detail = document.createElement('span');
+      detail.className = 'detail';
+      detail.textContent = s.detail || '';
+      body.appendChild(detail);
+      li.appendChild(badge);
+      li.appendChild(body);
+      listEl.appendChild(li);
+    });
+    var ok = steps.filter(function (s) { return s.status === 'ok'; }).length;
+    var denied = steps.filter(function (s) { return s.status === 'denied'; }).length;
+    var failed = steps.filter(function (s) { return s.status === 'failed'; }).length;
+    summaryEl.textContent = '通过 ' + ok + ' · 被拒绝 ' + denied + ' · 失败 ' + failed
+      + ' · 共 ' + steps.length + ' 步';
+  }
+
+  /**
+   * 跑一步。
+   * @param {string} name 步骤名
+   * @param {Function} fn 返回 Promise 的调用
+   * @param {Function} [judge] 判定函数：拿到 resolve 值返回 {status, detail}；
+   *                           不传就用默认规则（成功=ok）
+   */
+  function step(name, fn, judge) {
+    return Promise.resolve()
+      .then(fn)
+      .then(function (value) {
+        var verdict = judge ? judge(value) : { status: 'ok', detail: JSON.stringify(value) };
+        steps.push({ name: name, status: verdict.status, detail: verdict.detail });
+        render();
+        return value;
+      })
+      ['catch'](function (err) {
+        var code = err && err.code;
+        var denied = code === 40001;
+        steps.push({
+          name: name,
+          status: denied ? 'denied' : 'failed',
+          detail: 'code=' + code + ' ' + ((err && err.message) || String(err))
+        });
+        render();
+        return null;
+      });
+  }
+
+  function brief(value) {
+    var text = typeof value === 'string' ? value : JSON.stringify(value);
+    if (!text) { return ''; }
+    return text.length > 220 ? text.slice(0, 220) + '…' : text;
+  }
+
+  /** 把报告写进小程序自己的沙箱（这一步同时验证了文件 API） */
+  function writeReport(name, extra) {
+    var report = {
+      appId: APP,
+      sdkVersion: ll ? ll.version : null,
+      startedAt: startedAt,
+      finishedAt: new Date().toISOString(),
+      passed: steps.filter(function (s) { return s.status === 'ok'; }).length,
+      denied: steps.filter(function (s) { return s.status === 'denied'; }).length,
+      failed: steps.filter(function (s) { return s.status === 'failed'; }).length,
+      steps: steps
+    };
+    if (extra) { report.extra = extra; }
+    var json = JSON.stringify(report, null, 2);
+    rawEl.textContent = json;
+    return ll.writeFile(name, json).then(function (r) {
+      return r;
+    }, function (err) {
+      // 文件权限被拒绝时报告写不出来 —— 这本身也是预期行为，记在页面上
+      rawEl.textContent = '报告写入失败：code=' + (err && err.code) + ' ' + (err && err.message);
+      return null;
+    });
+  }
+
+  if (!ll) {
+    subtitleEl.textContent = '没有 window.lemonlite：这个页面不是被 LemonLite 容器打开的。';
+    return;
+  }
+
+  subtitleEl.textContent = 'SDK ' + ll.version + ' · 开始于 ' + startedAt;
+
+  /* ----------------------------- 不需要权限的基础能力 ----------------------------- */
+
+  step('getSystemInfo()', function () { return ll.getSystemInfo(); }, function (info) {
+    return {
+      status: 'ok',
+      detail: info.brand + ' ' + info.model + ' · Android ' + info.platformVersion
+        + ' · sdk ' + info.sdkInt + ' · ' + info.screenWidth + '×' + info.screenHeight + 'dp'
+    };
+  });
+
+  step('getTheme()', function () { return ll.getTheme(); }, function (t) {
+    return { status: 'ok', detail: t.mode + ' · ' + t.source + ' · ' + t.colors.primary };
+  });
+
+  step('setTitle()', function () { return ll.setTitle('SDK 自检 · 运行中'); },
+    function () { return { status: 'ok', detail: '标题已改' }; });
+
+  /* ---------------------------------- 网络 ---------------------------------- */
+
+  // 容器可能没有外网，所以这里把「网络层失败」也算作 API 可用：
+  // 关键是它**不是 40001**（说明权限放行了，Dio 真的发出去了）。
+  step('request() 网络权限', function () {
+    return ll.request({ url: 'https://example.com/', method: 'GET', timeout: 4000 });
+  }, function (res) {
+    return { status: 'ok', detail: 'HTTP ' + res.status + ' · ' + res.durationMs + 'ms' };
+  });
+
+  step('request() 离线可达性', function () {
+    return ll.request({ url: 'http://127.0.0.1:1/', method: 'GET', timeout: 3000 })
+      .then(function (res) { return { networkError: false, status: res.status }; },
+        function (err) { return { networkError: true, code: err.code, message: err.message }; });
+  }, function (v) {
+    return {
+      status: v.networkError ? 'ok' : 'ok',
+      detail: v.networkError
+        ? 'code=' + v.code + '（网络层失败＝权限放行、请求真的发出去了）'
+        : 'HTTP ' + v.status
+    };
+  });
+
+  /* ---------------------------------- 存储 ---------------------------------- */
+
+  step('setStorage()', function () { return ll.setStorage('selftest', { at: Date.now(), ok: true }); },
+    function (r) { return { status: 'ok', detail: '写入 ' + r.bytes + ' 字节' }; });
+  step('getStorage()', function () { return ll.getStorage('selftest', null); },
+    function (r) { return { status: r.found ? 'ok' : 'failed', detail: brief(r.value) }; });
+  step('getStorageKeys()', function () { return ll.getStorageKeys(); },
+    function (r) { return { status: 'ok', detail: (r.keys || []).join(', ') }; });
+
+  /* ---------------------------------- 文件 ---------------------------------- */
+
+  var reportName = 'report.json';
+
+  step('getAppFileDir()', function () { return ll.getAppFileDir(); },
+    function (r) { return { status: 'ok', detail: r.displayPath }; });
+
+  step('mkdir()', function () { return ll.mkdir('logs/2026'); },
+    function (r) { return { status: 'ok', detail: r.path }; });
+
+  step('writeFile()', function () {
+    return ll.writeFile('logs/2026/hello.txt', '你好，LemonLite\n' + new Date().toISOString());
+  }, function (r) { return { status: 'ok', detail: r.path + ' → ' + r.bytes + ' 字节' } });
+
+  step('appendFile()', function () { return ll.appendFile('logs/2026/hello.txt', '第二行\n'); },
+    function (r) { return { status: 'ok', detail: r.bytes + ' 字节（追加后）' } });
+
+  step('readFile()', function () { return ll.readFile('logs/2026/hello.txt'); },
+    function (r) { return { status: r.found ? 'ok' : 'failed', detail: brief(r.data) }; });
+
+  step('fileInfo()', function () { return ll.fileInfo('logs/2026/hello.txt'); },
+    function (r) { return { status: r.exists ? 'ok' : 'failed', detail: 'bytes=' + r.bytes }; });
+
+  step('listFiles()', function () { return ll.listFiles('logs/2026'); },
+    function (r) {
+      return { status: 'ok', detail: r.count + ' 项：' + r.entries.map(function (e) { return e.name; }).join(', ') };
+    });
+
+  step('exists()', function () { return ll.exists('logs/2026/hello.txt'); },
+    function (r) { return { status: r.exists ? 'ok' : 'failed', detail: 'exists=' + r.exists }; });
+
+  step('writeFile() 路径越界应被拒', function () {
+    return ll.writeFile('../escape.txt', 'x').then(function () { return { blocked: false }; },
+      function (err) { return { blocked: true, code: err.code, message: err.message }; });
+  }, function (v) {
+    // 这里期望的是「被拒绝」：如果它成功了，说明路径校验有洞
+    return v.blocked
+      ? { status: 'ok', detail: '已被拒绝：' + v.message }
+      : { status: 'failed', detail: '越界写入没有被拦下来！' };
+  });
+
+  /* ------------------------------- 音量 / 亮度 ------------------------------- */
+
+  step('getVolume()', function () { return ll.getVolume(); },
+    function (r) { return { status: 'ok', detail: r.level + '/' + r.max + '（' + r.percent + '）' } });
+
+  step('setVolume(0.5)', function () { return ll.setVolume(0.5); },
+    function (r) { return { status: 'ok', detail: '回读 ' + r.level + '/' + r.max }; });
+
+  step('getBrightness()', function () { return ll.getBrightness(); },
+    function (r) {
+      return { status: 'ok', detail: 'window=' + r.window + ' system=' + r.system + ' followSystem=' + r.followSystem };
+    });
+
+  step('setBrightness(0.2)', function () { return ll.setBrightness(0.2); },
+    function (r) { return { status: 'ok', detail: 'window=' + r.window }; });
+
+  step('setBrightness(-1) 恢复跟随系统', function () { return ll.setBrightness(-1); },
+    function (r) { return { status: 'ok', detail: 'followSystem=' + r.followSystem }; });
+
+  /* ------------------------------ 页面标记：方向 ------------------------------ */
+
+  step('setPageOrientation(landscape)', function () { return ll.setPageOrientation('landscape'); },
+    function (r) { return { status: 'ok', detail: r.orientation + ' / ' + r.label + ' applied=' + r.applied }; });
+
+  step('getPageOrientation()', function () { return ll.getPageOrientation(); },
+    function (r) { return { status: 'ok', detail: r.orientation + ' / ' + r.label }; });
+
+  step('setPageOrientation(auto)', function () { return ll.setPageOrientation('auto'); },
+    function (r) { return { status: 'ok', detail: r.orientation }; });
+
+  /* ------------------------------ 页面标记：熄屏 ------------------------------ */
+
+  step('setKeepScreenOn(true)', function () { return ll.setKeepScreenOn(true); },
+    function (r) { return { status: 'ok', detail: 'keepScreenOn=' + r.keepScreenOn + ' allowScreenOff=' + r.allowScreenOff }; });
+
+  step('getKeepScreenOn()', function () { return ll.getKeepScreenOn(); },
+    function (r) { return { status: 'ok', detail: 'allowScreenOff=' + r.allowScreenOff }; });
+
+  step('setAllowScreenOff(true)', function () { return ll.setAllowScreenOff(true); },
+    function (r) { return { status: 'ok', detail: 'allowScreenOff=' + r.allowScreenOff }; });
+
+  /* --------------------------------- 内置 WASM -------------------------------- */
+
+  step('wasm.list()', function () { return ll.wasm.list(); },
+    function (r) {
+      return { status: 'ok', detail: r.modules.map(function (m) { return m.name + '(' + m.bytes + 'B)'; }).join(', ') };
+    });
+
+  step('wasm.instantiate() + add(2,3)', function () {
+    return ll.wasm.instantiate('lemonlite').then(function (result) {
+      return {
+        exports: result.exports,
+        sum: result.instance.exports.add(2, 3),
+        fib: result.instance.exports.fib(20),
+        gcd: result.instance.exports.gcd(48, 18),
+        popcount: result.instance.exports.popcount(0xF0F0),
+        version: result.instance.exports.version()
+      };
+    });
+  }, function (v) {
+    var allRight = v.sum === 5 && v.fib === 6765 && v.gcd === 6 && v.popcount === 8 && v.version === 20250101;
+    return {
+      status: allRight ? 'ok' : 'failed',
+      detail: 'add=' + v.sum + ' fib=' + v.fib + ' gcd=' + v.gcd
+        + ' popcount=' + v.popcount + ' version=' + v.version
+        + ' exports=' + v.exports.length + '个'
+    };
+  });
+
+  step('wasm.call() 单行调用', function () { return ll.wasm.call('lemonlite', 'sum_to', 100); },
+    function (v) { return { status: v === 5050 ? 'ok' : 'failed', detail: 'sum_to(100)=' + v }; });
+
+  step('wasm.bytes() 长度', function () {
+    return ll.wasm.bytes('lemonlite').then(function (bytes) {
+      return { length: bytes.length, head: [bytes[0], bytes[1], bytes[2], bytes[3]] };
+    });
+  }, function (v) {
+    var magic = v.head.join(',') === '0,97,115,109';
+    return {
+      status: magic ? 'ok' : 'failed',
+      detail: v.length + ' 字节 · 头=' + v.head.join(',') + (magic ? '（\\0asm ✔）' : '（魔数不对！）')
+    };
+  });
+
+  /* ------------------------- 中转后台（放在最后，先落盘报告） ------------------------- */
+
+  step('runInBackground()', function () {
+    // 先把报告落盘，因为下面这一步会把页面切到后台
+    return writeReport(reportName).then(function (written) {
+      subtitleEl.textContent = written
+        ? '报告已写入 ' + written.path + '（' + written.bytes + ' 字节）'
+        : '报告写入失败（见页面底部）';
+      return ll.runInBackground();
+    });
+  }, function (r) { return { status: 'ok', detail: 'background=' + r.background }; });
+
+  // 转入后台之后再用定时器写一份：这个文件存在 = 后台的 JS 还在跑（resumeTimers 生效）
+  setTimeout(function () {
+    var after = {
+      appId: APP,
+      backgroundAt: new Date().toISOString(),
+      timerFired: true,
+      note: '这份文件是在 runInBackground() 之后由 setTimeout 写出来的：'
+        + '它存在就说明后台的 JS 定时器没有被暂停'
+    };
+    ll.writeFile('after-background.json', JSON.stringify(after, null, 2)).then(function (r) {
+      subtitleEl.textContent += ' · 后台定时器已写出 ' + r.path;
+    }, function (err) {
+      subtitleEl.textContent += ' · 后台写入失败：' + (err && err.message);
+    });
+  }, 2500);
+
+  render();
+})();
+</script>
+</body>
+</html>

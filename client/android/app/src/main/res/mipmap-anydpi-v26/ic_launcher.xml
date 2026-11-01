@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  自适应图标（Android 8.0+）。
+
+  前景用 ic_launcher_foreground（内容已缩到 66% 安全区内），
+  背景用纯色 —— 源图是透明底的柠檬，配浅色背景能保证
+  在深色/浅色桌面主题下都看得清。
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background"/>
+    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+</adaptive-icon>

@@ -1,0 +1,18 @@
+/* 扩展注入的样式。优先用宿主的 --md-* 变量，这样换主题时扩展也跟着变。 */
+body {
+  outline: 2px dashed var(--md-primary, #6750a4);
+  outline-offset: -2px;
+}
+
+#lemonlite-sample-badge {
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  z-index: 2147483000;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font: 500 12px/1.6 system-ui, sans-serif;
+  color: var(--md-on-secondary-container, #1d192b);
+  background: var(--md-secondary-container, #e8def8);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .18);
+}

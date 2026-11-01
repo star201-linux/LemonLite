@@ -1,0 +1,41 @@
+# 统一换行：文本文件入库存 LF
+* text=auto eol=lf
+
+# 明确按文本处理（避免被误判成二进制而丢失 diff）
+*.dart   text
+*.js     text
+*.mjs    text
+*.json   text
+*.md     text
+*.yaml   text
+*.yml    text
+*.sql    text
+*.html   text
+*.css    text
+*.sh     text
+*.kt     text
+*.kts    text
+*.java   text
+*.xml    text
+*.properties text
+
+# 二进制：不做换行转换、不做 diff
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.webp   binary
+*.gif    binary
+*.ico    binary
+*.ttf    binary
+*.otf    binary
+*.jar    binary
+*.zip    binary
+*.jks    binary
+*.keystore binary
+*.so     binary
+*.apk    binary
+*.aab    binary
+
+# 语言统计：文档不计入代码量
+*.md     linguist-documentation
+client/docs/** linguist-documentation

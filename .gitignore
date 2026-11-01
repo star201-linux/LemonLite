@@ -1,0 +1,56 @@
+# ---- 构建产物（APK / AAB 用 flutter build 重新产出，不入库）----
+dist/
+*.apk
+*.aab
+*.ap_
+*.ipa
+client/build/
+client/android/build/
+client/android/.gradle/
+client/android/.cxx/
+client/android/captures/
+client/.dart_tool/
+client/.flutter-plugins
+client/.flutter-plugins-dependencies
+client/android/local.properties
+
+# ---- 本机构建缓存（只读根文件系统的绕行方案，见 client/.gitignore）----
+.localbuild/
+
+# ---- 凭据：以下文件一旦入库就等于泄露，永远不要提交 ----
+# 证书信息.txt 含密钥库口令与证书指纹，现在放在仓库外（main/证书信息.txt），
+# 这里保留规则只是为了它万一被拷回仓库时也不会入库
+证书信息.txt
+*.jks
+*.keystore
+*.p12
+key.properties
+client/android/key.properties
+client/android/app/*.jks
+client/android/app/*.keystore
+.env
+.env.*
+!.env.example
+
+# ---- Node.js ----
+node_modules/
+npm-debug.log*
+yarn-error.log*
+server-node/node_modules/
+server-node/coverage/
+
+# ---- 编辑器 / 系统 ----
+.idea/
+.vscode/
+*.iml
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 运行时 / 临时 ----
+*.log
+tmp/
+temp/
+.Trash-0/

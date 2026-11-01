@@ -1,0 +1,38 @@
+# .gitignore
+
+# ---- Flutter / Dart ----
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+# 注意：这是 App（非 package），pubspec.lock 建议提交以保证可复现构建
+
+# ---- Android ----
+android/.gradle/
+android/local.properties
+android/key.properties
+android/app/debug/
+android/app/profile/
+android/app/release/
+*.jks
+*.keystore
+
+# ---- 构建产物（APK 不入库，用 flutter build apk 重新产出）----
+dist/
+*.apk
+*.aab
+
+# ---- IDE / 系统 ----
+.idea/
+.vscode/
+*.iml
+*.swp
+.DS_Store
+Thumbs.db
+
+# 沙箱删除保护留下的临时目录
+.Trash-0/
+
+# 本机构建缓存（只读根文件系统的绕行方案，见 .localbuild/README.md）
+.localbuild/

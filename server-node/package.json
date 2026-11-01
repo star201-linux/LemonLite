@@ -1,0 +1,25 @@
+{
+  "name": "lemonlite-server",
+  "version": "1.0.0",
+  "description": "LemonLite 市场与账号服务端",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "init": "node src/init.js",
+    "prune": "node src/prune.js",
+    "test": "node --test test/",
+    "seed:packages": "node src/seed_packages.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "multer": "^2.4.0",
+    "mysql2": "^3.24.6"
+  }
+}

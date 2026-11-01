@@ -1,0 +1,12 @@
+{
+  "type": "extension",
+  "id": "com.lemonlite.sample.outline",
+  "name": "示例扩展 · 调试边框",
+  "version": "1.0.0",
+  "description": "给页面加一圈轮廓，并在右上角显示当前生效的包数量。样式全部用 --md-* 变量，所以会跟着宿主主题变。",
+  "author": "LemonLite",
+  "matches": ["*"],
+  "runAt": "documentEnd",
+  "css": ["style.css"],
+  "js": ["inject.js"]
+}

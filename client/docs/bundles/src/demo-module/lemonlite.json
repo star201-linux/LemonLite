@@ -1,0 +1,28 @@
+{
+  "type": "module",
+  "id": "com.lemonlite.sample.greeter",
+  "name": "示例模块 · 问候与计数",
+  "version": "1.0.0",
+  "description": "不写任何 Dart，只用 manifest.bridge 声明就把宿主已有的能力组合成新 API：小程序里可以直接 lemonlite.greet() / remember() / recall()。",
+  "author": "LemonLite",
+  "matches": ["*"],
+  "runAt": "documentEnd",
+  "js": ["inject.js"],
+  "bridge": [
+    {
+      "name": "greet",
+      "action": "const",
+      "params": { "value": { "text": "你好，这句话来自模块的 manifest", "module": "com.lemonlite.sample.greeter" } }
+    },
+    {
+      "name": "remember",
+      "action": "storage.set",
+      "params": { "key": "greet_count" }
+    },
+    {
+      "name": "recall",
+      "action": "storage.get",
+      "params": { "key": "greet_count", "defaultValue": 0 }
+    }
+  ]
+}

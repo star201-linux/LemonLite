@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>LemonLite 示例小程序资源</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; padding: 40px 24px;
+    font-family: -apple-system, "Noto Sans SC", system-ui, sans-serif;
+    background: #fef7ff; color: #1d1b20; line-height: 1.7;
+  }
+  main { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  .sub { color: #49454f; margin-bottom: 28px; }
+  .card {
+    background: #f3edf7; border-radius: 16px; padding: 18px 20px; margin-bottom: 14px;
+  }
+  .card h2 { font-size: 15px; margin: 0 0 10px; color: #6750a4; letter-spacing: .3px; }
+  code, a { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
+  a { color: #0b57d0; word-break: break-all; }
+  ol { margin: 0; padding-left: 20px; } li { margin-bottom: 6px; }
+  .tip { color: #49454f; font-size: 13px; }
+  .warn {
+    background: #fff3e0; border-left: 4px solid #e65100;
+    padding: 12px 16px; border-radius: 8px; margin-bottom: 14px;
+  }
+  .warn h2 { color: #e65100; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #141218; color: #e6e0e9; }
+    .sub, .tip { color: #cac4d0; }
+    .card { background: #211f26; }
+    .card h2 { color: #d0bcff; }
+    a { color: #a8c7fa; }
+    .warn { background: #3a2a1a; }
+    .warn h2 { color: #ffb74d; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>LemonLite 示例小程序资源</h1>
+  <p class="sub">这个目录放的是<strong>示例小程序的静态文件</strong>，不是应用市场的数据源。</p>
+
+  <div class="warn">
+    <h2>⚠ 市场数据不再来自这里</h2>
+    <p style="margin:0;">
+      从 0.5 起，宿主 App 只从 <strong>LemonLite 服务端</strong>读取市场数据
+      （<code>GET /api/market/feed</code> 与 <code>/api/market/search</code>），
+      不再拉取 <code>index.json</code>。
+      服务端代码在仓库的 <code>server/</code> 目录，部署方式见那里的 README。
+    </p>
+    <p style="margin:8px 0 0;" class="tip">
+      在本目录放静态文件仍然有用：它可以直接当小程序页面的托管地址，
+      也可以作为服务端 <code>apps.url</code> 指向的目标。
+    </p>
+  </div>
+
+  <div class="card">
+    <h2>这里有什么</h2>
+    <ol>
+      <li><a href="demo/index.html">demo/index.html</a> —— 示例小程序（演示全部 JSBridge API 与主题继承）</li>
+      <li><a href="apps/">apps/</a> —— 示例小程序（记事 / 天气 / 番茄钟 / Markdown / 二维码 / 配色 / 2048）</li>
+      <li><a href="icons/">icons/</a> —— 上面这些应用的图标</li>
+      <li><a href="screenshots/">screenshots/</a> —— 详情页用的竖版预览图</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2>模块与扩展示例包</h2>
+    <p class="tip" style="margin-top:0;">
+      页面扩展可在普通设置 →「页面扩展」导入，不需要开发者模式；模块仍在开发者选项 →「模块」里安装。
+    </p>
+    <ol>
+      <li><a href="bundles/demo-extension.zip">bundles/demo-extension.zip</a> —— 扩展示例：给页面加调试边框与角标（会跟随主题）</li>
+      <li><a href="bundles/demo-module.zip">bundles/demo-module.zip</a> —— 模块示例：声明 <code>lemonlite.greet()</code> 等新 API</li>
+      <li><a href="bundles/src/">bundles/src/</a> —— 上面两个包的源码目录，可以照着写自己的</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h2>怎么把示例挂到自己的服务端上</h2>
+    <ol>
+      <li>把这个目录发布成一个静态站点（GitHub Pages / 对象存储都行）</li>
+      <li>在服务端数据库的 <code>apps</code> 表里，把 <code>url</code> 指向它的地址，
+          例如 <code>https://your-site/apps/todo/index.html</code></li>
+      <li>或者直接跑 <code>cd server &amp;&amp; npm run init -- --seed</code>，
+          预置的演示数据已经指向 <code>https://star201-linux.github.io</code></li>
+    </ol>
+    <p class="tip">
+      图标与介绍图也会被服务端当作 URL 返回，所以同样可以是绝对地址。
+      页面里写 <code>var(--md-surface)</code> 之类的 CSS 变量就会自动跟随宿主主题。
+    </p>
+  </div>
+</main>
+</body>
+</html>

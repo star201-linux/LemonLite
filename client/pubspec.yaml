@@ -1,0 +1,124 @@
+# pubspec.yaml
+#
+# LemonLite —— 基于 Flutter 的 Android 小程序框架（阶段一）
+# 阶段一边界：只做「WebView 承载 + JSBridge + 远端市场」，不做原生渲染、不做包下载安装。
+name: lemonlite
+description: "LemonLite：Flutter 宿主容器 + WebView 逻辑层 + JSBridge 的 Android 小程序框架"
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  # 下限由依赖决定，不是我们随手抬的：
+  #   file_picker 12.x      → Flutter >= 3.38.0 / Dart >= 3.10.0
+  #   package_info_plus 10  → Flutter >= 3.38.1
+  #   device_info_plus 13   → Flutter >= 3.38.1
+  # 代码本身只需要 3.27（用到 Color.toARGB32 与 PopScope.onPopInvokedWithResult），
+  # 但 pub 解析按依赖走，写低了下限会被依赖直接拒绝。
+  # 换到 Flutter 3.47+ 时如果不需要文件选择器，可以把 file_picker 降回 11.x，
+  # 那时下限能回到 3.27（详见 file_picker 那段注释）。
+  sdk: ">=3.10.0 <4.0.0"
+  flutter: ">=3.38.1"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # 图标字体（示例小程序与空状态图标用不到网络资源）
+  cupertino_icons: ^1.0.8
+
+  # 状态管理：选 provider。
+  # 理由：本项目只有 3 处共享状态（主题、设置、市场），provider 的
+  # ChangeNotifier + Consumer 已经足够且心智负担最低；riverpod 的编译期安全
+  # 与自动 dispose 优势在“一个宿主 App + 若干局部状态”的规模下收益有限，
+  # 反而会引入 ProviderScope/Ref 等额外概念。后续若小程序数量爆炸需要
+  # 依赖注入与可测试性再迁移也很平滑。
+  provider: ^6.1.2
+
+  # 本地键值存储：服务器地址 / 开发者模式 / 主题偏好 / 小程序 storage
+  shared_preferences: ^2.3.2
+
+  # 网络：选 dio。
+  # 理由：index.json 之外，JSBridge 的 lemonlite.request 需要按请求设置超时、
+  # 头、状态码白名单，dio 的 Options/拦截器/统一错误模型（DioException）比
+  # http 包手写 try/catch 更清晰，也方便后续加缓存与鉴权拦截器。
+  dio: ^5.7.0
+
+  # WebView：必须用 flutter_inappwebview（需要 addJavaScriptHandler / UserScript）
+  #
+  # ⚠️ 这里锁的是 6.2.0-beta.3，而不是稳定版 6.1.5，原因很具体：
+  #   6.1.5 依赖 flutter_inappwebview_android 1.1.3，它的 android/build.gradle 里用了
+  #   getDefaultProguardFile('proguard-android.txt')；而 Flutter 3.47 模板默认的
+  #   AGP 9.1.0 已经不再支持该文件，构建会直接失败：
+  #     "`getDefaultProguardFile('proguard-android.txt')` is no longer supported ..."
+  #   6.2.0-beta.3（_android 1.2.0-beta.3）已改为 proguard-android-optimize.txt，可正常构建。
+  #   等 6.2.0 正式版发布后，把这里换成 ^6.2.0 即可。
+  #
+  #   如果你更想用稳定版：把下面改回 ^6.1.5，并在 pub get 之后执行
+  #   `bash tool/patch_inappwebview_proguard.sh`（把那一行替换掉，见该脚本注释）。
+  flutter_inappwebview: 6.2.0-beta.3
+
+  # Android 12+ 动态取色（Monet）。注意：2.x 已迁移到 material_ui 包，
+  # 与 Flutter 内置 material 库不兼容，所以这里锁在 1.9.x。
+  dynamic_color: ^1.9.0
+
+  # 读取 App 版本号（设置页“连点 8 次进开发者模式”用）
+  package_info_plus: ^10.2.2
+
+  # 读取 Android 系统版本 / 机型（lemonlite.getSystemInfo 用）
+  device_info_plus: ^13.3.0
+
+  # 用系统浏览器打开外部链接（lemonlite.openUrl 用）
+  url_launcher: ^6.3.1
+
+  # ---- 模块 / 扩展功能 ----
+  # 这四个是一套：模块与扩展的包是 zip，要在应用私有目录落盘、解压、扫描。
+
+  # 应用私有目录（<docs>/lemonlite/{extensions,modules}/<id>/）。
+  # 用私有目录而不是外部存储：Android 11+ 第三方文件管理器已经进不去
+  # /Android/data，包是用户主动导入的，没必要让人手放文件。
+  path_provider: ^2.1.6
+
+  # 纯 Dart 的 zip 解压。不用它就得自己写 inflate，风险不值当。
+  archive: ^4.5.0
+
+  # SHA-256：小程序包下载后必须校验完整性，否则被劫持的网络能塞进
+  # 任意 HTML（而那个 HTML 能调所有 JSBridge 能力）。
+  # 它是 archive 的传递依赖，但直接 import 就必须显式声明。
+  crypto: ^3.0.6
+
+  # 系统文件选择器（选 zip / json）。
+  # ⚠️ 版本不能乱升：11.x 及其更早的 android 模块在 AGP 9 下「故意不应用 Kotlin 插件」，
+  #    依赖宿主开启 built-in Kotlin；而 `flutter create` 默认写入 android.builtInKotlin=false，
+  #    结果 Kotlin 源码不编译，生成注册类找不到 FilePickerPlugin（构建直接失败）。
+  #    12.x 换成了 android_file_picker，会自己读这个开关并决定要不要应用 Kotlin 插件。
+  # 13.x 也修好了，但它要求 win32 ^6.3.0，会和 package_info_plus 8.x / device_info_plus 11.x
+  # 抢 win32 版本导致解不出来 —— 所以锁 12.3.0（同样修好，且与 plus 包兼容）。
+  file_picker: ^12.3.0
+
+  # 拼路径 + 判断「../」穿越（解压外部 zip 必须做这一步）。
+  # 它是 archive 的传递依赖，但直接 import 就必须显式声明，否则 lint 会报。
+  path: ^1.9.1
+
+  # 系统分享。
+  # 日志导出必须走它：只把文件写进应用私有目录（/data/data/<pkg>/files/...）
+  # 用户根本拿不到 —— 那个路径在未 root 的机器上连文件管理器都进不去。
+  # 分享面板能把文件交给微信 / 邮件 / 保存到「下载」，这才是「导出」。
+  share_plus: ^13.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    # 内置示例小程序（开发者选项里可直接打开，不依赖网络）
+    - assets/miniapp-demo/
+    # 端到端自检页（只在传了 --dart-define=LEMONLITE_AUTOTEST 的包里会被打开；
+    # 它把 0.2 的每个受控能力真调一遍并把报告写进自己的文件沙箱，见 lib/core/autotest.dart）
+    - assets/miniapp-selftest/
+    # 内置 WebAssembly 模块（小程序用 lemonlite.wasm.* 读取并实例化，离线可用）。
+    # 源码与构建 / 校验脚本见 tool/wasm/：改 C 之后跑 `bash tool/wasm/build_wasm.sh`
+    # 重编，再用 `node tool/wasm/verify_wasm.mjs` 校验。
+    - assets/wasm/lemonlite.wasm

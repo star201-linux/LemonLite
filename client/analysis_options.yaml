@@ -1,0 +1,25 @@
+# analysis_options.yaml
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  errors:
+    # Flutter 近几个版本在批量给 ThemeData 的组件主题参数改名
+    # （CardTheme→CardThemeData、AppBarTheme→AppBarThemeData …）。
+    # 本工程刻意只使用跨版本稳定的字段，这里把弃用提示降级为忽略，
+    # 保证 `flutter analyze` / `flutter run` 的输出是干净的。
+    deprecated_member_use: ignore
+    deprecated_member_use_from_same_package: ignore
+  exclude:
+    - build/**
+    - android/**
+    - ios/**
+    - web/**
+    - windows/**
+    - macos/**
+    - linux/**
+
+linter:
+  rules:
+    # 本项目统一使用单引号 + 显式返回类型，注释全部中文
+    prefer_single_quotes: true
+    avoid_print: true

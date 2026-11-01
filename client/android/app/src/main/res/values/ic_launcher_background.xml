@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 自适应图标背景色。取柠檬黄的浅色调，和前景的柠檬图形协调。 -->
+    <color name="ic_launcher_background">#FFF9E6</color>
+</resources>

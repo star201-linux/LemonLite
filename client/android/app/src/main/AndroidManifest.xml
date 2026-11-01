@@ -1,0 +1,83 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+        <!-- 访问远端 index.json 与小程序页面需要联网 -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+
+    <!--
+        网页受控资源对应的系统权限（与 lib/data/models/miniapp_permission.dart
+        里的 runtimePermissions 逐项对应）：
+
+        这些权限**只声明、不申请**。声明它们才能让
+        `packageManager.getPermissionInfo()` 认出来、让 Chromium 真的打开采集设备；
+        真正弹系统授权框的时机由用户在权限弹窗里点「允许」之后
+        （MainActivity.requestRuntimePermissions）。清单里不写的话，
+        申请会被系统立刻拒绝，表现是「用户点了允许但摄像头打不开」。
+    -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+
+    <!--
+        定位：精确 + 大致两档都要声明。
+
+        Android 的规则是「申请 FINE 时必须同时声明 COARSE」，否则 FINE 会被
+        忽略；而只声明 COARSE 才是「我只要大致位置」。
+        运行时按用户在权限弹窗里选的那一档决定申请哪个（见 miniapp_page.dart
+        的 onGeolocationPermissionsShowPrompt），并不是声明了就一定会申请。
+    -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+
+    <!-- Android 13+：网页发通知（Notification.requestPermission）需要它 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
+    <!-- 摄像头/麦克风属于「硬件可选」：没有摄像头的设备也能装，
+         装了之后调用 getUserMedia 会拿到 NotAllowedError，而不是装不上。 -->
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
+    <uses-feature android:name="android.hardware.microphone" android:required="false"/>
+    <uses-feature android:name="android.hardware.location" android:required="false"/>
+    <uses-feature android:name="android.hardware.location.gps" android:required="false"/>
+    <uses-feature android:name="android.hardware.location.network" android:required="false"/>
+
+    <application
+        android:label="轻柠"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <!-- Specifies an Android theme to apply to this Activity as soon as
+                 the Android process has started. This theme is visible to the user
+                 while the Flutter UI initializes. After that, this theme continues
+                 to determine the Window background behind the Flutter UI. -->
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+    <!-- Required to query activities that can process text, see:
+         https://developer.android.com/training/package-visibility and
+         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
+
+         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+    </queries>
+</manifest>
