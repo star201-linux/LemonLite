@@ -107,7 +107,7 @@ class _AppDetailPageState extends State<AppDetailPage> {
                       children: <Widget>[
                         _InfoChip(
                           icon: Icons.label_outline,
-                          text: _categoryName(context),
+                          text: _primaryCategoryName(context),
                         ),
                         _InfoChip(icon: Icons.tag, text: 'v${app.version}'),
                       ],
@@ -128,7 +128,7 @@ class _AppDetailPageState extends State<AppDetailPage> {
               child: Column(
                 children: <Widget>[
                   _InfoRow(label: '版本', value: app.version),
-                  _InfoRow(label: '分类', value: _categoryName(context)),
+                  _InfoRow(label: '分类', value: _categoryNames(context)),
                   _InfoRow(label: '体积', value: app.sizeLabel),
                   _InfoRow(label: '作者', value: app.author),
                   _InfoRow(
@@ -297,15 +297,30 @@ class _AppDetailPageState extends State<AppDetailPage> {
     return '打开';
   }
 
-  /// 分类 id → 分类名（从已加载的市场数据里查，查不到就显示原始 id）
-  String _categoryName(BuildContext context) {
-    // 用 chipCategories 而不是「分类列表」原样：它是首页 chip 的数据源，
-    // 已经带上了「全部」而且只保留有内容的分类 —— 详情页要展示的
-    // 正是「用户能看懂的那个名字」。
-    for (final AppCategory category in context.watch<HomeController>().chipCategories) {
-      if (category.id == app.category) return category.name;
+  /// 主分类名（头部 chip 只放一个，避免一行被塞满）。
+  ///
+  /// 名字优先用服务端返回的 `categories`（详情接口已经带回来了）；
+  /// 老服务端不返回这个数组时，退回首页 chip 的分类名。
+  String _primaryCategoryName(BuildContext context) {
+    final String id = app.category;
+    if (id.isEmpty) return '未分类';
+    for (final AppCategory category in app.categories) {
+      if (category.id == id) return category.name;
     }
-    return app.category;
+    // 用 chipCategories 而不是「分类列表」原样：它是首页 chip 的数据源，
+    // 已经带上了「全部」而且只保留有内容的分类。
+    for (final AppCategory category in context.watch<HomeController>().chipCategories) {
+      if (category.id == id) return category.name;
+    }
+    return id;
+  }
+
+  /// 全部分类名：服务端支持一个应用挂多个分类，这里如实展示。
+  String _categoryNames(BuildContext context) {
+    if (app.categories.isNotEmpty) {
+      return app.categories.map((AppCategory c) => c.name).join(' · ');
+    }
+    return _primaryCategoryName(context);
   }
 
   /// 「安装信息」区块：版本、体积、本机状态。

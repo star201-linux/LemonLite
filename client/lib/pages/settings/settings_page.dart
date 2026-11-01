@@ -1,8 +1,9 @@
 // lib/pages/settings/settings_page.dart
 //
 // 设置页：
-//   * 外观：主题模式（跟随系统 / 浅色 / 深色）、动态取色、手动主色
-//   * 市场：当前服务器地址、上次同步时间
+//   * 账号（第一位）：登录 / 注册 / 账号管理
+//   * 个性化（二级页面）：主题模式、动态取色、主题主色
+//   * 权限 / 存储 / 市场 / 页面扩展
 //   * 关于：版本号 —— **连点 8 次进入开发者模式**（验收标准第 4 条）
 //
 // 连点实现细节：
@@ -19,14 +20,13 @@ import '../../data/models/bundle_manifest.dart';
 import '../../data/models/json_utils.dart';
 import '../../data/services/account_service.dart';
 import '../../data/services/settings_service.dart';
-import '../../theme/app_theme.dart';
-import '../../theme/theme_controller.dart';
 import '../home/home_controller.dart';
 import '../account/account_page.dart';
 import '../permissions/permission_controller_page.dart';
 import '../storage/storage_page.dart';
 import 'bundles_page.dart';
 import 'developer_page.dart';
+import 'personalization_page.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -48,7 +48,6 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   Widget build(BuildContext context) {
     final SettingsService settings = context.watch<SettingsService>();
-    final ThemeController theme = context.watch<ThemeController>();
     final HomeController home = context.watch<HomeController>();
     final AccountService account = context.watch<AccountService>();
     final ColorScheme scheme = Theme.of(context).colorScheme;
@@ -58,27 +57,6 @@ class _SettingsPageState extends State<SettingsPage> {
       body: ListView(
         padding: const EdgeInsets.only(bottom: 32),
         children: <Widget>[
-          // ------------------------------ 外观 ------------------------------
-          _section(context, '外观', <Widget>[
-            _themeModeSelector(context, theme),
-            const Divider(height: 1, indent: 16, endIndent: 16),
-            SwitchListTile(
-              secondary: const Icon(Icons.auto_awesome_outlined),
-              title: const Text('动态取色（Monet）'),
-              subtitle: Text(
-                theme.dynamicColorAvailable
-                    ? '使用系统壁纸色生成整套 MD3 配色'
-                    : '当前设备不支持（需要 Android 12+ 且系统提供壁纸色）',
-              ),
-              value: theme.useDynamicColor && theme.dynamicColorAvailable,
-              onChanged: theme.dynamicColorAvailable
-                  ? (bool value) => theme.setUseDynamicColor(value)
-                  : null,
-            ),
-            const Divider(height: 1, indent: 16, endIndent: 16),
-            _seedColorPicker(context, theme),
-          ]),
-
           // ------------------------------ 账号 ------------------------------
           // 未登录也显示这一行：它本身就是「去登录」的入口，
           // 藏起来会让用户以为这个 App 没有账号系统。
@@ -97,6 +75,20 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.of(context).push(AccountPage.route()),
+            ),
+          ]),
+
+          // ------------------------------ 个性化 ------------------------------
+          // 颜色那三项（模式 / 动态取色 / 种子色）都进了二级页面：
+          // 一级页面只留一个入口，账号才能待在第一个。
+          _section(context, '个性化', <Widget>[
+            ListTile(
+              leading: const Icon(Icons.palette_outlined),
+              title: const Text('外观与主题'),
+              subtitle: const Text('主题模式、动态取色与主题主色'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () =>
+                  Navigator.of(context).push(PersonalizationPage.route()),
             ),
           ]),
 
@@ -206,16 +198,6 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ],
           ]),
-
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-            child: Text(
-              '第一阶段只做 WebView 承载 + JSBridge：不做原生渲染，也不做小程序包下载安装。',
-              style: Theme.of(
-                context,
-              ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
-            ),
-          ),
         ],
       ),
     );
@@ -249,139 +231,6 @@ class _SettingsPageState extends State<SettingsPage> {
     );
   }
 
-  Widget _themeModeSelector(BuildContext context, ThemeController theme) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Text('主题模式', style: Theme.of(context).textTheme.bodyLarge),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: SegmentedButton<ThemeMode>(
-              showSelectedIcon: false,
-              segments: const <ButtonSegment<ThemeMode>>[
-                ButtonSegment<ThemeMode>(
-                  value: ThemeMode.system,
-                  label: Text('跟随系统'),
-                ),
-                ButtonSegment<ThemeMode>(
-                  value: ThemeMode.light,
-                  label: Text('浅色'),
-                ),
-                ButtonSegment<ThemeMode>(
-                  value: ThemeMode.dark,
-                  label: Text('深色'),
-                ),
-              ],
-              selected: <ThemeMode>{theme.themeMode},
-              onSelectionChanged: (Set<ThemeMode> selection) {
-                theme.setThemeMode(selection.first);
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _seedColorPicker(BuildContext context, ThemeController theme) {
-    final ColorScheme scheme = Theme.of(context).colorScheme;
-    final TextTheme textTheme = Theme.of(context).textTheme;
-    final bool dynamicActive =
-        theme.useDynamicColor && theme.dynamicColorAvailable;
-    final int currentSeed = theme.seedColor.toARGB32();
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 18),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Text('主题主色', style: textTheme.bodyLarge),
-          const SizedBox(height: 4),
-          Text(
-            dynamicActive
-                ? '当前主色来自系统壁纸，点选下面的色块会切换为手动主色'
-                : '选一个种子色，ColorScheme.fromSeed 会推导出整套 MD3 配色',
-            style: textTheme.bodySmall?.copyWith(
-              color: scheme.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: 14),
-          Wrap(
-            spacing: 14,
-            runSpacing: 14,
-            children: kPresetSeedColors
-                .map((PresetSeedColor preset) {
-                  final bool selected =
-                      !dynamicActive && preset.color.toARGB32() == currentSeed;
-                  return Tooltip(
-                    message: '${preset.name} · ${_colorHex(preset.color)}',
-                    child: InkWell(
-                      customBorder: const CircleBorder(),
-                      onTap: () => theme.setSeedColor(preset.color),
-                      child: Container(
-                        width: 40,
-                        height: 40,
-                        decoration: BoxDecoration(
-                          color: preset.color,
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: selected
-                                ? scheme.onSurface
-                                : scheme.outlineVariant,
-                            width: selected ? 3 : 1,
-                          ),
-                        ),
-                        // 勾选使用黑白自适应，浅色种子也能看清。
-                        child: selected
-                            ? Icon(
-                                Icons.check,
-                                color:
-                                    ThemeData.estimateBrightnessForColor(
-                                          preset.color,
-                                        ) ==
-                                        Brightness.dark
-                                    ? Colors.white
-                                    : Colors.black,
-                                size: 20,
-                              )
-                            : null,
-                      ),
-                    ),
-                  );
-                })
-                .toList(growable: false),
-          ),
-          const SizedBox(height: 14),
-          OutlinedButton.icon(
-            onPressed: () => _pickCustomSeedColor(context, theme),
-            icon: const Icon(Icons.colorize_outlined),
-            label: const Text('输入 HEX 自定义颜色'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ------------------------------------------------------------ 交互
-
-  Future<void> _pickCustomSeedColor(
-    BuildContext context,
-    ThemeController theme,
-  ) async {
-    final Color? color = await showDialog<Color>(
-      context: context,
-      builder: (BuildContext dialogContext) =>
-          _SeedColorDialog(initialColor: theme.seedColor),
-    );
-    if (color != null) await theme.setSeedColor(color);
-  }
-
-  static String _colorHex(Color color) =>
-      '#${color.toARGB32().toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}';
-
   /// 版本号连点计数。
   ///
   /// 静默解锁：全程不弹任何提示，也不回显剩余次数。
@@ -409,152 +258,5 @@ class _SettingsPageState extends State<SettingsPage> {
 
   void _openDeveloperPage(BuildContext context) {
     Navigator.of(context).push(DeveloperPage.route());
-  }
-}
-
-/// 手动 HEX 取色对话框：无第三方依赖，避免颜色设置只限于预设色。
-class _SeedColorDialog extends StatefulWidget {
-  const _SeedColorDialog({required this.initialColor});
-
-  final Color initialColor;
-
-  @override
-  State<_SeedColorDialog> createState() => _SeedColorDialogState();
-}
-
-class _SeedColorDialogState extends State<_SeedColorDialog> {
-  late final TextEditingController _controller = TextEditingController(
-    text: _toHex(widget.initialColor),
-  );
-  late Color _selected = widget.initialColor;
-  String? _error;
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  static String _toHex(Color color) =>
-      '#${color.toARGB32().toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}';
-
-  static Color? _parseHex(String value) {
-    String digits = value.trim().replaceFirst(RegExp(r'^#'), '');
-    if (RegExp(r'^[0-9a-fA-F]{3}$').hasMatch(digits)) {
-      digits = digits.split('').map((String c) => '$c$c').join();
-    }
-    if (!RegExp(r'^[0-9a-fA-F]{6}$').hasMatch(digits)) return null;
-    return Color(0xFF000000 | int.parse(digits, radix: 16));
-  }
-
-  void _onHexChanged(String value) {
-    final Color? parsed = _parseHex(value);
-    setState(() {
-      _error = value.isEmpty || parsed != null
-          ? null
-          : '请输入 #RGB 或 #RRGGBB，例如 #6750A4';
-      if (parsed != null) _selected = parsed;
-    });
-  }
-
-  void _select(Color color) {
-    setState(() {
-      _selected = color;
-      _controller.text = _toHex(color);
-      _error = null;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final ColorScheme scheme = Theme.of(context).colorScheme;
-    final Color? parsed = _parseHex(_controller.text);
-    return AlertDialog(
-      title: const Text('自定义主题色'),
-      content: SizedBox(
-        width: 360,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Text('调色盘', style: Theme.of(context).textTheme.titleSmall),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                children: kPresetSeedColors
-                    .map((PresetSeedColor preset) {
-                      final bool selected =
-                          preset.color.toARGB32() == _selected.toARGB32();
-                      return Tooltip(
-                        message: preset.name,
-                        child: InkWell(
-                          customBorder: const CircleBorder(),
-                          onTap: () => _select(preset.color),
-                          child: Container(
-                            width: 34,
-                            height: 34,
-                            decoration: BoxDecoration(
-                              color: preset.color,
-                              shape: BoxShape.circle,
-                              border: Border.all(
-                                color: selected
-                                    ? scheme.onSurface
-                                    : scheme.outlineVariant,
-                                width: selected ? 3 : 1,
-                              ),
-                            ),
-                          ),
-                        ),
-                      );
-                    })
-                    .toList(growable: false),
-              ),
-              const SizedBox(height: 18),
-              TextField(
-                controller: _controller,
-                autocorrect: false,
-                textCapitalization: TextCapitalization.characters,
-                decoration: InputDecoration(
-                  labelText: 'HEX 色值',
-                  hintText: '#6750A4',
-                  errorText: _error,
-                  prefixIcon: const Icon(Icons.tag),
-                  border: const OutlineInputBorder(),
-                ),
-                onChanged: _onHexChanged,
-              ),
-              const SizedBox(height: 12),
-              Container(
-                height: 42,
-                decoration: BoxDecoration(
-                  color: parsed ?? _selected,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: scheme.outlineVariant),
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                parsed == null ? _toHex(_selected) : _toHex(parsed),
-                style: Theme.of(context).textTheme.labelMedium,
-              ),
-            ],
-          ),
-        ),
-      ),
-      actions: <Widget>[
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: parsed == null
-              ? null
-              : () => Navigator.of(context).pop(parsed),
-          child: const Text('应用'),
-        ),
-      ],
-    );
   }
 }

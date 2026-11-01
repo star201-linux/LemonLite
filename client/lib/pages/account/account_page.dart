@@ -699,7 +699,6 @@ class _LoginPageState extends State<LoginPage> {
                       controller: _code,
                       decoration: const InputDecoration(
                         labelText: '邮箱验证码',
-                        helperText: '这台服务器开启了两步验证',
                         prefixIcon: Icon(Icons.mark_email_read_outlined),
                         border: OutlineInputBorder(),
                         counterText: '',
@@ -917,7 +916,6 @@ class _RegisterPageState extends State<RegisterPage> {
               controller: _email,
               decoration: const InputDecoration(
                 labelText: '邮箱',
-                helperText: '注册需要邮箱验证，验证码会发到这里',
                 prefixIcon: Icon(Icons.alternate_email),
                 border: OutlineInputBorder(),
               ),

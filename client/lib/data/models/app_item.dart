@@ -14,6 +14,7 @@
 // 而不是等它悄悄调到第三个 API 时才开始一个个弹窗。声明只是"提前告知"，
 // 不等于授权 —— 用户仍然要确认（见 pages/permissions/permission_prompt.dart）。
 
+import 'category.dart';
 import 'json_utils.dart';
 import 'miniapp_permission.dart';
 
@@ -32,6 +33,7 @@ class AppItem {
     this.icon,
     this.homepage,
     this.size = 0,
+    this.categories = const <AppCategory>[],
     this.tags = const <String>[],
     this.screenshots = const <String>[],
     this.permissions = const <String>[],
@@ -41,6 +43,10 @@ class AppItem {
   final String id;
   final String name;
   final String description;
+  /// 主分类 id（服务端 apps.category_id）。
+  ///
+  /// 保留它是因为客户端有些地方只认一个分类（比如搜索的 category 参数）；
+  /// 完整的归类在 [categories] 里 —— 0.6 起一个应用可以属于多个分类。
   final String category;
   final String version;
   final String author;
@@ -68,6 +74,12 @@ class AppItem {
 
   /// 包体积（字节）。也接受 `"2.3 MB"` 这种人类可读写法。
   final int size;
+
+  /// 完整分类列表（服务端返回的 `categories` 数组：`[{id, name}]`）。
+  ///
+  /// 服务端为主分类保留了 `category` 字段，多分类关系只在这里。
+  /// 详情页展示「分类」用它的 name 拼接，不再自己猜。
+  final List<AppCategory> categories;
 
   final List<String> tags;
   final List<String> screenshots;
@@ -99,6 +111,10 @@ class AppItem {
       icon: asStringOrNull(json['icon']),
       homepage: asStringOrNull(json['homepage']),
       size: asByteSize(json['size']),
+      categories: asMapList(json['categories'])
+          .map(AppCategory.fromJson)
+          .whereType<AppCategory>()
+          .toList(growable: false),
       tags: asStringList(json['tags']),
       screenshots: asStringList(json['screenshots']),
       permissions: asStringList(json['permissions'] ?? json['required_permissions']),
@@ -204,6 +220,7 @@ class AppItem {
         icon: icon == null ? null : resolveUrl(base, icon!),
         homepage: homepage,
         size: size,
+        categories: categories,
         tags: tags,
         screenshots: screenshots
             .map((String item) => resolveUrl(base, item))
