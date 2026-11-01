@@ -12,7 +12,6 @@
 //   3. 登录设备（会话列表，可逐个踢掉 / 全部退出）
 //   4. 退出登录
 
-import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
@@ -22,6 +21,7 @@ import 'package:provider/provider.dart';
 import '../../data/services/account_service.dart';
 import '../../theme/app_theme.dart';
 import 'avatar_cropper.dart';
+import 'email_code_button.dart';
 
 class AccountPage extends StatelessWidget {
   const AccountPage({super.key});
@@ -587,26 +587,48 @@ class LoginPage extends StatefulWidget {
 class _LoginPageState extends State<LoginPage> {
   final TextEditingController _account = TextEditingController();
   final TextEditingController _password = TextEditingController();
+  final TextEditingController _code = TextEditingController();
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
 
   bool _obscure = true;
   String? _error;
 
+  /// 这台服务器是否要求登录验证码。
+  /// 初值 false 只是「还没拉到配置」时的保守值 —— 拉不到也不会挡住登录，
+  /// 真正的判定在服务端（会回 `code_required`，那时再把输入框展开）。
+  bool _codeRequired = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 首帧之后再拉配置：拿 InheritedWidget 要在 build 之后才稳。
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final AuthServerConfig cfg =
+          await context.read<AccountService>().loadAuthConfig();
+      if (!mounted) return;
+      setState(() => _codeRequired = cfg.loginCode);
+    });
+  }
+
   @override
   void dispose() {
     _account.dispose();
     _password.dispose();
+    _code.dispose();
     super.dispose();
   }
 
   Future<void> _submit() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
+    final AccountService account = context.read<AccountService>();
     setState(() => _error = null);
 
     try {
-      await context.read<AccountService>().login(
+      await account.login(
         account: _account.text,
         password: _password.text,
+        code: _codeRequired ? _code.text : null,
         device: AccountService.describeDevice(),
       );
       if (!mounted) return;
@@ -614,7 +636,12 @@ class _LoginPageState extends State<LoginPage> {
       Navigator.of(context).pop();
     } on AccountException catch (e) {
       if (!mounted) return;
-      setState(() => _error = e.message);
+      setState(() {
+        _error = e.message;
+        // 服务端说「要验证码」：说明配置拉的时机不对（或刚被打开），
+        // 这里把输入框展开，用户点一下「获取验证码」就能继续。
+        if (e.code == 'code_required') _codeRequired = true;
+      });
     }
   }
 
@@ -660,6 +687,63 @@ class _LoginPageState extends State<LoginPage> {
               validator: (String? v) =>
                   (v == null || v.isEmpty) ? '请输入密码' : null,
             ),
+
+            // ---- 登录验证码（服务端开了才出现）
+            if (_codeRequired) ...<Widget>[
+              const SizedBox(height: 16),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Expanded(
+                    child: TextFormField(
+                      controller: _code,
+                      decoration: const InputDecoration(
+                        labelText: '邮箱验证码',
+                        helperText: '这台服务器开启了两步验证',
+                        prefixIcon: Icon(Icons.mark_email_read_outlined),
+                        border: OutlineInputBorder(),
+                        counterText: '',
+                      ),
+                      keyboardType: TextInputType.number,
+                      maxLength: 6,
+                      validator: (String? v) {
+                        if (!_codeRequired) return null;
+                        final String s = (v ?? '').trim();
+                        if (s.isEmpty) return '请先获取邮箱验证码';
+                        if (!RegExp(r'^\d{4,8}$').hasMatch(s)) return '验证码是纯数字';
+                        return null;
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  // 只有账号和密码都填了才让点：服务端要先核对密码才发信
+                  ListenableBuilder(
+                    listenable: Listenable.merge(<Listenable>[_account, _password]),
+                    builder: (BuildContext ctx, Widget? child) {
+                      return EmailCodeButton(
+                        enabled:
+                            _account.text.trim().isNotEmpty &&
+                            _password.text.isNotEmpty,
+                        request: () => context.read<AccountService>().sendLoginCode(
+                          account: _account.text,
+                          password: _password.text,
+                        ),
+                        onSent: (EmailCodeSent sent) {
+                          final String? debug = sent.debugCode;
+                          if (debug != null && debug.isNotEmpty) {
+                            _code.text = debug;
+                          }
+                          AppTheme.showToast('验证码已发送到 ${sent.email}');
+                        },
+                        onError: (AccountException e) =>
+                            setState(() => _error = e.message),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ],
+
             if (_error != null) ...<Widget>[
               const SizedBox(height: 12),
               Text(
@@ -725,16 +809,32 @@ class _RegisterPageState extends State<RegisterPage> {
 
   bool _obscure = true;
   bool _busy = false;
-  bool _sendingCode = false;
   String? _error;
 
-  /// 重发倒计时（秒）。0 = 现在就能点。
-  int _cooldown = 0;
-  Timer? _countdownTimer;
+  /// 服务端是否要求注册验证码（默认 true，拉到 /api/auth/config 后以其为准）。
+  /// 内网部署可能根本发不出邮件，这时服务端会把它关掉，客户端得跟着变。
+  bool _codeRequired = true;
+
+  /// 服务端邮件通道是否就绪（没配好时注册必然失败，提前告诉用户）
+  bool _mailReady = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final AuthServerConfig cfg =
+          await context.read<AccountService>().loadAuthConfig();
+      if (!mounted) return;
+      setState(() {
+        _codeRequired = cfg.registerCode;
+        _mailReady = cfg.mailReady;
+      });
+    });
+  }
 
   @override
   void dispose() {
-    _countdownTimer?.cancel();
     _username.dispose();
     _email.dispose();
     _password.dispose();
@@ -746,55 +846,6 @@ class _RegisterPageState extends State<RegisterPage> {
   String get _emailText => _email.text.trim();
 
   bool get _emailLooksValid => _emailPattern.hasMatch(_emailText);
-
-  /// 起倒计时。用服务端返回的秒数：两边各写死一份，迟早对不上。
-  void _startCountdown(int seconds) {
-    _countdownTimer?.cancel();
-    setState(() => _cooldown = seconds > 0 ? seconds : 0);
-    if (_cooldown == 0) return;
-    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (Timer timer) {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
-      setState(() {
-        _cooldown -= 1;
-        if (_cooldown <= 0) {
-          _cooldown = 0;
-          timer.cancel();
-        }
-      });
-    });
-  }
-
-  Future<void> _sendCode() async {
-    if (_sendingCode || _cooldown > 0) return;
-    if (!_emailLooksValid) {
-      setState(() => _error = '请先填写正确的邮箱');
-      return;
-    }
-    final AccountService account = context.read<AccountService>();
-    setState(() {
-      _sendingCode = true;
-      _error = null;
-    });
-    try {
-      final EmailCodeSent sent = await account.sendEmailCode(email: _emailText);
-      if (!mounted) return;
-      _startCountdown(sent.cooldown);
-      // 开发模式：服务端把码带回来了，直接填上，省一次翻日志
-      final String? debugCode = sent.debugCode;
-      if (debugCode != null && debugCode.isNotEmpty) {
-        _code.text = debugCode;
-      }
-      AppTheme.showToast('验证码已发送，请查收 $_emailText');
-    } on AccountException catch (e) {
-      if (!mounted) return;
-      setState(() => _error = e.message);
-    } finally {
-      if (mounted) setState(() => _sendingCode = false);
-    }
-  }
 
   Future<void> _submit() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
@@ -809,7 +860,8 @@ class _RegisterPageState extends State<RegisterPage> {
         username: _username.text,
         email: _emailText,
         password: _password.text,
-        code: _code.text,
+        // 服务端关了注册验证码时不带 code（服务端也会忽略它）
+        code: _codeRequired ? _code.text : '',
         device: AccountService.describeDevice(),
       );
       if (!mounted) return;
@@ -873,11 +925,8 @@ class _RegisterPageState extends State<RegisterPage> {
               textInputAction: TextInputAction.next,
               autocorrect: false,
               onChanged: (_) {
-                // 改了邮箱，之前那句「验证码已发送」就过期了：允许重新发。
-                if (_cooldown > 0) {
-                  _countdownTimer?.cancel();
-                  setState(() => _cooldown = 0);
-                }
+                // 只用来刷新「获取验证码」按钮的可用状态
+                setState(() {});
               },
               validator: (String? v) {
                 final String s = (v ?? '').trim();
@@ -886,52 +935,63 @@ class _RegisterPageState extends State<RegisterPage> {
                 return null;
               },
             ),
-            const SizedBox(height: 16),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Expanded(
-                  child: TextFormField(
-                    controller: _code,
-                    decoration: const InputDecoration(
-                      labelText: '邮箱验证码',
-                      prefixIcon: Icon(Icons.mark_email_read_outlined),
-                      border: OutlineInputBorder(),
-                      counterText: '',
+            if (_codeRequired) ...<Widget>[
+              const SizedBox(height: 16),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Expanded(
+                    child: TextFormField(
+                      controller: _code,
+                      decoration: const InputDecoration(
+                        labelText: '邮箱验证码',
+                        prefixIcon: Icon(Icons.mark_email_read_outlined),
+                        border: OutlineInputBorder(),
+                        counterText: '',
+                      ),
+                      keyboardType: TextInputType.number,
+                      maxLength: 6,
+                      textInputAction: TextInputAction.next,
+                      validator: (String? v) {
+                        if (!_codeRequired) return null;
+                        final String s = (v ?? '').trim();
+                        if (s.isEmpty) return '请输入邮箱收到的验证码';
+                        if (!RegExp(r'^\d{4,8}$').hasMatch(s)) return '验证码是纯数字';
+                        return null;
+                      },
                     ),
-                    keyboardType: TextInputType.number,
-                    maxLength: 6,
-                    textInputAction: TextInputAction.next,
-                    validator: (String? v) {
-                      final String s = (v ?? '').trim();
-                      if (s.isEmpty) return '请输入邮箱收到的验证码';
-                      if (!RegExp(r'^\d{4,8}$').hasMatch(s)) return '验证码是纯数字';
-                      return null;
-                    },
                   ),
-                ),
-                const SizedBox(width: 12),
-                // 固定宽度：倒计时把「获取验证码」换成「42s」时不会让整行跳动
-                SizedBox(
-                  width: 112,
-                  height: 56,
-                  child: OutlinedButton(
-                    onPressed: (_sendingCode || _cooldown > 0) ? null : _sendCode,
-                    child: _sendingCode
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : Text(
-                            _cooldown > 0 ? '${_cooldown}s 后重发' : '获取验证码',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(fontSize: 13),
-                          ),
+                  const SizedBox(width: 12),
+                  EmailCodeButton(
+                    // 邮箱没填对就不发请求：省一次无谓往返
+                    enabled: _emailLooksValid,
+                    request: () => context.read<AccountService>().sendEmailCode(
+                      email: _emailText,
+                    ),
+                    onSent: (EmailCodeSent sent) {
+                      final String? debug = sent.debugCode;
+                      if (debug != null && debug.isNotEmpty) {
+                        _code.text = debug;
+                      }
+                      AppTheme.showToast('验证码已发送，请查收 ${sent.email}');
+                    },
+                    onError: (AccountException e) =>
+                        setState(() => _error = e.message),
+                  ),
+                ],
+              ),
+              // 服务端邮件没配好时，注册一定失败 —— 提前说，别让用户白等
+              if (!_mailReady) ...<Widget>[
+                const SizedBox(height: 8),
+                Text(
+                  '服务端邮件通道未配置，验证码发不出来（管理员请检查 MAIL_DRIVER）',
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.error,
+                    fontSize: 12,
                   ),
                 ),
               ],
-            ),
+            ],
             const SizedBox(height: 8),
             TextFormField(
               controller: _password,

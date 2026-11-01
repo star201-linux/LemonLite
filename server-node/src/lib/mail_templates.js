@@ -26,7 +26,8 @@ function escapeHtml(text) {
  */
 export function verificationMail({ code, ttlSeconds, purpose = 'register', brand = 'LemonLite' }) {
   const minutes = Math.max(1, Math.round(ttlSeconds / 60));
-  const action = purpose === 'reset' ? '重置密码' : '注册账号';
+  const action =
+    purpose === 'login' ? '登录账号' : purpose === 'reset' ? '重置密码' : '注册账号';
   const subject = `${code} 是你的 ${brand} 验证码（${minutes} 分钟内有效）`;
 
   const text = [
@@ -35,7 +36,9 @@ export function verificationMail({ code, ttlSeconds, purpose = 'register', brand
     `    ${code}`,
     '',
     `${minutes} 分钟内有效，只能使用一次。`,
-    '如果不是你本人操作，直接忽略这封邮件即可 —— 没有验证码，别人无法完成注册。',
+    purpose === 'login'
+      ? '如果不是你本人操作：你的密码可能已经泄露，请立刻登录并修改密码。'
+      : '如果不是你本人操作，直接忽略这封邮件即可 —— 没有验证码，别人无法完成注册。',
     '',
     `—— ${brand}`,
   ].join('\n');

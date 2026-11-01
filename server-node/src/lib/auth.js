@@ -26,6 +26,10 @@ import { execute, queryOne } from '../db.js';
 import { ApiError } from './http.js';
 
 const TOKEN_PREFIX = 'lmn_';
+
+/** 「永不过期」会话的过期时间。用一个明确的上限日期而不是 NULL：
+ *  列是 NOT NULL，且所有查询都用 `expires_at > now` 判断，语义不用改。 */
+const NEVER_EXPIRES = new Date('9999-12-31T00:00:00.000Z');
 const TOKEN_BYTES = 32;
 
 /** 生成一个新的 token 明文（只在这一刻存在于内存里） */
@@ -81,17 +85,41 @@ export async function burnPasswordTime(password) {
 export async function createSession(userId, { ip = '', device = '' } = {}) {
   const token = newToken();
   const tokenHash = hashToken(token);
-  const ttlMs = parseDuration(config.auth.sessionTtl);
-  const expiresAt = new Date(Date.now() + ttlMs);
+  const ttlMs = sessionTtlMs();
+  const expiresAt = ttlMs === null ? NEVER_EXPIRES : new Date(Date.now() + ttlMs);
 
   await execute(
     `INSERT INTO login_sessions
        (token_hash, user_id, expires_at, login_ip, device)
      VALUES (?, ?, ?, ?, ?)`,
-    [tokenHash, userId, expiresAt, truncate(ip, 45), truncate(device, 128)],
+    [tokenHash, userId, toSqlTime(expiresAt), truncate(ip, 45), truncate(device, 128)],
   );
 
   return { token, expiresAt };
+}
+
+/**
+ * 会话有效期（毫秒）。null = 永不过期。
+ *
+ * `TOKEN_TTL=never`（或 0）是默认值：客户端只要没卸载、本地 token 还在，
+ * 就一直处于登录态。撤销仍然立刻生效 —— 用户能在「登录设备」里踢掉某一台，
+ * 改密码也会把其它设备全踢掉，所以「永不过期」并不等于「不可收回」。
+ */
+export function sessionTtlMs() {
+  const raw = String(config.auth.sessionTtl ?? '').trim().toLowerCase();
+  if (raw === 'never' || raw === 'forever' || raw === '0') return null;
+  return parseDuration(raw);
+}
+
+/**
+ * Date → MySQL DATETIME(3) 的 UTC 字符串。
+ *
+ * 为什么不用 Date 直接传参：mysql2 默认按**进程本地时区**格式化 Date，
+ * 而读出来时又按 UTC 解析（见 resolveSession），时区不是 UTC 的机器上
+ * 会凭空多出/少掉几小时。统一显式写 UTC 字符串，两边就只有一个时钟。
+ */
+function toSqlTime(date) {
+  return new Date(date.getTime()).toISOString().slice(0, 23).replace('T', ' ');
 }
 
 /**
@@ -214,7 +242,7 @@ export async function requireAuth(req, _res, next) {
 
     // 顺手更新 last_seen_at。每 60 秒才写一次，避免每个请求都产生一次 UPDATE
     // （高频接口上这会变成显著的写放大）。用一个进程内的时间戳表做节流。
-    maybeTouch(session.tokenHash);
+    maybeTouch(session);
 
     return next();
   } catch (e) {
@@ -230,7 +258,7 @@ export async function optionalAuth(req, _res, next) {
       const session = await resolveSession(token);
       if (session) {
         req.auth = session;
-        maybeTouch(session.tokenHash);
+        maybeTouch(session);
       }
     }
   } catch {
@@ -243,7 +271,8 @@ export async function optionalAuth(req, _res, next) {
 const _lastTouch = new Map();
 const TOUCH_INTERVAL_MS = 60_000;
 
-function maybeTouch(tokenHash) {
+function maybeTouch(session) {
+  const tokenHash = session.tokenHash;
   const now = Date.now();
   const prev = _lastTouch.get(tokenHash) ?? 0;
   if (now - prev < TOUCH_INTERVAL_MS) return;
@@ -255,10 +284,31 @@ function maybeTouch(tokenHash) {
     for (const [k] of entries.slice(0, 2500)) _lastTouch.delete(k);
   }
 
-  touchSession(tokenHash).catch((e) => {
-    // 写失败不该影响请求本身
-    console.warn('[auth] last_seen_at 更新失败', e.code || e.message);
-  });
+  touchSession(tokenHash)
+    .then(() => renewIfNeeded(session))
+    .catch((e) => {
+      // 写失败不该影响请求本身
+      console.warn('[auth] last_seen_at 更新失败', e.code || e.message);
+    });
+}
+
+/**
+ * 滑窗续期：有限有效期的会话，在「剩余不足一半」时自动往后推一个完整周期。
+ *
+ * 为什么要有它：`TOKEN_TTL=7d` 的语义如果是「7 天后无差别踢下线」，
+ * 那用户每周都要重新输一次密码，而真正想防的是「token 被偷后能一直用」。
+ * 续期让「经常用的人不掉线，丢掉的那份慢慢过期」，两个目标都照顾到了。
+ * 永不过期的会话（默认）直接跳过 —— 不需要写这次库。
+ */
+async function renewIfNeeded(session) {
+  const ttlMs = sessionTtlMs();
+  if (ttlMs === null) return;
+  const remaining = session.expiresAt.getTime() - Date.now();
+  if (remaining > ttlMs / 2) return;
+  await execute('UPDATE login_sessions SET expires_at = ? WHERE token_hash = ?', [
+    toSqlTime(new Date(Date.now() + ttlMs)),
+    session.tokenHash,
+  ]);
 }
 
 /** 当前登录用户 id（number）；未登录返回 null */

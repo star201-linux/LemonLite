@@ -127,6 +127,54 @@ class EmailCodeSent {
   );
 }
 
+/// 服务端的账号策略（`GET /api/auth/config`）。
+///
+/// 为什么这些开关要由服务端下发：注册/登录要不要验证码是**部署方**的决定
+/// （内网服务器可能根本发不出邮件）。客户端写死任何一边，都会出现
+/// 「客户端要验证码、服务端没开」这种永远登不进去的组合。
+@immutable
+class AuthServerConfig {
+  const AuthServerConfig({
+    this.registerCode = true,
+    this.loginCode = false,
+    this.mailReady = true,
+    this.mailDriver = '',
+    this.codeCooldown = 60,
+    this.codeTtl = 600,
+    this.tokenTtl = 'never',
+  });
+
+  /// 注册是否需要邮箱验证码
+  final bool registerCode;
+
+  /// 登录是否需要再来一次邮箱验证码（二次验证）
+  final bool loginCode;
+
+  /// 服务端邮件通道是否配好；没配好时注册/登录验证码必然失败
+  final bool mailReady;
+
+  final String mailDriver;
+
+  /// 重发冷却（秒）与验证码有效期（秒）
+  final int codeCooldown;
+  final int codeTtl;
+
+  /// token 有效期：`never` 表示永不过期
+  final String tokenTtl;
+
+  bool get tokenNeverExpires => tokenTtl == 'never';
+
+  factory AuthServerConfig.fromJson(Map<String, dynamic> json) => AuthServerConfig(
+    registerCode: json['registerCode'] != false,
+    loginCode: json['loginCode'] == true,
+    mailReady: json['mailReady'] != false,
+    mailDriver: (json['mailDriver'] ?? '').toString(),
+    codeCooldown: (json['codeCooldown'] as num?)?.toInt() ?? 60,
+    codeTtl: (json['codeTtl'] as num?)?.toInt() ?? 600,
+    tokenTtl: (json['tokenTtl'] ?? 'never').toString(),
+  );
+}
+
 /// 一次登录会话（「我的登录设备」里的一行）
 @immutable
 class AccountSession {
@@ -224,11 +272,22 @@ class AccountService extends ChangeNotifier {
   /// 上一次错误（UI 用，取完可以不清）
   AccountException? _lastError;
 
+  /// 服务端下发的账号策略。默认值 = 「注册要验证码、登录不要」，
+  /// 与 .env.example 的默认一致；真正生效前会先拉一次 /api/auth/config。
+  AuthServerConfig _authConfig = const AuthServerConfig();
+
+  bool _authConfigLoaded = false;
+
   String? get token => _token;
   AccountProfile? get profile => _profile;
   bool get isLoggedIn => _token != null && _token!.isNotEmpty;
   bool get busy => _busy;
   AccountException? get lastError => _lastError;
+
+  AuthServerConfig get authConfig => _authConfig;
+
+  /// 登录是否需要验证码（未拉到配置前按「不需要」处理）
+  bool get loginCodeRequired => _authConfig.loginCode;
 
   /// 启动时调用：从本地拿 token，`withProfile: true` 时顺便校验它还有效。
   ///
@@ -333,6 +392,47 @@ class AccountService extends ChangeNotifier {
 
   // ---------------------------------------------------------------- 登录/注册
 
+  /// 拉一次服务端策略（注册/登录要不要验证码）。
+  ///
+  /// 失败不抛：拿不到就按默认走，真正的判定在服务端 ——
+  /// 最坏情况是用户点登录后收到 `code_required`，登录页那时再展开验证码输入。
+  Future<AuthServerConfig> loadAuthConfig({bool force = false}) async {
+    if (_authConfigLoaded && !force) return _authConfig;
+    try {
+      final Map<String, dynamic> data = await _request(
+        'GET',
+        '/api/auth/config',
+        auth: false,
+      );
+      _authConfig = AuthServerConfig.fromJson(data);
+      _authConfigLoaded = true;
+      notifyListeners();
+    } on AccountException catch (e) {
+      lemonLog('Account', '读取服务端策略失败（按默认值走）：${e.message}');
+    }
+    return _authConfig;
+  }
+
+  /// 请求一封**登录**验证码。
+  ///
+  /// 必须先带对密码：服务端会先校验密码再发信，否则这就是个
+  /// 「知道邮箱就能轰炸对方」的接口。
+  Future<EmailCodeSent> sendLoginCode({
+    required String account,
+    required String password,
+  }) async {
+    final Map<String, dynamic> data = await _request(
+      'POST',
+      '/api/auth/login-code',
+      body: <String, dynamic>{
+        'account': account.trim(),
+        'password': password,
+      },
+      auth: false,
+    );
+    return EmailCodeSent.fromJson(data);
+  }
+
   /// 登录。account 可以是用户名或邮箱。
   ///
   /// [device] 会作为「设备」记进服务端的 login_sessions，
@@ -340,6 +440,7 @@ class AccountService extends ChangeNotifier {
   Future<void> login({
     required String account,
     required String password,
+    String? code,
     String? device,
   }) async {
     final String accountText = account.trim();
@@ -357,6 +458,8 @@ class AccountService extends ChangeNotifier {
         body: <String, dynamic>{
           'account': accountText,
           'password': password,
+          // 服务端开了「登录需要验证码」时才带；没开时传了也会被忽略
+          if (code != null && code.trim().isNotEmpty) 'code': code.trim(),
           if (device != null && device.isNotEmpty) 'device': device,
         },
         auth: false,

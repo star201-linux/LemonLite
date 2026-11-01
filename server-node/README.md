@@ -122,9 +122,11 @@ userdata/<id>/avatar.png    头像（固定文件名，覆盖式更新）
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
+| GET | `/api/auth/config` | 服务端策略：注册/登录要不要验证码、token 有效期 |
 | POST | `/api/auth/email-code` | 发注册验证码（body: `{email}`） |
-| POST | `/api/auth/register` | 注册（**必须带 `code`**，返回 token） |
-| POST | `/api/auth/login` | 登录，account 可以是用户名或邮箱 |
+| POST | `/api/auth/register` | 注册（开启注册验证码时**必须带 `code`**，返回 token） |
+| POST | `/api/auth/login-code` | 发**登录**验证码（body: `{account, password}`，先核对密码） |
+| POST | `/api/auth/login` | 登录，account 可以是用户名或邮箱；开了登录验证码时要带 `code` |
 | GET | `/api/auth/me` | 当前用户 |
 | PATCH | `/api/auth/me` | 改用户名 / 邮箱 |
 | POST | `/api/auth/password` | 改密码（撤销其它会话） |
@@ -138,6 +140,17 @@ userdata/<id>/avatar.png    头像（固定文件名，覆盖式更新）
 
 注册流程是：`POST /api/auth/email-code` 让服务端发一封带 6 位码的邮件 →
 用户把码填进注册页 → `POST /api/auth/register` 带上 `code`，服务端核销。
+
+**两个开关**（都在 `.env` 里，客户端启动时读 `/api/auth/config` 跟着变）：
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `AUTH_REGISTER_CODE` | `on` | 注册要不要邮箱验证码 |
+| `AUTH_LOGIN_CODE` | `off` | 登录要不要再来一次邮箱验证码（两步验证） |
+
+开登录验证码后，登录流程变成：密码先核对 → `POST /api/auth/login-code` 发信 →
+`POST /api/auth/login` 同时带密码与 `code`。**发码接口必须先给对密码**，
+否则它会变成「知道邮箱就能轰炸对方」的工具，也会被拿来枚举账号。
 
 邮件从哪发出去**由配置决定，不需要改代码**，改完重启即可：
 
@@ -161,6 +174,9 @@ userdata/<id>/avatar.png    头像（固定文件名，覆盖式更新）
 | `MAIL_CODE_MAX_PER_EMAIL` | 10 | 单邮箱每小时上限 |
 | `MAIL_CODE_MAX_PER_IP` | 30 | 单 IP 每小时上限 |
 | `MAIL_CODE_MAX_ATTEMPTS` | 5 | 同一个码允许输错几次 |
+
+登录验证码与注册验证码共用这张表、这套配额：分开算的话，
+「注册 10 封 + 登录 10 封 = 20 封」就成了绕过限流的口子。
 
 细的配置步骤（含 QQ 邮箱授权码、阿里云发信地址怎么开）见
 [`../docs/邮件通道配置.md`](../docs/邮件通道配置.md)。
@@ -212,6 +228,9 @@ npm run prune    # 清理过期 30 天以上的会话行 + 过期 1 天以上的
 - [ ] `CORS_ORIGIN` 收紧到你的域名，不要留 `*`
 - [ ] `TRUST_PROXY=true` 如果放在 Nginx 后面（否则日志里全是代理 IP）
 - [ ] `userdata/` 目录权限只给运行服务的用户
+- [ ] `TOKEN_TTL` 若不是 `never`，确认你能接受「到点要重新登录」
+      （默认 `never` = 永不过期；撤销仍然随时生效）
+- [ ] `AUTH_LOGIN_CODE=on` 时确认邮件通道稳定 —— 发不出信等于谁都登不进去
 - [ ] `MAIL_DEV_ECHO_CODE=false`（**开着等于验证码直接送给请求方**）
 - [ ] `MAIL_DRIVER` 不是 `console`（那样谁都能注册，因为码只在服务端日志里）
 - [ ] SMTP 用 587/465 这类加密端口，别在公网上跑明文 25

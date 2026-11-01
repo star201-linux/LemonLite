@@ -16,8 +16,8 @@ import { execute, query, queryOne } from '../db.js';
 import { config } from '../config.js';
 import { ApiError } from './http.js';
 
-/** 允许的用途。先只开注册，reset 的结构留好了，加接口即可。 */
-export const PURPOSES = Object.freeze(['register']);
+/** 允许的用途：注册、登录二次验证、（将来）重置密码 */
+export const PURPOSES = Object.freeze(['register', 'login', 'reset']);
 
 /**
  * Date → MySQL DATETIME(3) 字符串（UTC）。

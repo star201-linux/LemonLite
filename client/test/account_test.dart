@@ -99,6 +99,40 @@ void main() {
     });
   });
 
+  // ========================================================== 服务端策略
+
+  group('AuthServerConfig 解析', () {
+    test('开关取值与默认值', () {
+      final AuthServerConfig on = AuthServerConfig.fromJson(<String, dynamic>{
+        'registerCode': true,
+        'loginCode': true,
+        'mailReady': true,
+        'mailDriver': 'smtp',
+        'codeCooldown': 30,
+        'codeTtl': 300,
+        'tokenTtl': 'never',
+      });
+      expect(on.registerCode, isTrue);
+      expect(on.loginCode, isTrue);
+      expect(on.codeCooldown, 30);
+      expect(on.tokenNeverExpires, isTrue);
+
+      // 服务端没给字段时：注册要验证码、登录不要（与 .env.example 默认一致）
+      final AuthServerConfig off = AuthServerConfig.fromJson(<String, dynamic>{});
+      expect(off.registerCode, isTrue);
+      expect(off.loginCode, isFalse);
+      expect(off.mailReady, isTrue);
+      expect(off.codeCooldown, 60);
+      expect(off.tokenNeverExpires, isTrue);
+    });
+
+    test('有限有效期时 tokenNeverExpires 为 false', () {
+      final AuthServerConfig cfg =
+          AuthServerConfig.fromJson(<String, dynamic>{'tokenTtl': '7d'});
+      expect(cfg.tokenNeverExpires, isFalse);
+    });
+  });
+
   // ========================================================== 验证码响应
 
   group('EmailCodeSent 解析', () {

@@ -2,6 +2,10 @@
 //
 // 账号系统：邮箱验证码 / 注册 / 登录 / 当前用户 / 改资料 / 改密码 / 会话管理。
 //
+// 验证码有两个开关，都在服务端（客户端不写死，启动时读 /api/auth/config）：
+//   AUTH_REGISTER_CODE  注册要不要验证码（默认 on）
+//   AUTH_LOGIN_CODE     登录要不要再来一次验证码（默认 off）
+//
 // 需求里的字段：id（自增）、用户名（可改）、头像（可改）、邮箱、密码、
 // 注册时间、注册 IP。登录数据单独一张表：token / 登录时间 / 设备 / 登录 IP。
 //
@@ -149,6 +153,51 @@ function toUserDto(req, row) {
   };
 }
 
+/**
+ * 邮箱打码：`alice@example.com` → `a***e@example.com`。
+ *
+ * 登录验证码是发给「账号绑定的邮箱」的，报给客户端时打个码 ——
+ * 它只用来让人确认「发到的是我以为的那个邮箱」，不需要回显完整地址。
+ */
+function maskEmail(email) {
+  const text = String(email ?? '');
+  const at = text.indexOf('@');
+  if (at <= 0) return '***';
+  const name = text.slice(0, at);
+  const domain = text.slice(at);
+  if (name.length <= 2) return `${name[0]}***${domain}`;
+  return `${name[0]}***${name.slice(-1)}${domain}`;
+}
+
+// ================================================================ 服务端能力
+
+/**
+ * GET /api/auth/config
+ *
+ * 客户端据此决定界面：注册页要不要显示验证码输入框、登录页要不要
+ * 先「获取验证码」。这些行为**必须**由服务端说了算 —— 否则会出现
+ * 「客户端要验证码、服务端没开」这种永远登不进去的组合。
+ *
+ * 公开接口，不需要登录，也不泄露任何用户信息。
+ */
+authRouter.get(
+  '/config',
+  wrap(async (_req, res) => {
+    const mail = mailStatus();
+    sendOk(res, {
+      registerCode: config.auth.registerCode,
+      loginCode: config.auth.loginCode,
+      mailReady: mail.ready,
+      mailDriver: mail.driver,
+      // 客户端倒计时用这两个值，不写死
+      codeCooldown: config.mail.codeCooldown,
+      codeTtl: config.mail.codeTtl,
+      // never = 永不过期（客户端可以据此不做任何「到期前刷新」的逻辑）
+      tokenTtl: config.auth.sessionTtl,
+    });
+  }),
+);
+
 // ================================================================ 邮箱验证码
 
 /**
@@ -172,6 +221,14 @@ authRouter.post(
     const purpose = String(req.body?.purpose ?? 'register').trim().toLowerCase();
     if (!PURPOSES.includes(purpose)) {
       throw ApiError.badRequest('bad_request', '不支持的验证码用途');
+    }
+    if (purpose === 'register' && !config.auth.registerCode) {
+      throw ApiError.badRequest('register_code_disabled', '这台服务器注册不需要验证码');
+    }
+    if (purpose === 'login') {
+      // 登录验证码必须走 /api/auth/login-code：它要先核对密码，
+      // 否则就成了「只要知道别人邮箱就能给他发信」的轰炸工具。
+      throw ApiError.badRequest('bad_request', '登录验证码请用 /api/auth/login-code');
     }
 
     const status = mailStatus();
@@ -238,7 +295,8 @@ authRouter.post(
     const email = validateEmail(req.body?.email);
     const password = validatePassword(req.body?.password);
     const code = String(req.body?.code ?? '').trim();
-    if (!/^\d{4,8}$/.test(code)) {
+    // AUTH_REGISTER_CODE=off 时整段跳过（只适合内网/自测）
+    if (config.auth.registerCode && !/^\d{4,8}$/.test(code)) {
       throw ApiError.badRequest('code_required', '请输入邮箱收到的验证码');
     }
 
@@ -259,7 +317,9 @@ authRouter.post(
 
     // 核销验证码。放在最后一步（冲突都查完之后）：
     // 用户名撞车时不该把用户的验证码白白烧掉 —— 他改个名字还能用同一个码。
-    await consumeCode({ email, purpose: 'register', code });
+    if (config.auth.registerCode) {
+      await consumeCode({ email, purpose: 'register', code });
+    }
 
     const hash = await hashPassword(password);
     const ip = clientIp(req);
@@ -283,6 +343,87 @@ authRouter.post(
       token,
       expiresAt: expiresAt.toISOString(),
       user: toUserDto(req, row),
+    });
+  }),
+);
+
+// ================================================================ 登录验证码
+
+/**
+ * POST /api/auth/login-code
+ * body: { account, password }
+ *
+ * 开启「登录需要验证码」后，登录前先用这个接口拿一封验证码邮件。
+ *
+ * **必须先核对密码**才发信。否则它就是一个「知道邮箱即可轰炸对方邮箱」
+ * 的接口 —— 而且还会被用来判断「哪些邮箱注册过这个站」。
+ * 代价是用户要输两次密码，但客户端只需要在同一个表单里按一下「获取验证码」。
+ *
+ * 密码错时与 /login 一样统一回「用户名或密码不正确」，并同样消耗
+ * 一次 bcrypt 的时间，避免这个接口变成更快的用户名枚举信道。
+ */
+authRouter.post(
+  '/login-code',
+  wrap(async (req, res) => {
+    if (!config.auth.loginCode) {
+      throw ApiError.badRequest('login_code_disabled', '这台服务器登录不需要验证码');
+    }
+    const account = String(req.body?.account ?? req.body?.username ?? '').trim();
+    const password = String(req.body?.password ?? '');
+    if (!account || !password) {
+      throw ApiError.badRequest('bad_request', '请输入账号和密码');
+    }
+
+    const row = await queryOne(
+      `SELECT * FROM users WHERE email = ? OR username = ? LIMIT 1`,
+      [account.toLowerCase(), account],
+    );
+    const failMsg = '用户名或密码不正确';
+    if (!row) {
+      await burnPasswordTime(password);
+      throw new ApiError(401, 'invalid_credentials', failMsg);
+    }
+    if (row.status === 'disabled') {
+      throw ApiError.forbidden('account_disabled', '这个账号已被停用');
+    }
+    const ok = await verifyPassword(password, row.password_hash);
+    if (!ok) throw new ApiError(401, 'invalid_credentials', failMsg);
+
+    const status = mailStatus();
+    if (!status.ready) {
+      throw ApiError.unavailable(`服务端邮件通道未配置：${status.reason}`);
+    }
+
+    // 限流与注册共用一套（同一张表、同一组配额）：区分用途只会让
+    // 「注册 10 次 + 登录 10 次 = 20 封」这种绕过方式成立。
+    const { id, code } = await issueCode({
+      email: normalizeEmail(row.email),
+      purpose: 'login',
+      ip: clientIp(req),
+    });
+
+    const template = verificationMail({
+      code,
+      ttlSeconds: config.mail.codeTtl,
+      purpose: 'login',
+    });
+    try {
+      await sendMail({ to: row.email, ...template });
+    } catch (e) {
+      await discardCode(id);
+      const reason = e instanceof MailError ? e.message : String(e);
+      console.error(`\x1b[31m[mail] 登录验证码发送失败\x1b[0m ${row.email}：${reason}`);
+      throw ApiError.unavailable('验证码邮件发送失败，请稍后再试');
+    }
+
+    sendOk(res, {
+      sent: true,
+      // 打码：只用于确认「发到的是我以为的那个邮箱」
+      email: maskEmail(row.email),
+      cooldown: config.mail.codeCooldown,
+      expiresIn: config.mail.codeTtl,
+      driver: status.driver,
+      ...(config.mail.devEchoCode ? { debugCode: code } : {}),
     });
   }),
 );
@@ -326,6 +467,23 @@ authRouter.post(
 
     const ok = await verifyPassword(password, row.password_hash);
     if (!ok) throw new ApiError(401, 'invalid_credentials', failMsg);
+
+    // ---- 二次验证（可选，由服务端配置决定）
+    //
+    // 顺序很重要：**先验密码，再验码**。反过来的话，攻击者不需要知道密码
+    // 就能用「验证码对不对」来试探账号是否存在；而且用户输错密码时
+    // 不该被白白烧掉一个验证码。
+    if (config.auth.loginCode) {
+      const code = String(req.body?.code ?? '').trim();
+      if (!code) {
+        throw new ApiError(
+          401,
+          'code_required',
+          '这台服务器登录需要邮箱验证码，请先获取',
+        );
+      }
+      await consumeCode({ email: row.email, purpose: 'login', code });
+    }
 
     // 会话数上限：超出时把最旧的撤销掉，而不是拒绝新登录
     // （拒绝新登录会让「手机丢了，我换新手机登录」变得不可能）

@@ -78,10 +78,22 @@ export const config = {
   },
 
   auth: {
-    // token 有效期。7 天是「一周内不用重新登录」的常见折衷。
-    // 会话落库（login_sessions），所以这个值可以在运行时改短而不影响已签发的旧会话
-    // —— 旧会话按自己的 expires_at 走完，新会话用新值。
-    sessionTtl: env('TOKEN_TTL', '7d'),
+    // token 有效期。
+    //   never / 0 → **永不过期**：只要客户端不卸载（本地 token 还在），就一直有效；
+    //               撤销仍然随时生效（退出登录 / 踢设备 / 改密码）。
+    //   7d / 12h  → 到点失效；每次请求会顺手续期（滑窗），常来用就不会掉线。
+    // 默认 never：这个 App 的定位是「自己或小圈子用」，为了不让人反复登录
+    // 牺牲一点「token 被偷后的窗口期」是划算的；面向公网的多租户场景请改回 7d。
+    sessionTtl: env('TOKEN_TTL', 'never'),
+
+    // 注册是否要邮箱验证码。关掉只适合内网/自测 —— 邮箱不是秘密，
+    // 没有验证就等于谁都能用别人的邮箱开号。
+    registerCode: env('AUTH_REGISTER_CODE', 'on').toLowerCase() === 'on',
+
+    // 登录是否再要一次邮箱验证码（二次验证）。
+    // 打开后：输对密码还不够，还要收到一封验证码邮件才能登录。
+    // 客户端不会写死这个行为 —— 启动时读 /api/auth/config，跟着服务端走。
+    loginCode: env('AUTH_LOGIN_CODE', 'off').toLowerCase() === 'on',
     // bcrypt 代价因子。10 在手机/中端服务器上约 60~100ms，够用且不拖慢登录。
     bcryptRounds: envInt('BCRYPT_ROUNDS', 10),
     // 单个用户最多同时保留多少个有效会话（超出时踢掉最旧的）。
@@ -188,7 +200,15 @@ export function describeConfig() {
   const lines = [];
   lines.push(`HTTP   ${config.http.host}:${config.http.port}`);
   lines.push(`MySQL  ${config.db.user}@${config.db.host}:${config.db.port}/${config.db.database}`);
-  lines.push(`会话   token ${config.auth.sessionTtl} 有效，落库可撤销`);
+  lines.push(
+    `会话   token ${config.auth.sessionTtl === 'never' ? '永不过期' : config.auth.sessionTtl + ' 有效'}` +
+      '，落库可撤销',
+  );
+  lines.push(
+    `验证码 注册${config.auth.registerCode ? '需要' : '不需要'}` +
+      ' / ' +
+      `登录${config.auth.loginCode ? '需要' : '不需要'}`,
+  );
   lines.push(
     `用户数据 ${config.userdata.dir}/<id>/{data.json,avatar.png}` +
       `（头像上限 ${Math.round(config.userdata.maxAvatarBytes / 1024 / 1024)}MB）`,
