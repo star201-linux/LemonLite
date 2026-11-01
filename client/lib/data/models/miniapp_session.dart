@@ -74,8 +74,16 @@ class MiniappSession {
   /// 由会话视图注入：处理系统返回键，返回 true 表示已消费
   Future<bool> Function()? onSystemBack;
 
-  /// 由会话视图注入：切到后台时让 WebView 的 JS 定时器继续跑
+  /// 由会话视图注入：切回前台时恢复 WebView 的 JS 定时器
   Future<void> Function()? onResumeTimers;
+
+  /// 由会话视图注入：转到后台时挂起 WebView 的 JS 定时器。
+  ///
+  /// 这是「卡顿」的一个隐蔽来源：不可见的 WebView 里如果还有 setInterval
+  /// 在跑（轮询、动画、心跳），它照样占 CPU —— 用户在前面滑列表，
+  /// 后台有个小程序每 100ms 算一次账，掉帧查起来极其费劲。
+  /// 后台就该停，回前台再续上（页面状态不丢，只是定时器暂停）。
+  Future<void> Function()? onPauseTimers;
 
   /// 由会话视图注入：重新加载页面
   Future<void> Function()? onReload;
@@ -134,6 +142,7 @@ class MiniappSession {
     _titleListener = null;
     onSystemBack = null;
     onResumeTimers = null;
+    onPauseTimers = null;
     onReload = null;
   }
 }

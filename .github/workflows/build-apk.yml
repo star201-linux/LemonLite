@@ -1,0 +1,119 @@
+# .github/workflows/build-apk.yml
+#
+# 在 GitHub 的机器上（x86_64 + 完整 Flutter/Android SDK）打一个**测试包**。
+#
+# 为什么要放在 CI 里：本项目的开发环境是一台 Android 手机里的容器，
+# 只有 arm64 的 Linux，没有 Flutter SDK，也没有 aapt2 的 arm64 版本，
+# 在手机上直接 `flutter build apk` 是打不出来的。CI 是唯一可靠的出包路径。
+#
+# 用法：
+#   * 手动：Actions → build-apk → Run workflow
+#   * 自动：往 main 推 client/ 的改动时会自动跑一次
+#   产物在运行页面的 Artifacts 里（lemonlite-apk-<run>）。
+#
+# 签名：
+#   仓库没有 key.properties 时，构建会**回落到 debug 签名**（见
+#   client/android/app/build.gradle.kts），打出来的包能装、能用，
+#   但和正式签名的包签名不同 —— 覆盖安装会失败，得先卸载旧版。
+#   想用正式签名，在仓库 Secrets 里加：
+#     LEMONLITE_KEYSTORE_BASE64  ← lemonlite-release.jks 的 base64
+#     LEMONLITE_KEYSTORE_PASSWORD / LEMONLITE_KEY_ALIAS / LEMONLITE_KEY_PASSWORD
+
+name: build-apk
+
+on:
+  workflow_dispatch:
+    inputs:
+      abi:
+        description: '目标 ABI'
+        required: true
+        default: 'android-arm64'
+        type: choice
+        options:
+          - android-arm64
+          - android-arm
+          - android-x64
+  push:
+    branches: [main]
+    paths:
+      - 'client/**'
+      - '.github/workflows/build-apk.yml'
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    env:
+      KEYSTORE_BASE64: ${{ secrets.LEMONLITE_KEYSTORE_BASE64 }}
+      TARGET_ABI: ${{ github.event.inputs.abi || 'android-arm64' }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 安装 Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.9'
+          channel: stable
+          cache: true
+
+      - name: 版本信息
+        run: flutter --version
+
+      - name: 还原签名文件（没有 secret 就跳过）
+        if: env.KEYSTORE_BASE64 != ''
+        working-directory: client/android
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > app/lemonlite-release.jks
+          cat > key.properties <<EOF
+          storeFile=lemonlite-release.jks
+          storePassword=${{ secrets.LEMONLITE_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.LEMONLITE_KEY_ALIAS }}
+          keyPassword=${{ secrets.LEMONLITE_KEY_PASSWORD }}
+          EOF
+          echo "已写入 release 签名配置"
+
+      - name: 拉依赖
+        working-directory: client
+        run: flutter pub get
+
+      # 静态检查不阻塞出包：它的价值是让人看到问题，而不是让测试包打不出来。
+      - name: 静态检查（不阻塞）
+        continue-on-error: true
+        working-directory: client
+        run: flutter analyze
+
+      - name: 构建 release APK
+        working-directory: client
+        run: |
+          # 只覆盖 versionCode（= run_number）：本机能装上升级包的前提是它比
+          # 已装的大。versionName 保持 pubspec 里的值，免得「关于」页对不上。
+          flutter build apk --release \
+            --target-platform "$TARGET_ABI" \
+            --build-number "${{ github.run_number }}"
+
+      - name: 收集产物
+        run: |
+          mkdir -p out
+          cp client/build/app/outputs/flutter-apk/*.apk out/
+          ls -lh out/
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: lemonlite-apk-${{ github.run_number }}
+          path: out/*.apk
+          retention-days: 30
+          if-no-files-found: error

@@ -7,6 +7,7 @@
 // 给列表让出更多空间。
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/globals.dart';
@@ -15,6 +16,7 @@ import '../../data/repositories/market_repository.dart';
 import '../../data/services/miniapp_package_service.dart';
 import '../../data/services/settings_service.dart';
 import '../../theme/app_theme.dart';
+import '../../theme/motion.dart';
 import '../miniapp/miniapp_installer.dart';
 import '../background/background_apps_page.dart';
 import '../detail/app_detail_page.dart';
@@ -206,11 +208,15 @@ class _HomePageState extends State<HomePage> {
             // 放在分类 chips 之上：它是「需要你处理的事」，优先级高于浏览。
             if (_updates.isNotEmpty)
               SliverToBoxAdapter(
-                child: _UpdateBanner(
-                  updates: _updates,
-                  updating: _updating,
-                  onUpdateAll: _updateAll,
-                  onDismiss: () => setState(() => _updates = const <PackageUpdate>[]),
+                child: StaggeredEntrance(
+                  offset: 8,
+                  child: _UpdateBanner(
+                    updates: _updates,
+                    updating: _updating,
+                    onUpdateAll: _updateAll,
+                    onDismiss: () =>
+                        setState(() => _updates = const <PackageUpdate>[]),
+                  ),
                 ),
               ),
 
@@ -232,23 +238,28 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// 按状态返回内容 slivers
+  /// 按状态返回内容 slivers。
+  ///
+  /// 「加载 / 空 / 错误」三者共用同一块 SliverFillRemaining，中间套
+  /// StateTransition 做交叉淡入。为什么值得多这一层：
+  /// 状态切换（转圈 → 错误、空 → 有数据）是这个页面**最频繁的重绘点**，
+  /// 硬切会让用户觉得「闪了一下」，而淡入只是合成一层透明度。
   List<Widget> _buildContent(BuildContext context, HomeController controller) {
     switch (controller.status) {
       case HomeStatus.initial:
       case HomeStatus.loading:
-        return const <Widget>[
-          SliverFillRemaining(
-            hasScrollBody: false,
-            child: LoadingView(message: '正在加载应用市场…'),
+        return <Widget>[
+          _stateSliver(
+            'loading',
+            const LoadingView(message: '正在加载应用市场…'),
           ),
         ];
 
       case HomeStatus.error:
         return <Widget>[
-          SliverFillRemaining(
-            hasScrollBody: false,
-            child: ErrorView(
+          _stateSliver(
+            'error',
+            ErrorView(
               title: '加载失败',
               message: controller.errorMessage ?? '未知错误',
               detail: controller.errorDetail,
@@ -259,10 +270,10 @@ class _HomePageState extends State<HomePage> {
 
       case HomeStatus.ready:
         if (!controller.hasData) {
-          return const <Widget>[
-            SliverFillRemaining(
-              hasScrollBody: false,
-              child: EmptyView(
+          return <Widget>[
+            _stateSliver(
+              'empty-store',
+              const EmptyView(
                 icon: Icons.storefront_outlined,
                 title: '市场里还没有应用',
                 message: '服务端返回的应用列表是空的',
@@ -274,9 +285,9 @@ class _HomePageState extends State<HomePage> {
         final List<AppItem> apps = controller.visibleApps;
         if (apps.isEmpty) {
           return <Widget>[
-            SliverFillRemaining(
-              hasScrollBody: false,
-              child: EmptyView(
+            _stateSliver(
+              'empty-filter',
+              EmptyView(
                 icon: Icons.search_off,
                 title: '没有匹配的应用',
                 message: '换个关键词，或者切回「全部」分类试试',
@@ -295,9 +306,14 @@ class _HomePageState extends State<HomePage> {
             itemCount: apps.length,
             itemBuilder: (BuildContext ctx, int i) => Padding(
               padding: EdgeInsets.fromLTRB(16, i == 0 ? 4 : 0, 16, 8),
-              child: AppCard(
-                app: apps[i],
-                onTap: () => _openDetail(ctx, apps[i]),
+              // 错峰入场：前几条依次浮现，后续的（滚出来的）直接出现。
+              // index 取 `i % 8` —— 分页加载的第 20 条不该等半秒才出现。
+              child: StaggeredEntrance(
+                index: i % 8,
+                child: AppCard(
+                  app: apps[i],
+                  onTap: () => _openDetail(ctx, apps[i]),
+                ),
               ),
             ),
           ),
@@ -329,7 +345,20 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  /// 把「一整屏状态视图」包成 sliver，并带上用于交叉淡入的 key
+  Widget _stateSliver(String tag, Widget child) {
+    return SliverFillRemaining(
+      hasScrollBody: false,
+      child: StateTransition(
+        child: KeyedSubtree(key: ValueKey<String>(tag), child: child),
+      ),
+    );
+  }
+
   void _openDetail(BuildContext context, AppItem app) {
+    // 一下轻微的触觉反馈：列表项的「按下去」在视觉上只有一层水波纹，
+    // 加一点震动能让「我确实点到了」这件事更确定（与搜索页保持一致）。
+    HapticFeedback.selectionClick();
     Navigator.of(context).push(AppDetailPage.route(app));
   }
 

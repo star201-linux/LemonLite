@@ -12,6 +12,7 @@
 //   3. 登录设备（会话列表，可逐个踢掉 / 全部退出）
 //   4. 退出登录
 
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
@@ -692,6 +693,16 @@ class _LoginPageState extends State<LoginPage> {
 
 // ================================================================ 注册页
 
+/// 注册：用户名 + 邮箱 + **邮箱验证码** + 密码。
+///
+/// 加验证码这一步的原因是「邮箱地址不是秘密」：
+/// 没有验证就注册，别人可以拿你的邮箱建号；一旦以后做了
+/// 「邮箱找回密码」，这个账号就等于随时能被接管。
+///
+/// 交互上的几个细节：
+///   * 「获取验证码」按钮有冷却倒计时，冷却秒数**跟服务端要**，不写死；
+///   * 邮箱没填对时按钮只是提示，不发请求（省一次无谓往返）；
+///   * 服务端若开了开发模式（MAIL_DEV_ECHO_CODE），会把码直接带回来自动填上。
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key});
 
@@ -707,33 +718,98 @@ class _RegisterPageState extends State<RegisterPage> {
   final TextEditingController _email = TextEditingController();
   final TextEditingController _password = TextEditingController();
   final TextEditingController _confirm = TextEditingController();
+  final TextEditingController _code = TextEditingController();
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
+
+  static final RegExp _emailPattern = RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$');
 
   bool _obscure = true;
   bool _busy = false;
+  bool _sendingCode = false;
   String? _error;
+
+  /// 重发倒计时（秒）。0 = 现在就能点。
+  int _cooldown = 0;
+  Timer? _countdownTimer;
 
   @override
   void dispose() {
+    _countdownTimer?.cancel();
     _username.dispose();
     _email.dispose();
     _password.dispose();
     _confirm.dispose();
+    _code.dispose();
     super.dispose();
+  }
+
+  String get _emailText => _email.text.trim();
+
+  bool get _emailLooksValid => _emailPattern.hasMatch(_emailText);
+
+  /// 起倒计时。用服务端返回的秒数：两边各写死一份，迟早对不上。
+  void _startCountdown(int seconds) {
+    _countdownTimer?.cancel();
+    setState(() => _cooldown = seconds > 0 ? seconds : 0);
+    if (_cooldown == 0) return;
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (Timer timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      setState(() {
+        _cooldown -= 1;
+        if (_cooldown <= 0) {
+          _cooldown = 0;
+          timer.cancel();
+        }
+      });
+    });
+  }
+
+  Future<void> _sendCode() async {
+    if (_sendingCode || _cooldown > 0) return;
+    if (!_emailLooksValid) {
+      setState(() => _error = '请先填写正确的邮箱');
+      return;
+    }
+    final AccountService account = context.read<AccountService>();
+    setState(() {
+      _sendingCode = true;
+      _error = null;
+    });
+    try {
+      final EmailCodeSent sent = await account.sendEmailCode(email: _emailText);
+      if (!mounted) return;
+      _startCountdown(sent.cooldown);
+      // 开发模式：服务端把码带回来了，直接填上，省一次翻日志
+      final String? debugCode = sent.debugCode;
+      if (debugCode != null && debugCode.isNotEmpty) {
+        _code.text = debugCode;
+      }
+      AppTheme.showToast('验证码已发送，请查收 $_emailText');
+    } on AccountException catch (e) {
+      if (!mounted) return;
+      setState(() => _error = e.message);
+    } finally {
+      if (mounted) setState(() => _sendingCode = false);
+    }
   }
 
   Future<void> _submit() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
+    final AccountService account = context.read<AccountService>();
     setState(() {
       _busy = true;
       _error = null;
     });
 
     try {
-      await context.read<AccountService>().register(
+      await account.register(
         username: _username.text,
-        email: _email.text,
+        email: _emailText,
         password: _password.text,
+        code: _code.text,
         device: AccountService.describeDevice(),
       );
       if (!mounted) return;
@@ -742,6 +818,13 @@ class _RegisterPageState extends State<RegisterPage> {
     } on AccountException catch (e) {
       if (!mounted) return;
       setState(() => _error = e.message);
+      // 验证码类错误：把输入框的光标放回去，用户直接改就行
+      if (e.isCodeError) {
+        _code.selection = TextSelection(
+          baseOffset: 0,
+          extentOffset: _code.text.length,
+        );
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -782,22 +865,74 @@ class _RegisterPageState extends State<RegisterPage> {
               controller: _email,
               decoration: const InputDecoration(
                 labelText: '邮箱',
+                helperText: '注册需要邮箱验证，验证码会发到这里',
                 prefixIcon: Icon(Icons.alternate_email),
                 border: OutlineInputBorder(),
               ),
               keyboardType: TextInputType.emailAddress,
               textInputAction: TextInputAction.next,
               autocorrect: false,
+              onChanged: (_) {
+                // 改了邮箱，之前那句「验证码已发送」就过期了：允许重新发。
+                if (_cooldown > 0) {
+                  _countdownTimer?.cancel();
+                  setState(() => _cooldown = 0);
+                }
+              },
               validator: (String? v) {
                 final String s = (v ?? '').trim();
                 if (s.isEmpty) return '请输入邮箱';
-                if (!RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$').hasMatch(s)) {
-                  return '邮箱格式不正确';
-                }
+                if (!_emailPattern.hasMatch(s)) return '邮箱格式不正确';
                 return null;
               },
             ),
             const SizedBox(height: 16),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Expanded(
+                  child: TextFormField(
+                    controller: _code,
+                    decoration: const InputDecoration(
+                      labelText: '邮箱验证码',
+                      prefixIcon: Icon(Icons.mark_email_read_outlined),
+                      border: OutlineInputBorder(),
+                      counterText: '',
+                    ),
+                    keyboardType: TextInputType.number,
+                    maxLength: 6,
+                    textInputAction: TextInputAction.next,
+                    validator: (String? v) {
+                      final String s = (v ?? '').trim();
+                      if (s.isEmpty) return '请输入邮箱收到的验证码';
+                      if (!RegExp(r'^\d{4,8}$').hasMatch(s)) return '验证码是纯数字';
+                      return null;
+                    },
+                  ),
+                ),
+                const SizedBox(width: 12),
+                // 固定宽度：倒计时把「获取验证码」换成「42s」时不会让整行跳动
+                SizedBox(
+                  width: 112,
+                  height: 56,
+                  child: OutlinedButton(
+                    onPressed: (_sendingCode || _cooldown > 0) ? null : _sendCode,
+                    child: _sendingCode
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Text(
+                            _cooldown > 0 ? '${_cooldown}s 后重发' : '获取验证码',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(fontSize: 13),
+                          ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
             TextFormField(
               controller: _password,
               obscureText: _obscure,

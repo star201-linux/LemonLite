@@ -30,8 +30,10 @@
 //
 // 保活的诚实边界（README 里也写了）：
 //   这是**进程内**保活。切到后台的会话不会被销毁、不会重新加载，
-//   并会显式调用 WebView 的 resumeTimers() 让 JS 定时器继续跑；
-//   但 Android 在内存紧张时仍可能回收整个进程，那不是框架能保证的。
+//   页面状态（DOM / 滚动位置 / 表单内容）都还在，但 JS 定时器会被
+//   显式挂起（pauseTimers），回到前台再恢复 —— 后台继续跑 setInterval
+//   会让前台掉帧并白白耗电。Android 在内存紧张时仍可能回收整个进程，
+//   那不是框架能保证的。
 //
 // 依赖方向：miniapp_host → miniapp_page（要用会话视图）。
 // miniapp_page 又会 import 本文件（菜单里的关闭/后台运行）。
@@ -163,6 +165,12 @@ class MiniappHost extends ChangeNotifier {
     session.lastActiveAt = DateTime.now();
     _foregroundId = appId;
     _syncToastTarget();
+    // 恢复这个会话的 JS 定时器（后台期间是被挂起的）
+    try {
+      await session.onResumeTimers?.call();
+    } catch (e) {
+      lemonLog('Host', 'resumeTimers 失败：$e');
+    }
     await session.applyWindowFlags();
     notifyListeners();
   }
@@ -194,12 +202,13 @@ class MiniappHost extends ChangeNotifier {
     session.isForeground = false;
     _foregroundId = null;
     _syncToastTarget();
-    // 让 WebView 的 JS 定时器继续跑：不可见的 WebView 会被 Chromium 降频，
-    // resumeTimers() 是 Android WebView 官方给的「我在后台但别停我」开关。
+    // 挂起 JS 定时器。后台的小程序只保留页面状态（DOM、滚动位置、
+    // 表单内容都在），但不该继续跑 setInterval —— 那会让前台掉帧、
+    // 也会让「后台运行」变成「后台耗电」。回前台时再 resumeTimers。
     try {
-      await session.onResumeTimers?.call();
+      await session.onPauseTimers?.call();
     } catch (e) {
-      lemonLog('Host', 'resumeTimers 失败：$e');
+      lemonLog('Host', 'pauseTimers 失败：$e');
     }
     await session.applyWindowFlags();
     lemonLog('Host', '$appId 转入后台');

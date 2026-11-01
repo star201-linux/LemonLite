@@ -37,6 +37,7 @@ import 'pages/home/home_page.dart';
 import 'pages/miniapp/miniapp_host.dart';
 import 'pages/permissions/permission_prompt.dart';
 import 'pages/settings/settings_page.dart';
+import 'theme/app_theme.dart';
 import 'theme/theme_controller.dart';
 
 class LemonLiteApp extends StatelessWidget {
@@ -260,7 +261,7 @@ class _AppShellState extends State<AppShell> {
     );
   }
 
-  Widget _tabs() => IndexedStack(
+  Widget _tabs() => _TabSwitcher(
     index: _tabIndex,
     children: const <Widget>[HomePage(), ApplicationsPage(), SettingsPage()],
   );
@@ -283,6 +284,76 @@ class _AppShellState extends State<AppShell> {
           label: '设置',
         ),
       ];
+}
+
+/// 三个 Tab 的容器：保留 IndexedStack 的「保活」语义，额外加一段**切换动效**。
+///
+/// 为什么不是 AnimatedSwitcher：它一旦换 key 就会重建子树，
+/// 主页的滚动位置、搜索词、设置页的开关状态全都会丢。
+/// 这里只在切换的瞬间对新页面做一次「淡入 + 上浮」，子树始终是同一个
+/// IndexedStack，状态一点都不会丢。
+///
+/// 淡入从 0.35 起步而不是 0：整屏从全透明开始的一帧在 OLED 上像闪了一下。
+class _TabSwitcher extends StatefulWidget {
+  const _TabSwitcher({required this.index, required this.children});
+
+  final int index;
+  final List<Widget> children;
+
+  @override
+  State<_TabSwitcher> createState() => _TabSwitcherState();
+}
+
+class _TabSwitcherState extends State<_TabSwitcher>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: M3EMotion.fast,
+    value: 1,
+  );
+
+  late final Animation<double> _curve = CurvedAnimation(
+    parent: _controller,
+    curve: Curves.easeOutCubic,
+  );
+
+  @override
+  void didUpdateWidget(covariant _TabSwitcher oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.index != widget.index) {
+      _controller.forward(from: 0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget stack = IndexedStack(
+      index: widget.index,
+      children: widget.children,
+    );
+    if (MediaQuery.maybeDisableAnimationsOf(context) ?? false) return stack;
+
+    return AnimatedBuilder(
+      animation: _curve,
+      child: stack,
+      builder: (BuildContext context, Widget? child) {
+        final double t = _curve.value;
+        return Opacity(
+          opacity: 0.35 + 0.65 * t,
+          child: Transform.translate(
+            offset: Offset(0, 6 * (1 - t)),
+            child: child,
+          ),
+        );
+      },
+    );
+  }
 }
 
 /// 平板/大屏用的侧边导航。

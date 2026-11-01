@@ -1,6 +1,6 @@
 // server/src/prune.js
 //
-// 运维脚本：清理过期很久的登录会话。
+// 运维脚本：清理过期很久的登录会话与邮箱验证码。
 //
 // 用法：
 //   npm run prune
@@ -14,6 +14,7 @@
 
 import { pool } from './db.js';
 import { pruneSessions } from './lib/auth.js';
+import { purgeExpiredCodes } from './lib/email_codes.js';
 import { readEnvFile } from './config.js';
 
 readEnvFile();
@@ -23,6 +24,13 @@ console.log(
   removed > 0
     ? `已清理 ${removed} 条过期会话`
     : '没有需要清理的会话',
+);
+
+// 验证码只留一天：它只是「一次注册的临时凭证」，留久了毫无价值，
+// 反倒会成为一份「谁在什么时候想注册」的名单。
+const codes = await purgeExpiredCodes();
+console.log(
+  codes > 0 ? `已清理 ${codes} 条过期验证码` : '没有需要清理的验证码',
 );
 
 await pool.end();

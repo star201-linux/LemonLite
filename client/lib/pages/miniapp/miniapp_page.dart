@@ -137,6 +137,7 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
     // 把会话需要的回调挂上去：返回键、后台保活、重载
     _session.onSystemBack = _handleBack;
     _session.onResumeTimers = _resumeTimers;
+    _session.onPauseTimers = _pauseTimers;
     _session.onReload = _reload;
 
     if (_session.localAsset != null) {
@@ -197,6 +198,7 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
     // 会话可能比视图活得久（后台运行），所以这里只解绑回调，不动会话本身
     if (_session.onSystemBack == _handleBack) _session.onSystemBack = null;
     if (_session.onResumeTimers == _resumeTimers) _session.onResumeTimers = null;
+    if (_session.onPauseTimers == _pauseTimers) _session.onPauseTimers = null;
     if (_session.onReload == _reload) _session.onReload = null;
     super.dispose();
   }
@@ -736,12 +738,25 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
     return false;
   }
 
-  /// 切到后台时让 JS 定时器继续跑（不可见的 WebView 会被 Chromium 降频）
+  /// 切回前台：恢复 JS 定时器
   Future<void> _resumeTimers() async {
     try {
       await _controller?.resumeTimers();
     } catch (e) {
       lemonLog('Miniapp', 'resumeTimers 失败：$e');
+    }
+  }
+
+  /// 转到后台：挂起 JS 定时器
+  ///
+  /// 注意 Android 的 pauseTimers/resumeTimers 是**进程级**的
+  ///（WebView 的静态方法），所以宿主只在「没有任何小程序在前台」时才调它，
+  /// 见 miniapp_host.dart 的 sendToBackground。
+  Future<void> _pauseTimers() async {
+    try {
+      await _controller?.pauseTimers();
+    } catch (e) {
+      lemonLog('Miniapp', 'pauseTimers 失败：$e');
     }
   }
 

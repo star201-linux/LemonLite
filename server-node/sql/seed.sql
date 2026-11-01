@@ -54,7 +54,6 @@ VALUES
     0,      -- package_bytes：同上
     'https://star201-linux.github.io/icons/lemonlite-demo.png',
     'https://star201-linux.github.io',
-    18432,
     JSON_ARRAY('https://star201-linux.github.io/screenshots/lemonlite-demo-preview.png'),
     JSON_ARRAY(),
     10
@@ -70,7 +69,6 @@ VALUES
     0,      -- package_bytes：同上
     'https://star201-linux.github.io/icons/todo.png',
     NULL,
-    12288,
     JSON_ARRAY('https://star201-linux.github.io/screenshots/todo-preview.png'),
     JSON_ARRAY(),
     8
@@ -86,7 +84,6 @@ VALUES
     0,      -- package_bytes：同上
     'https://star201-linux.github.io/icons/weather.png',
     NULL,
-    16384,
     JSON_ARRAY('https://star201-linux.github.io/screenshots/weather-preview.png'),
     JSON_ARRAY('geolocationCoarse'),
     6
@@ -102,7 +99,6 @@ VALUES
     0,      -- package_bytes：同上
     'https://star201-linux.github.io/icons/pomodoro.png',
     NULL,
-    14336,
     JSON_ARRAY('https://star201-linux.github.io/screenshots/pomodoro-preview.png'),
     JSON_ARRAY(),
     5
@@ -118,7 +114,6 @@ VALUES
     0,      -- package_bytes：同上
     'https://star201-linux.github.io/icons/markdown.png',
     NULL,
-    20480,
     JSON_ARRAY('https://star201-linux.github.io/screenshots/markdown-preview.png'),
     JSON_ARRAY('clipboard'),
     4
@@ -134,7 +129,6 @@ VALUES
     0,      -- package_bytes：同上
     'https://star201-linux.github.io/icons/qrcode.png',
     NULL,
-    26500,
     JSON_ARRAY('https://star201-linux.github.io/screenshots/qrcode-preview.png'),
     JSON_ARRAY('clipboard'),
     3
@@ -150,7 +144,6 @@ VALUES
     0,      -- package_bytes：同上
     'https://star201-linux.github.io/icons/palette.png',
     NULL,
-    17400,
     JSON_ARRAY('https://star201-linux.github.io/screenshots/palette-preview.png'),
     JSON_ARRAY('clipboard'),
     2
@@ -166,7 +159,6 @@ VALUES
     0,      -- package_bytes：同上
     'https://star201-linux.github.io/icons/2048.png',
     NULL,
-    22100,
     JSON_ARRAY('https://star201-linux.github.io/screenshots/2048-preview.png'),
     JSON_ARRAY(),
     1
@@ -177,10 +169,10 @@ ON DUPLICATE KEY UPDATE
   category_id  = VALUES(category_id),
   version      = VALUES(version),
   author       = VALUES(author),
-  url          = VALUES(url),
+  package_url  = VALUES(package_url),
   icon         = VALUES(icon),
   homepage     = VALUES(homepage),
-  size_bytes   = VALUES(size_bytes),
+  package_bytes = VALUES(package_bytes),
   screenshots  = VALUES(screenshots),
   permissions  = VALUES(permissions),
   sort_weight  = VALUES(sort_weight);

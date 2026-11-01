@@ -50,6 +50,14 @@ function envInt(key, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+// 注意：这里**必须**在构造 config 之前把 .env 读进 process.env。
+//
+// 之前是各入口脚本（server.js / init.js）自己调 readEnvFile()，但 ESM 的
+// import 是先于模块体执行的：`config` 对象在 import 阶段就已经按
+// process.env 的**默认值**算好了，入口脚本再读 .env 已经来不及。
+// 症状很隐蔽 —— 服务照常启动，但连的是 localhost/root，而不是 .env 里写的库。
+readEnvFile();
+
 export const config = {
   db: {
     host: env('DB_HOST', '127.0.0.1'),
@@ -79,6 +87,73 @@ export const config = {
     // 单个用户最多同时保留多少个有效会话（超出时踢掉最旧的）。
     // 0 表示不限制。设一个上限是为了防止「脚本无限登录」把表撑爆。
     maxSessionsPerUser: envInt('MAX_SESSIONS_PER_USER', 20),
+  },
+
+  // ---------------------------------------------------------------- 邮件
+  //
+  // 注册要发邮箱验证码，而「邮件从哪发出去」在不同部署环境差别很大：
+  // 自己的 VPS 上装 Postfix、用企业邮箱的 SMTP、还是直接调第三方 API。
+  // 所以通道做成可切换的（改 MAIL_DRIVER 即可，不用改代码）。
+  mail: {
+    // smtp | resend | sendgrid | aliyun | console
+    // console 只把邮件打到日志里 —— 仅用于本地开发/演示。
+    driver: env('MAIL_DRIVER', 'console').toLowerCase(),
+    // 发件地址（必须是通道那边验证过的域名/邮箱，否则会被拒）
+    from: env('MAIL_FROM', ''),
+    fromName: env('MAIL_FROM_NAME', 'LemonLite'),
+
+    // 验证码策略
+    codeLength: Math.min(8, Math.max(4, envInt('MAIL_CODE_LENGTH', 6))),
+    // 有效期（秒）。10 分钟是「够用户去看邮箱，又不至于留太久」的经验值。
+    codeTtl: envInt('MAIL_CODE_TTL', 10 * 60),
+    // 同一邮箱两次索要之间的最小间隔（秒）。防连点、防短信轰炸。
+    codeCooldown: envInt('MAIL_CODE_COOLDOWN', 60),
+    // 同一邮箱 / 同一 IP 每小时最多发多少封
+    codeMaxPerEmailHour: envInt('MAIL_CODE_MAX_PER_EMAIL', 10),
+    codeMaxPerIpHour: envInt('MAIL_CODE_MAX_PER_IP', 30),
+    // 单个验证码允许输错几次（超过就作废，必须重新获取）
+    codeMaxAttempts: envInt('MAIL_CODE_MAX_ATTEMPTS', 5),
+    // 开发期把验证码塞进接口响应，省得去翻日志。生产必须 false。
+    devEchoCode: env('MAIL_DEV_ECHO_CODE', 'false') === 'true',
+    // 第三方 API 的超时（毫秒）
+    httpTimeoutMs: envInt('MAIL_HTTP_TIMEOUT_MS', 10_000),
+
+    // ---- 自建 / 兼容 SMTP 的邮箱
+    smtp: {
+      host: env('SMTP_HOST', ''),
+      port: envInt('SMTP_PORT', 587),
+      // 隐式 TLS（465 端口用 true；587/25 用 false + STARTTLS）
+      secure: env('SMTP_SECURE', 'false') === 'true',
+      // 明文连上后升级 TLS。除非是同机 Postfix 走 127.0.0.1，否则别关。
+      starttls: env('SMTP_STARTTLS', 'true') === 'true',
+      user: env('SMTP_USER', ''),
+      password: env('SMTP_PASSWORD', ''),
+      // 自签证书的内网邮件服务器可以设 false；公网服务保持 true。
+      rejectUnauthorized: env('SMTP_REJECT_UNAUTHORIZED', 'true') === 'true',
+      timeoutMs: envInt('SMTP_TIMEOUT_MS', 15_000),
+    },
+
+    // ---- 第三方：Resend
+    resend: {
+      apiKey: env('RESEND_API_KEY', ''),
+      endpoint: env('RESEND_ENDPOINT', 'https://api.resend.com/emails'),
+    },
+
+    // ---- 第三方：SendGrid
+    sendgrid: {
+      apiKey: env('SENDGRID_API_KEY', ''),
+      endpoint: env('SENDGRID_ENDPOINT', 'https://api.sendgrid.com/v3/mail/send'),
+    },
+
+    // ---- 第三方：阿里云邮件推送 DirectMail
+    aliyun: {
+      accessKeyId: env('ALIYUN_DM_ACCESS_KEY_ID', ''),
+      accessKeySecret: env('ALIYUN_DM_ACCESS_KEY_SECRET', ''),
+      // 发信地址（在阿里云控制台配置的那个，如 no-reply@mail.example.com）
+      accountName: env('ALIYUN_DM_ACCOUNT_NAME', ''),
+      region: env('ALIYUN_DM_REGION', 'cn-hangzhou'),
+      endpoint: env('ALIYUN_DM_ENDPOINT', 'https://dm.aliyuncs.com'),
+    },
   },
 
   market: {
@@ -119,5 +194,11 @@ export function describeConfig() {
       `（头像上限 ${Math.round(config.userdata.maxAvatarBytes / 1024 / 1024)}MB）`,
   );
   lines.push(`小程序包 ${config.packages.dir}/<appId>/<version>.zip`);
+  // 邮件通道是「部署后最容易配漏」的一项，启动时就把它摊开说清楚
+  lines.push(
+    `邮件   ${config.mail.driver}` +
+      `（验证码 ${config.mail.codeLength} 位 / ${Math.round(config.mail.codeTtl / 60)} 分钟有效 / ` +
+      `${config.mail.codeCooldown}s 冷却）`,
+  );
   return lines.join('\n');
 }

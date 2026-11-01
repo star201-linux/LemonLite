@@ -1,6 +1,6 @@
 // server/src/routes/auth.js
 //
-// 账号系统：注册 / 登录 / 当前用户 / 改资料 / 改密码 / 会话管理。
+// 账号系统：邮箱验证码 / 注册 / 登录 / 当前用户 / 改资料 / 改密码 / 会话管理。
 //
 // 需求里的字段：id（自增）、用户名（可改）、头像（可改）、邮箱、密码、
 // 注册时间、注册 IP。登录数据单独一张表：token / 登录时间 / 设备 / 登录 IP。
@@ -13,6 +13,9 @@
 //   3. 改密码要先验证旧密码（防 token 被偷后直接改密码锁死账号），
 //      改完**撤销该用户的其它所有会话** —— 改密码的语义就是「把我踢下线」。
 //   4. 用户名/邮箱冲突回 409 而不是 500，客户端要能用 code 定位到具体输入框。
+//   5. **注册必须持有一个没过期的邮箱验证码**。没有这一步，任何人都能用
+//      别人的邮箱注册（邮箱地址不是秘密），之后「用邮箱找回密码」
+//      就变成了「谁都能接管这个账号」。验证码只在这里核销一次。
 
 import { Router } from 'express';
 import { execute, query, queryOne } from '../db.js';
@@ -30,6 +33,15 @@ import {
 } from '../lib/auth.js';
 import { config } from '../config.js';
 import { absoluteAvatarUrl, avatarVersion } from '../lib/userdata.js';
+import { MailError, mailStatus, sendMail } from '../lib/mailer.js';
+import { verificationMail } from '../lib/mail_templates.js';
+import {
+  PURPOSES,
+  consumeCode,
+  discardCode,
+  issueCode,
+  normalizeEmail,
+} from '../lib/email_codes.js';
 
 export const authRouter = Router();
 
@@ -137,6 +149,79 @@ function toUserDto(req, row) {
   };
 }
 
+// ================================================================ 邮箱验证码
+
+/**
+ * POST /api/auth/email-code
+ * body: { email, purpose?: 'register' }
+ *
+ * 给注册页发一封带验证码的邮件。邮件通道由服务端配置决定（自建 SMTP /
+ * Resend / SendGrid / 阿里云），客户端不需要也不应该知道用的是哪一种。
+ *
+ * 返回里**不含验证码**，唯一的例外是显式打开了 MAIL_DEV_ECHO_CODE 的
+ * 开发环境（`debugCode`）—— 那样不用登录邮箱也能把注册流程跑通。
+ *
+ * 这里有一个刻意的取舍：邮箱已注册时直接回 409 `email_taken`，
+ * 而不是「假装发送成功」。这会泄露「这个邮箱注册过」，
+ * 但注册接口本来就会告诉他们，遮着反而让用户对着一个永远收不到的信箱发呆。
+ */
+authRouter.post(
+  '/email-code',
+  wrap(async (req, res) => {
+    const email = validateEmail(req.body?.email);
+    const purpose = String(req.body?.purpose ?? 'register').trim().toLowerCase();
+    if (!PURPOSES.includes(purpose)) {
+      throw ApiError.badRequest('bad_request', '不支持的验证码用途');
+    }
+
+    const status = mailStatus();
+    if (!status.ready) {
+      // 部署方忘记配邮件时的报错必须足够具体，否则只能靠猜
+      throw ApiError.unavailable(`服务端邮件通道未配置：${status.reason}`);
+    }
+
+    const exists = await queryOne('SELECT id FROM users WHERE email = ? LIMIT 1', [email]);
+    if (exists) throw ApiError.conflict('email_taken', '这个邮箱已注册过');
+
+    // 限流都在 issueCode 里：冷却、邮箱小时配额、IP 小时配额
+    const { id, code } = await issueCode({
+      email: normalizeEmail(email),
+      purpose,
+      ip: clientIp(req),
+    });
+
+    const template = verificationMail({
+      code,
+      ttlSeconds: config.mail.codeTtl,
+      purpose,
+    });
+
+    try {
+      await sendMail({ to: email, ...template });
+    } catch (e) {
+      // 信没发出去就把码删掉：否则用户会在冷却期里等一封永远不来的邮件
+      await discardCode(id);
+      const reason = e instanceof MailError ? e.message : String(e);
+      console.error(`\x1b[31m[mail] 发送失败\x1b[0m ${email}：${reason}`);
+      throw ApiError.unavailable(
+        status.driver === 'smtp'
+          ? '验证码邮件发送失败，请稍后再试（服务端 SMTP 配置可能有问题）'
+          : '验证码邮件发送失败，请稍后再试',
+      );
+    }
+
+    sendOk(res, {
+      sent: true,
+      email,
+      // 客户端用它来跑倒计时，避免「客户端写死 60 秒、服务端却改了」
+      cooldown: config.mail.codeCooldown,
+      expiresIn: config.mail.codeTtl,
+      driver: status.driver,
+      ...(config.mail.devEchoCode ? { debugCode: code } : {}),
+    });
+  }),
+);
+
 // ================================================================ 注册
 
 /**
@@ -152,6 +237,10 @@ authRouter.post(
     const username = validateUsername(req.body?.username);
     const email = validateEmail(req.body?.email);
     const password = validatePassword(req.body?.password);
+    const code = String(req.body?.code ?? '').trim();
+    if (!/^\d{4,8}$/.test(code)) {
+      throw ApiError.badRequest('code_required', '请输入邮箱收到的验证码');
+    }
 
     // 先查冲突：给出**具体**哪个字段冲突，用户才知道改哪里。
     // 并发下仍可能两个请求同时通过这一步，所以插入时要靠唯一索引兜底
@@ -167,6 +256,10 @@ authRouter.post(
       [email],
     );
     if (byEmail) throw ApiError.conflict('email_taken', '这个邮箱已注册过');
+
+    // 核销验证码。放在最后一步（冲突都查完之后）：
+    // 用户名撞车时不该把用户的验证码白白烧掉 —— 他改个名字还能用同一个码。
+    await consumeCode({ email, purpose: 'register', code });
 
     const hash = await hashPassword(password);
     const ip = clientIp(req);

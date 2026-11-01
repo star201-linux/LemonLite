@@ -9,18 +9,35 @@
 import 'package:flutter/material.dart';
 
 class AppIcon extends StatelessWidget {
-  const AppIcon({super.key, required this.name, this.iconUrl, this.size = 56});
+  const AppIcon({
+    super.key,
+    required this.name,
+    this.iconUrl,
+    this.size = 56,
+    this.heroTag,
+  });
 
   final String name;
   final String? iconUrl;
   final double size;
 
+  /// 共享元素转场的标签（列表 → 详情）。null 表示不参与转场。
+  final String? heroTag;
+
   @override
   Widget build(BuildContext context) {
     final ColorScheme scheme = Theme.of(context).colorScheme;
     final String? url = iconUrl;
+    final String? tag = heroTag;
 
-    return ClipRRect(
+    // 图标在界面上只有几十 dp，但市场里的原图往往是 512/1024 的。
+    // 不限制解码尺寸的话，Image.network 会把原图整张解进内存：
+    // 一屏卡片就是几十 MB 的位图，滚动时 GC 与上传纹理的压力全在这里。
+    // cacheWidth/Height 让它在**解码阶段**就缩到显示尺寸（按设备像素比）。
+    final double dpr = MediaQuery.devicePixelRatioOf(context);
+    final int decodeSize = (size * dpr).clamp(1.0, 4096.0).round();
+
+    final Widget icon = ClipRRect(
       borderRadius: BorderRadius.circular(size * 0.28),
       child: SizedBox(
         width: size,
@@ -29,8 +46,6 @@ class AppIcon extends StatelessWidget {
             ? _fallback(scheme)
             : Image.network(
                 url,
-                semanticLabel: '$name 应用图标',
-                fit: BoxFit.cover,
                 // 图标加载失败不应该让卡片报错，直接退回占位图标
                 errorBuilder: (BuildContext c, Object e, StackTrace? s) =>
                     _fallback(scheme),
@@ -39,9 +54,16 @@ class AppIcon extends StatelessWidget {
                       if (progress == null) return child;
                       return _fallback(scheme, loading: true);
                     },
+                cacheWidth: decodeSize,
+                cacheHeight: decodeSize,
+                fit: BoxFit.cover,
+                gaplessPlayback: true,
               ),
       ),
     );
+
+    if (tag == null) return icon;
+    return Hero(tag: tag, child: icon);
   }
 
   Widget _fallback(ColorScheme scheme, {bool loading = false}) {
@@ -72,6 +94,7 @@ class AppIcon extends StatelessWidget {
   String get _initial {
     final String text = name.trim();
     if (text.isEmpty) return '?';
-    return text.substring(0, 1).toUpperCase();
+    // runes.first 而不是 substring(0,1)：后者会把 emoji 切成半个码元
+    return String.fromCharCode(text.runes.first).toUpperCase();
   }
 }

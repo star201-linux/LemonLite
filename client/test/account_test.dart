@@ -99,6 +99,40 @@ void main() {
     });
   });
 
+  // ========================================================== 验证码响应
+
+  group('EmailCodeSent 解析', () {
+    test('完整响应', () {
+      final EmailCodeSent r = EmailCodeSent.fromJson(<String, dynamic>{
+        'sent': true,
+        'email': 'a@b.com',
+        'cooldown': 45,
+        'expiresIn': 300,
+        'driver': 'smtp',
+      });
+      expect(r.email, 'a@b.com');
+      expect(r.cooldown, 45, reason: '冷却时间要跟服务端走，不能写死 60');
+      expect(r.expiresIn, 300);
+      expect(r.driver, 'smtp');
+      expect(r.debugCode, isNull);
+    });
+
+    test('缺字段时用默认值，不抛异常', () {
+      final EmailCodeSent r = EmailCodeSent.fromJson(<String, dynamic>{});
+      expect(r.cooldown, 60);
+      expect(r.expiresIn, 600);
+      expect(r.email, '');
+      expect(r.debugCode, isNull);
+    });
+
+    test('开发模式带回的 debugCode 会被解析出来', () {
+      final EmailCodeSent r = EmailCodeSent.fromJson(<String, dynamic>{
+        'debugCode': '123456',
+      });
+      expect(r.debugCode, '123456');
+    });
+  });
+
   // ========================================================== 错误映射
 
   group('AccountException 的字段归类', () {
@@ -147,14 +181,40 @@ void main() {
       );
     });
 
+    test('验证码错误', () {
+      for (final String code in <String>[
+        'invalid_code',
+        'code_expired',
+        'code_missing',
+        'code_required',
+        'code_locked',
+      ]) {
+        expect(
+          AccountException(code, 'x').isCodeError,
+          isTrue,
+          reason: '$code 应归为验证码错误',
+        );
+      }
+      expect(const AccountException('email_taken', 'x').isCodeError, isFalse);
+    });
+
     test('一个错误不会同时归到两个字段', () {
-      const AccountException e = AccountException('username_taken', 'x');
-      expect(
-        <bool>[e.isUsernameError, e.isEmailError, e.isPasswordError]
-            .where((bool v) => v)
-            .length,
-        1,
-      );
+      for (final AccountException e in <AccountException>[
+        const AccountException('username_taken', 'x'),
+        const AccountException('email_taken', 'x'),
+        const AccountException('invalid_code', 'x'),
+      ]) {
+        expect(
+          <bool>[
+            e.isUsernameError,
+            e.isEmailError,
+            e.isPasswordError,
+            e.isCodeError,
+          ].where((bool v) => v).length,
+          1,
+          reason: '${e.code} 被归到了多个输入框',
+        );
+      }
     });
   });
 

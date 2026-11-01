@@ -1,6 +1,6 @@
 // lib/data/services/account_service.dart
 //
-// 账号状态中心：登录 / 注册 / 资料 / 会话 / 头像。
+// 账号状态中心：验证码 / 登录 / 注册 / 资料 / 会话 / 头像。
 //
 // **未登录是合法状态**：市场浏览、小程序运行、权限管理、存储管理全都不需要登录。
 // 所以这里没有「未登录就跳登录页」的逻辑，只有 `isLoggedIn` 这一个查询位，
@@ -86,6 +86,47 @@ class AccountProfile {
   );
 }
 
+/// 一次「发送验证码」的结果。
+///
+/// 冷却时间由**服务端**给，客户端不写死 60 秒：
+/// 两边各写一份的话，只要有一边改动，用户就会遇到「倒计时走完了，
+/// 点一下却提示 60 秒后再试」这种说不清的体验。
+@immutable
+class EmailCodeSent {
+  const EmailCodeSent({
+    required this.email,
+    this.cooldown = 60,
+    this.expiresIn = 600,
+    this.driver = '',
+    this.debugCode,
+  });
+
+  final String email;
+
+  /// 多少秒之后才允许重发
+  final int cooldown;
+
+  /// 验证码有效期（秒）
+  final int expiresIn;
+
+  /// 服务端用的邮件通道（smtp / resend / ...），只用于排查问题
+  final String driver;
+
+  /// 仅当服务端开了 MAIL_DEV_ECHO_CODE 才有值：直接把码填进输入框，
+  /// 省得开发时每次都要去翻日志
+  final String? debugCode;
+
+  factory EmailCodeSent.fromJson(Map<String, dynamic> json) => EmailCodeSent(
+    email: (json['email'] ?? '').toString(),
+    cooldown: (json['cooldown'] as num?)?.toInt() ?? 60,
+    expiresIn: (json['expiresIn'] as num?)?.toInt() ?? 600,
+    driver: (json['driver'] ?? '').toString(),
+    debugCode: (json['debugCode'] ?? '').toString().isEmpty
+        ? null
+        : json['debugCode'].toString(),
+  );
+}
+
 /// 一次登录会话（「我的登录设备」里的一行）
 @immutable
 class AccountSession {
@@ -130,6 +171,14 @@ class AccountException implements Exception {
   /// 提示在「邮箱」输入框旁边
   bool get isEmailError => code == 'email_taken' || code == 'invalid_email';
 
+  /// 提示在「验证码」输入框旁边
+  bool get isCodeError =>
+      code == 'invalid_code' ||
+      code == 'code_expired' ||
+      code == 'code_missing' ||
+      code == 'code_required' ||
+      code == 'code_locked';
+
   /// 提示在「密码」输入框旁边
   bool get isPasswordError =>
       code == 'weak_password' ||
@@ -140,6 +189,11 @@ class AccountException implements Exception {
   @override
   String toString() => 'AccountException($code): $message';
 }
+
+/// 邮箱格式判定的单一来源：注册页、发验证码、登录页都用它。
+///
+/// 与服务端 validateEmail 保持一致（宽松但够用：有本地部分、有 @、域名有点）。
+final RegExp _emailPattern = RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$');
 
 class AccountService extends ChangeNotifier {
   AccountService._();
@@ -312,10 +366,13 @@ class AccountService extends ChangeNotifier {
   }
 
   /// 注册。成功后直接是登录态（服务端会一并返回 token）。
+  ///
+  /// [code] 是邮箱收到的验证码，服务端会核销它 —— 没有它注册接口直接拒绝。
   Future<void> register({
     required String username,
     required String email,
     required String password,
+    required String code,
     String? device,
   }) async {
     await _guard(() async {
@@ -326,12 +383,31 @@ class AccountService extends ChangeNotifier {
           'username': username.trim(),
           'email': email.trim(),
           'password': password,
+          'code': code.trim(),
           if (device != null && device.isNotEmpty) 'device': device,
         },
         auth: false,
       );
       await _applyAuth(data);
     });
+  }
+
+  /// 让服务端给这个邮箱发一封验证码邮件。
+  ///
+  /// 发信是慢操作（SMTP 握手 + 投递可能几秒），所以不套 `_guard`：
+  /// 它不该把整个账号页的 busy 状态点亮，注册页自己管理按钮状态即可。
+  Future<EmailCodeSent> sendEmailCode({required String email}) async {
+    final String target = email.trim();
+    if (!_emailPattern.hasMatch(target)) {
+      throw const AccountException('invalid_email', '邮箱格式不正确');
+    }
+    final Map<String, dynamic> data = await _request(
+      'POST',
+      '/api/auth/email-code',
+      body: <String, dynamic>{'email': target, 'purpose': 'register'},
+      auth: false,
+    );
+    return EmailCodeSent.fromJson(data);
   }
 
   /// 退出登录（只撤销当前会话）

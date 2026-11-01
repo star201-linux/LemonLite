@@ -9,7 +9,7 @@
 -- 0.4 起账号相关的表**只有两张**：
 --   users          —— 用户信息（含注册时间、注册 IP）
 --   login_sessions —— 登录数据（token、登录时间、设备、登录 IP）
--- 市场数据另有三张（categories / apps / tags + app_tags）。
+-- 邮箱验证码一张（email_codes），市场数据另有三张（categories / apps / tags + app_tags）。
 --
 -- 为什么登录状态要落库而不是纯 JWT：
 --   纯 JWT 是「自证」的 —— 签出去就没法收回。用户点了「退出所有设备」、
@@ -109,6 +109,38 @@ CREATE TABLE IF NOT EXISTS login_sessions (
     REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
+-- ============================================================ 3. 邮箱验证码
+
+-- 注册要过邮箱验证码，这张表就是「谁在什么时候跟我要过验证码」。
+--
+-- 几个刻意的设计：
+--   * 存 **SHA-256(email|purpose|code)** 而不是验证码明文。
+--     库里有一列 6 位数字会比想象中危险：泄露一次就能拿去撞所有还没用掉的码。
+--     加 email/purpose 进哈希是为了让「同一个码发给不同人」不会撞出同一行哈希。
+--   * 不物理删行，靠 consumed / expires_at 标记，顺带留下审计线索；
+--     `npm run prune` 会清掉过期一天以上的记录。
+--   * 带 ip 列：同一台机器刷验证码是常见的滥用手法，没有它就没法限流。
+CREATE TABLE IF NOT EXISTS email_codes (
+  id         BIGINT UNSIGNED  NOT NULL AUTO_INCREMENT,
+  email      VARCHAR(255)     NOT NULL,
+  -- 用途：register / reset（后者留给「邮箱重置密码」，表结构先留好）
+  purpose    VARCHAR(16)      NOT NULL DEFAULT 'register',
+  code_hash  CHAR(64)         NOT NULL,
+  ip         VARCHAR(45)      NOT NULL DEFAULT '',
+  -- 已输错的次数：超过上限就作废，必须重新获取
+  attempts   TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  consumed   TINYINT(1)       NOT NULL DEFAULT 0,
+  created_at DATETIME(3)      NOT NULL,
+  expires_at DATETIME(3)      NOT NULL,
+  PRIMARY KEY (id),
+  -- 「取这个邮箱最近一条验证码」：验证与冷却检查都走它
+  KEY idx_codes_email (email, purpose, created_at),
+  -- 按 IP 限流
+  KEY idx_codes_ip (ip, created_at),
+  -- 过期清理
+  KEY idx_codes_expiry (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
 -- ============================================================ 3. 应用市场
 
 -- 分类（主页/搜索的筛选项）
@@ -173,7 +205,10 @@ CREATE TABLE IF NOT EXISTS apps (
   -- 这个复合索引让「按权重+时间分页」走索引而不是 filesort
   KEY idx_apps_feed (deleted_at, sort_weight, updated_at, id),
   KEY idx_apps_category (category_id),
-  KEY idx_apps_package (package_url),
+  -- 包地址只取前 255 字符建索引：utf8mb4 下 VARCHAR(1024) 全长索引
+  -- 是 4096 字节，超过 InnoDB 的 3072 字节上限，建表会直接失败。
+  -- 前缀索引对「按包地址查」这种场景完全够用。
+  KEY idx_apps_package (package_url(255)),
   CONSTRAINT fk_apps_category FOREIGN KEY (category_id)
     REFERENCES categories (id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

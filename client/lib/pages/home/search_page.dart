@@ -19,6 +19,7 @@ import 'package:provider/provider.dart';
 import '../../data/models/app_item.dart';
 import '../../data/models/market_feed.dart';
 import '../../data/repositories/market_repository.dart';
+import '../../theme/motion.dart';
 import '../detail/app_detail_page.dart';
 import 'widgets/app_card.dart';
 import 'widgets/state_views.dart';
@@ -322,12 +323,16 @@ class _SearchPageState extends State<SearchPage> {
           final AppItem app = page.apps[i];
           return Padding(
             padding: EdgeInsets.fromLTRB(16, i == 0 ? 8 : 0, 16, 8),
-            child: AppCard(
-              app: app,
-              onTap: () {
-                HapticFeedback.selectionClick();
-                Navigator.of(ctx).push(AppDetailPage.route(app));
-              },
+            // 搜索结果同样是错峰淡入：一屏结果一次全刷出来会显得很「跳」
+            child: StaggeredEntrance(
+              index: i % 8,
+              child: AppCard(
+                app: app,
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  Navigator.of(ctx).push(AppDetailPage.route(app));
+                },
+              ),
             ),
           );
         },

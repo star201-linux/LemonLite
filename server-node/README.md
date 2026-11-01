@@ -49,12 +49,20 @@ npm run init -- --reset   # ⚠ 删库重建（要输入 DELETE 确认）
 
 ## 数据模型
 
-**账号只有两张表**（按需求）：
+**账号只有三张表**（按需求）：
 
 | 表 | 存什么 |
 | --- | --- |
 | `users` | id（自增）、用户名、邮箱、密码哈希、头像版本戳、状态、**注册时间**、**注册 IP** |
 | `login_sessions` | token 哈希（主键）、用户 id、**登录时间**、最近活跃、过期时间、**登录 IP**、**设备**、是否已撤销 |
+| `email_codes` | 邮箱、用途、**验证码的 SHA-256**（不存明文）、来源 IP、已试错次数、是否已用、签发/过期时间 |
+
+**从旧版本升级**：重跑一次 `npm run init` 就会建出 `email_codes`
+（`CREATE TABLE IF NOT EXISTS`，不会动已有数据）。不建表的话注册接口会 500。
+
+`email_codes` 是注册要邮箱验证带来的：没有它就等于「谁都能拿别人的邮箱注册」。
+散列而不是明文存的原因很实际 —— 6 位纯数字一旦明文泄露，可以直接拿去撞
+所有还没用掉的验证码。
 
 市场三张：`categories` / `apps` / `tags` + `app_tags`（多对多）。
 
@@ -114,7 +122,8 @@ userdata/<id>/avatar.png    头像（固定文件名，覆盖式更新）
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/auth/register` | 注册（返回 token） |
+| POST | `/api/auth/email-code` | 发注册验证码（body: `{email}`） |
+| POST | `/api/auth/register` | 注册（**必须带 `code`**，返回 token） |
 | POST | `/api/auth/login` | 登录，account 可以是用户名或邮箱 |
 | GET | `/api/auth/me` | 当前用户 |
 | PATCH | `/api/auth/me` | 改用户名 / 邮箱 |
@@ -124,6 +133,37 @@ userdata/<id>/avatar.png    头像（固定文件名，覆盖式更新）
 | POST | `/api/auth/logout` | 退出当前 |
 | POST | `/api/auth/logout-all` | 退出所有 |
 | GET | `/api/auth/check?username=` | 用户名可用性 |
+
+### 邮件通道（注册验证码）
+
+注册流程是：`POST /api/auth/email-code` 让服务端发一封带 6 位码的邮件 →
+用户把码填进注册页 → `POST /api/auth/register` 带上 `code`，服务端核销。
+
+邮件从哪发出去**由配置决定，不需要改代码**，改完重启即可：
+
+| `MAIL_DRIVER` | 适用场景 | 必填 |
+| --- | --- | --- |
+| `smtp` | 自建 Postfix、企业邮箱、QQ/163 授权码 | `SMTP_HOST` `SMTP_PORT` `SMTP_USER` `SMTP_PASSWORD` `MAIL_FROM` |
+| `resend` | 海外、最省事（免费额度够小站） | `RESEND_API_KEY` `MAIL_FROM` |
+| `sendgrid` | 已经在用 Twilio 的 | `SENDGRID_API_KEY` `MAIL_FROM` |
+| `aliyun` | 国内送达率最好 | `ALIYUN_DM_*`（AK/SK + 控制台配好的发信地址） |
+| `console` | **仅开发**：不发信，把码打到服务端日志 | — |
+
+启动日志会明确打印当前通道与「就绪 / 未就绪」，没配好时注册接口会回 503
+并说明缺哪一项，而不是静默失败。
+
+防滥用（都可配）：
+
+| 变量 | 默认 | 作用 |
+| --- | --- | --- |
+| `MAIL_CODE_TTL` | 600 | 验证码有效期（秒） |
+| `MAIL_CODE_COOLDOWN` | 60 | 同一邮箱两次索要的最小间隔 |
+| `MAIL_CODE_MAX_PER_EMAIL` | 10 | 单邮箱每小时上限 |
+| `MAIL_CODE_MAX_PER_IP` | 30 | 单 IP 每小时上限 |
+| `MAIL_CODE_MAX_ATTEMPTS` | 5 | 同一个码允许输错几次 |
+
+细的配置步骤（含 QQ 邮箱授权码、阿里云发信地址怎么开）见
+[`../docs/邮件通道配置.md`](../docs/邮件通道配置.md)。
 
 ### 头像与用户数据
 
@@ -153,7 +193,7 @@ userdata/<id>/avatar.png    头像（固定文件名，覆盖式更新）
 ## 运维
 
 ```bash
-npm run prune    # 清理过期 30 天以上的会话行
+npm run prune    # 清理过期 30 天以上的会话行 + 过期 1 天以上的验证码
 ```
 
 建议 crontab：
@@ -172,3 +212,6 @@ npm run prune    # 清理过期 30 天以上的会话行
 - [ ] `CORS_ORIGIN` 收紧到你的域名，不要留 `*`
 - [ ] `TRUST_PROXY=true` 如果放在 Nginx 后面（否则日志里全是代理 IP）
 - [ ] `userdata/` 目录权限只给运行服务的用户
+- [ ] `MAIL_DEV_ECHO_CODE=false`（**开着等于验证码直接送给请求方**）
+- [ ] `MAIL_DRIVER` 不是 `console`（那样谁都能注册，因为码只在服务端日志里）
+- [ ] SMTP 用 587/465 这类加密端口，别在公网上跑明文 25

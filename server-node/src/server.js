@@ -13,6 +13,7 @@ import { marketRouter } from './routes/market.js';
 import { authRouter } from './routes/auth.js';
 import { uploadRouter, userDataRouter } from './routes/upload.js';
 import { packageRouter } from './routes/packages.js';
+import { describeMail, mailStatus } from './lib/mailer.js';
 
 readEnvFile();
 
@@ -101,7 +102,8 @@ app.get('/', (_req, res) => {
       '  GET  /api/market/search?q=&tag=&limit=20&offset=0',
       '  GET  /api/market/app/:id',
       '  GET  /api/market/tags',
-      '  POST /api/auth/register',
+      '  POST /api/auth/email-code    （发注册验证码）',
+      '  POST /api/auth/register      （需要 code）',
       '  POST /api/auth/login',
       '  GET  /api/auth/me',
       '  PATCH /api/auth/me',
@@ -145,6 +147,15 @@ async function start() {
     console.log('\x1b[32mLemonLite 服务端已启动\x1b[0m');
     console.log('');
     console.log(describeConfig());
+    console.log('');
+    // 邮件通道单独一行：注册流程能不能跑通全看它
+    const mail = mailStatus();
+    console.log(
+      `${mail.ready ? '\x1b[32m✓\x1b[0m' : '\x1b[33m!\x1b[0m'} 邮件 ${describeMail()}`,
+    );
+    if (!mail.ready) {
+      console.log('  客户端注册会失败：先在 .env 里配好 MAIL_DRIVER 与对应凭据');
+    }
     console.log('');
     console.log(`  本机   http://127.0.0.1:${config.http.port}`);
     console.log(`  局域网 http://<本机IP>:${config.http.port}`);

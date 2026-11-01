@@ -75,7 +75,13 @@ class _AppDetailPageState extends State<AppDetailPage> {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
-              AppIcon(name: app.name, iconUrl: app.icon, size: 76),
+              // 与列表卡片同一个 Hero tag：点进来时图标从这里落位
+              AppIcon(
+                name: app.name,
+                iconUrl: app.icon,
+                size: 76,
+                heroTag: 'app-icon:${app.id}',
+              ),
               const SizedBox(width: 16),
               Expanded(
                 child: Column(
@@ -184,6 +190,11 @@ class _AppDetailPageState extends State<AppDetailPage> {
                   child: Image.network(
                     app.screenshots[i],
                     width: 150,
+                    // 截图按实际显示宽度解码：横向列表里滑过去十几张，
+                    // 不限制的话每张都按原图（可能是 1080p）进内存
+                    cacheWidth: (150 * MediaQuery.devicePixelRatioOf(context))
+                        .clamp(1.0, 4096.0)
+                        .round(),
                     semanticLabel: '${app.name} 应用介绍图 ${i + 1}',
                     fit: BoxFit.cover,
                     // 截图挂了不能影响整页
