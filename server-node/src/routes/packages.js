@@ -21,6 +21,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import { config } from '../config.js';
+import { isZipBuffer, packagePath, packagesRoot } from '../lib/package_store.js';
 import { execute, queryOne } from '../db.js';
 import { ApiError, sendOk, wrap } from '../lib/http.js';
 import { currentUserId, requireAuth } from '../lib/auth.js';
@@ -40,34 +41,6 @@ const upload = multer({
     return cb(null, true);
   },
 });
-
-/** packages/ 根目录 */
-function packagesRoot() {
-  return resolve(config.root, 'packages');
-}
-
-/**
- * 某个包的落盘路径。
- *
- * **越界校验在这里**：appId 与 version 都来自请求参数/数据库，
- * 但它们会被拼进文件路径 —— 一个 `../` 就能写到目录外。
- * 除了字符白名单，最后还要确认解析后的绝对路径仍在 packages/ 下。
- */
-function packagePath(appId, version) {
-  if (!/^[\w.-]{1,64}$/.test(appId)) {
-    throw ApiError.badRequest('bad_app_id', 'appId 只能包含字母、数字、下划线、点和连字符');
-  }
-  if (!/^[\w.+-]{1,32}$/.test(version)) {
-    throw ApiError.badRequest('bad_version', '版本号只能包含字母、数字、点、加号和连字符');
-  }
-  const root = packagesRoot();
-  const dir = join(root, appId);
-  const file = join(dir, `${version}.zip`);
-  if (!file.startsWith(root + sep)) {
-    throw ApiError.badRequest('bad_path', '路径不合法');
-  }
-  return { dir, file };
-}
 
 // ================================================================ 上传
 
@@ -109,15 +82,9 @@ packageRouter.post(
     );
     if (!app) throw ApiError.notFound('没有这个应用，请先在 apps 表里建条目');
 
-    // zip 魔数：PK\x03\x04（空包是 PK\x05\x06）
+    // zip 魔数校验（与 /admin 上传共用同一份实现）
     const buf = req.file.buffer;
-    const isZip =
-      buf.length >= 4 &&
-      buf[0] === 0x50 &&
-      buf[1] === 0x4b &&
-      (buf[2] === 0x03 || buf[2] === 0x05) &&
-      (buf[3] === 0x04 || buf[3] === 0x06);
-    if (!isZip) {
+    if (!isZipBuffer(buf)) {
       throw ApiError.badRequest('bad_package', '这个文件不是有效的 zip');
     }
 
@@ -147,8 +114,10 @@ packageRouter.post(
       entry,
       sha256,
       bytes: buf.length,
-      // 客户端用它下载（绝对地址，带 origin）
-      packageUrl: `${req.protocol}://${req.get('host')}/${relUrl}`,
+      // 客户端用它下载：与本服务其它地方一致，走下载接口而不是假想的静态路径
+      packageUrl:
+        `${req.protocol}://${req.get('host')}/api/market/` +
+        `${encodeURIComponent(appId)}/package?version=${encodeURIComponent(version)}`,
       previousVersion: app.version,
     });
   }),

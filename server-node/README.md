@@ -215,13 +215,16 @@ http://<本机IP>:<端口>/admin
 在 `.env` 里设 `ADMIN_PASSWORD` 才会启用（**留空 = 关闭**，访问只会显示一句提示）。
 一个谁都能打开的后台比没有后台更危险 —— 它能改发信通道，等于接管所有验证码。
 
-| 能做 | 说明 |
+| 页面 | 能做什么 |
 | --- | --- |
-| 看概况 | 用户数 / 应用数 / 活跃会话 / 24h 验证码数 |
-| 改邮件通道 | smtp / resend / sendgrid / aliyun / console 五个通道的字段都在页面上 |
-| 发测试信 | 填个收件地址当场发一封，不用去注册流程里试 |
-| 改策略 | 注册/登录要不要验证码、验证码有效期与限流、token 有效期 |
-| 看用户 | 最近 50 个注册用户（只读） |
+| 概览 | 用户数 / 应用数 / 活跃会话 / 24h 验证码数、当前策略、运行时长 |
+| 应用 | 列表（含已下架）、新建、编辑、上架/下架、软删除；**上传 zip 包**（自动算 sha256 与大小、原子写库）、查看本机已有版本 |
+| 用户 | 搜索、封禁/解封（封禁会立刻踢掉该用户所有登录）、重置密码（同样踢下线）、单独踢下线 |
+| 邮件 | smtp / resend / sendgrid / aliyun / console 五个通道、测试发信、验证码限流、token 有效期、注册/登录验证码开关 |
+
+应用编辑里能改的字段就是 `apps` 表的那一套：名称、简介、分类、版本、作者、
+入口文件、图标、主页、截图、声明权限、标签、排序权重。标签只能选**已有**的
+（面板不会顺手建标签 —— 那会把「标签」变成一堆拼写变体）。
 
 实现上的几个要点：
 
@@ -242,7 +245,18 @@ http://<本机IP>:<端口>/admin
 | GET | `/admin/api/mail` | 邮件配置（密钥类只报「已设置」） |
 | PUT | `/admin/api/mail` | 保存并立即生效，同时写回 `.env` |
 | POST | `/admin/api/mail/test` | `{to}` 发一封测试信 |
-| GET | `/admin/api/users` | 最近 50 个用户 |
+| GET | `/admin/api/apps?q=` | 应用列表（含已下架、分类名、标签名） |
+| POST | `/admin/api/apps` | 新建应用 |
+| PUT | `/admin/api/apps/:id` | 编辑应用；只传 `{deleted}` 时就是上架/下架 |
+| DELETE | `/admin/api/apps/:id` | 软删除（可恢复） |
+| POST | `/admin/api/apps/:id/package` | multipart 上传 zip（`file` / `version` / `entry`） |
+| GET | `/admin/api/apps/:id/packages` | 本机已有的版本包 |
+| DELETE | `/admin/api/apps/:id/package/:version` | 删某个版本包 |
+| GET | `/admin/api/categories` | 分类与标签（编辑器的下拉/多选） |
+| GET | `/admin/api/users?q=` | 用户列表（可搜索） |
+| POST | `/admin/api/users/:id/status` | `{status: active\|disabled}` 封禁/解封 |
+| POST | `/admin/api/users/:id/password` | 重置密码 |
+| POST | `/admin/api/users/:id/logout` | 踢掉该用户所有会话 |
 
 ## 运维
 
