@@ -170,12 +170,17 @@ export const config = {
 
   // ---------------------------------------------------------------- 管理面板
   //
-  // 一个纯服务端渲染的小后台：看运行概况、改邮件通道、发测试信。
-  // 没有密码就**不启用** —— 未授权可访问的管理面板比没有面板更危险。
+  // 账号不来自 .env，而是数据库里的 admin_users：
+  // 第一次访问时页面会让人自己建第一个管理员（admin 组），之后只能由
+  // 已有管理员加人。.env 里只剩两样「机器该管的东西」：
+  //
+  //   ADMIN_SECRET       给登录 cookie 签名。首次启动自动生成并写回 .env。
+  //                      换掉它 = 所有管理员立刻掉线（相当于全局踢人）。
+  //   ADMIN_SETUP_TOKEN  可选。设了之后，建第一个账号时必须填这个口令，
+  //                      防止「部署完还没建号」那几分钟被别人抢注。
   admin: {
-    enabled: env('ADMIN_PASSWORD', '') !== '',
-    // 登录口令。空 = 面板关闭（/admin 会显示一行提示，告诉你怎么开）。
-    password: env('ADMIN_PASSWORD', ''),
+    secret: env('ADMIN_SECRET', ''),
+    setupToken: env('ADMIN_SETUP_TOKEN', ''),
     // 登录态有效期（毫秒）。7 天足够，太久反而给了别人长时间窗口。
     sessionTtlMs: envInt('ADMIN_SESSION_HOURS', 24 * 7) * 3600 * 1000,
   },

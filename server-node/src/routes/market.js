@@ -46,6 +46,22 @@ function jsonArray(value) {
 }
 
 /**
+ * 把 GROUP_CONCAT 出来的 `id\u0001name\u0002id\u0001name` 还原成
+ * `[{id, name}]`。用两个不可见控制字符做分隔，应用名里不会出现它们。
+ */
+function parseCategoryPairs(value) {
+  if (!value) return [];
+  return String(value)
+    .split('\u0002')
+    .filter(Boolean)
+    .map((pair) => {
+      const [id, ...rest] = pair.split('\u0001');
+      return { id, name: rest.join('\u0001') };
+    })
+    .filter((item) => item.id);
+}
+
+/**
  * 数据库行 → 客户端 AppItem 的字段名。
  *
  * 为什么要在服务端做这个映射而不是直接返回列名：
@@ -69,12 +85,22 @@ function toAppDto(row, origin = '') {
         `?version=${encodeURIComponent(row.version)}`
     : '';
 
+  // 多分类：category 仍是「主分类」（客户端详情页只认一个字段），
+  // categories 是完整的归类列表。没有主分类时用列表第一个兜底 ——
+  // 删掉主分类时外键会把它置空，这时列表里还有别的分类。
+  const categories = parseCategoryPairs(row.category_pairs);
+  const primaryCategoryId = row.category_id || categories[0]?.id || '';
+
   return {
     id: row.id,
     name: row.name,
     description: row.description,
-    category: row.category_id ?? '',
-    categoryName: row.category_name ?? '',
+    category: primaryCategoryId,
+    categoryName:
+      row.category_name ||
+      categories.find((c) => c.id === primaryCategoryId)?.name ||
+      '',
+    categories,
     // version 是**包的版本**：客户端拿它跟本地已装的版本比，决定要不要升级
     version: row.version,
     author: row.author,
@@ -163,8 +189,14 @@ marketRouter.get(
     const params = [];
 
     if (category && category !== 'all') {
-      where.push('a.category_id = ?');
-      params.push(category);
+      // 多分类：主分类命中，或者关联表里任意一个分类命中，都算这个应用
+      where.push(
+        `(a.category_id = ? OR EXISTS (
+            SELECT 1 FROM app_categories ac
+             WHERE ac.app_id = a.id AND ac.category_id = ?
+         ))`,
+      );
+      params.push(category, category);
     }
 
     if (cursor) {
@@ -190,7 +222,11 @@ marketRouter.get(
     // 多取一条用来判断 hasMore，少一次 COUNT 查询
     const rows = await query(
       `SELECT a.*, c.name AS category_name,
-              GROUP_CONCAT(DISTINCT t.name ORDER BY t.name SEPARATOR '\u0001') AS tag_names
+              GROUP_CONCAT(DISTINCT t.name ORDER BY t.name SEPARATOR '\u0001') AS tag_names,
+              (SELECT GROUP_CONCAT(CONCAT(c2.id, '\u0001', c2.name)
+                                   ORDER BY c2.sort_order, c2.id SEPARATOR '\u0002')
+                 FROM app_categories ac JOIN categories c2 ON c2.id = ac.category_id
+                WHERE ac.app_id = a.id) AS category_pairs
          FROM apps a
          LEFT JOIN categories c ON c.id = a.category_id
          LEFT JOIN app_tags at ON at.app_id = a.id
@@ -209,12 +245,16 @@ marketRouter.get(
     // 分类列表只在第一页返回（下拉刷新时不需要重复传，省流量）
     let categories = [];
     if (!cursor) {
+      // 计数同时看主分类与关联表：只 join 其中一个，多分类的计数就会偏小
       categories = await query(
-        `SELECT c.id, c.name, COUNT(a.id) AS app_count
+        `SELECT c.id, c.name,
+                (SELECT COUNT(*) FROM apps a
+                  WHERE a.deleted_at IS NULL
+                    AND (a.category_id = c.id
+                         OR EXISTS (SELECT 1 FROM app_categories ac
+                                     WHERE ac.app_id = a.id AND ac.category_id = c.id)))
+                  AS app_count
            FROM categories c
-           LEFT JOIN apps a
-             ON a.category_id = c.id AND a.deleted_at IS NULL
-          GROUP BY c.id, c.name
           ORDER BY c.sort_order ASC, c.id ASC`,
       );
     }
@@ -300,8 +340,14 @@ marketRouter.get(
     }
 
     if (category && category !== 'all') {
-      where.push('a.category_id = ?');
-      params.push(category);
+      // 多分类：主分类命中，或者关联表里任意一个分类命中，都算这个应用
+      where.push(
+        `(a.category_id = ? OR EXISTS (
+            SELECT 1 FROM app_categories ac
+             WHERE ac.app_id = a.id AND ac.category_id = ?
+         ))`,
+      );
+      params.push(category, category);
     }
 
     const whereSql = where.join(' AND ');
@@ -319,7 +365,11 @@ marketRouter.get(
 
     const rows = await query(
       `SELECT a.*, c.name AS category_name,
-              GROUP_CONCAT(DISTINCT t.name ORDER BY t.name SEPARATOR '\u0001') AS tag_names
+              GROUP_CONCAT(DISTINCT t.name ORDER BY t.name SEPARATOR '\u0001') AS tag_names,
+              (SELECT GROUP_CONCAT(CONCAT(c2.id, '\u0001', c2.name)
+                                   ORDER BY c2.sort_order, c2.id SEPARATOR '\u0002')
+                 FROM app_categories ac JOIN categories c2 ON c2.id = ac.category_id
+                WHERE ac.app_id = a.id) AS category_pairs
          FROM apps a
          LEFT JOIN categories c ON c.id = a.category_id
          LEFT JOIN app_tags at ON at.app_id = a.id
@@ -378,7 +428,11 @@ marketRouter.get(
 
     const rows = await query(
       `SELECT a.*, c.name AS category_name,
-              GROUP_CONCAT(DISTINCT t.name ORDER BY t.name SEPARATOR '\u0001') AS tag_names
+              GROUP_CONCAT(DISTINCT t.name ORDER BY t.name SEPARATOR '\u0001') AS tag_names,
+              (SELECT GROUP_CONCAT(CONCAT(c2.id, '\u0001', c2.name)
+                                   ORDER BY c2.sort_order, c2.id SEPARATOR '\u0002')
+                 FROM app_categories ac JOIN categories c2 ON c2.id = ac.category_id
+                WHERE ac.app_id = a.id) AS category_pairs
          FROM apps a
          LEFT JOIN categories c ON c.id = a.category_id
          LEFT JOIN app_tags at ON at.app_id = a.id

@@ -212,49 +212,85 @@ userdata/<id>/avatar.png    头像（固定文件名，覆盖式更新）
 http://<本机IP>:<端口>/admin
 ```
 
-在 `.env` 里设 `ADMIN_PASSWORD` 才会启用（**留空 = 关闭**，访问只会显示一句提示）。
-一个谁都能打开的后台比没有后台更危险 —— 它能改发信通道，等于接管所有验证码。
+**第一次打开时还没有账号**：页面会让你创建第一个管理员（默认 `admin` 组），
+建完直接进入面板。之后访问同一个地址就是普通登录 —— 账号存在数据库表
+`admin_users` 里，不再是 `.env` 里一个全服共用的口令。
+
+新增管理员只有一个入口：已登录的 admin 在「管理员」页添加（同样是 admin 组）。
+可以停用、重置密码、删除账号；停用 / 改密 / 删除都会让那个账号现有的登录立刻失效。
+「至少要保留一个可用管理员」由服务端兜住 —— 不会出现把最后一个 admin 删掉之后谁也进不去。
+
+公网部署建议在 `.env` 里设 `ADMIN_SETUP_TOKEN`：设了之后创建第一个账号必须填它，
+避免「部署完还没建号」那几分钟被别人抢注。
 
 | 页面 | 能做什么 |
 | --- | --- |
-| 概览 | 用户数 / 应用数 / 活跃会话 / 24h 验证码数、当前策略、运行时长 |
+| 概览 | 用户 / 应用 / 分类 / 标签 / 管理员 / 活跃会话 / 24h 验证码、当前策略、运行时长 |
 | 应用 | 列表（含已下架）、新建、编辑、上架/下架、软删除；**上传 zip 包**（自动算 sha256 与大小、原子写库）、查看本机已有版本 |
-| 用户 | 搜索、封禁/解封（封禁会立刻踢掉该用户所有登录）、重置密码（同样踢下线）、单独踢下线 |
+| 分类标签 | 新建 / 改名 / 删除分类与标签、分类排序；删除仍在被使用的分类或标签会先提示有几个应用在用，确认后才删 |
+| 用户 | 搜索、封禁/解封（立刻踢掉该用户所有登录）、重置密码、单独踢下线 |
+| 管理员 | 添加 admin 账号、重置密码、停用/启用、删除；以及修改自己的密码 |
 | 邮件 | smtp / resend / sendgrid / aliyun / console 五个通道、测试发信、验证码限流、token 有效期、注册/登录验证码开关 |
 
-应用编辑里能改的字段就是 `apps` 表的那一套：名称、简介、分类、版本、作者、
-入口文件、图标、主页、截图、声明权限、标签、排序权重。标签只能选**已有**的
-（面板不会顺手建标签 —— 那会把「标签」变成一堆拼写变体）。
+**一个应用可以挂多个分类、多个标签。** 分类在面板里创建，id 会出现在接口参数里
+（`/api/market/feed?category=tools`）：填了就用填的，留空按名字生成，
+中文名会生成 `cat_xxxxxxxx` 这样的随机 id。
+
+应用编辑里能改的字段就是 `apps` 表的那一套：名称、简介、分类（多选）、版本、作者、
+入口文件、图标、主页、截图、声明权限、标签、排序权重。
 
 实现上的几个要点：
 
-- **改完立即生效**：面板同时写 `.env`（重启后仍有效）和进程内 `config`
-  （不用重启）。写文件是「逐行替换 KEY、不重排、不删注释」。
-- **密钥不回显**：口令 / API Key 类字段只返回「有没有设置」，
-  留空提交表示「不修改」。
-- **登录态是签名 cookie**（HMAC + 过期时间），不是明文口令；
-  登录失败按 IP 限流（10 次 / 10 分钟）。
+- **账号与会话**：口令 bcrypt 哈希落库；登录态是 HMAC 签名 cookie，签名密钥里混了
+  该账号的 `password_hash` —— 改密码就等于踢掉这个账号的所有旧 cookie。
+  签名密钥是 `.env` 里的 `ADMIN_SECRET`（没有就启动时自动生成）。
+- **首次建号是串行化的**：用 MySQL 命名锁 + 表内计数，两个请求同时打过来也只会建一个。
+- **改完立即生效**：邮件配置同时写 `.env`（重启后仍有效）和进程内 `config`（不用重启）。
+  写文件是「逐行替换 KEY、不重排、不删注释」。
+- **密钥不回显**：口令 / API Key 类字段只返回「有没有设置」，留空提交表示「不修改」。
 - 面板是服务端直出的单页 HTML，**不引任何 CDN** —— 内网没外网也能用。
 
-接口（都要先登录）：
+接口。公开的（不需要登录）：
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/admin/api/login` | `{password}` → 种 cookie |
+| GET | `/admin/api/session` | `{setup, user}` —— 页面据此决定显示 建号 / 登录 / 面板 |
+| POST | `/admin/api/setup` | `{username, password, setupToken?}`，仅当还没有任何管理账号时可用 |
+| POST | `/admin/api/login` | `{username, password}` → 种 cookie |
+| POST | `/admin/api/logout` | 清 cookie |
+
+以下都要先登录：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/admin/api/me` | 当前管理员 |
+| POST | `/admin/api/me/password` | `{oldPassword, newPassword}` 改自己的密码 |
+| GET | `/admin/api/admins` | 管理员列表 |
+| POST | `/admin/api/admins` | `{username, password}` 新增 admin 组成员 |
+| POST | `/admin/api/admins/:id/password` | 重置别人的密码 |
+| POST | `/admin/api/admins/:id/status` | `{status: active\|disabled}` 停用/启用 |
+| DELETE | `/admin/api/admins/:id` | 删除账号（不能删自己、不能删最后一个） |
 | GET | `/admin/api/status` | 概况与当前策略 |
+| GET | `/admin/api/meta` | 分类 + 标签 + 每个下面的应用数 |
+| POST | `/admin/api/categories` | `{name, id?, sortOrder?}` 新建分类 |
+| PUT | `/admin/api/categories/order` | `{ids:[...]}` 批量排序 |
+| PUT | `/admin/api/categories/:id` | `{name?, sortOrder?}` 改名 / 调序 |
+| DELETE | `/admin/api/categories/:id[?force=1]` | 删除；被应用使用时需 `force=1` |
+| POST | `/admin/api/tags` | `{name, slug?}` 新建标签 |
+| PUT | `/admin/api/tags/:id` | `{name}` 改名 |
+| DELETE | `/admin/api/tags/:id[?force=1]` | 删除；被应用使用时需 `force=1` |
 | GET | `/admin/api/mail` | 邮件配置（密钥类只报「已设置」） |
 | PUT | `/admin/api/mail` | 保存并立即生效，同时写回 `.env` |
 | POST | `/admin/api/mail/test` | `{to}` 发一封测试信 |
-| GET | `/admin/api/apps?q=` | 应用列表（含已下架、分类名、标签名） |
-| POST | `/admin/api/apps` | 新建应用 |
+| GET | `/admin/api/apps?q=` | 应用列表（含已下架、分类、标签） |
+| POST | `/admin/api/apps` | 新建应用（`categoryIds[]`、`tagNames[]`） |
 | PUT | `/admin/api/apps/:id` | 编辑应用；只传 `{deleted}` 时就是上架/下架 |
 | DELETE | `/admin/api/apps/:id` | 软删除（可恢复） |
 | POST | `/admin/api/apps/:id/package` | multipart 上传 zip（`file` / `version` / `entry`） |
 | GET | `/admin/api/apps/:id/packages` | 本机已有的版本包 |
 | DELETE | `/admin/api/apps/:id/package/:version` | 删某个版本包 |
-| GET | `/admin/api/categories` | 分类与标签（编辑器的下拉/多选） |
 | GET | `/admin/api/users?q=` | 用户列表（可搜索） |
-| POST | `/admin/api/users/:id/status` | `{status: active\|disabled}` 封禁/解封 |
+| POST | `/admin/api/users/:id/status` | `{status: active\|disabled}` 封禁 / 解封 |
 | POST | `/admin/api/users/:id/password` | 重置密码 |
 | POST | `/admin/api/users/:id/logout` | 踢掉该用户所有会话 |
 

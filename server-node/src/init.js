@@ -17,6 +17,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import mysql from 'mysql2/promise';
 import { config, readEnvFile } from './config.js';
+import { backfillAppCategories } from './lib/schema_guard.js';
+import { splitStatements } from './lib/sqlfile.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_PATH = join(__dirname, '..', 'sql', 'schema.sql');
@@ -60,19 +62,6 @@ function warn(text) {
 
 function fail(text) {
   console.error(`\x1b[31m  ✗\x1b[0m ${text}`);
-}
-
-/** 把 SQL 文件按分号切成一条条语句。 */
-function splitStatements(sql) {
-  // 去掉整行注释（-- ...），但保留字符串里的 --（本 schema 里没有这种，够用）
-  const cleaned = sql
-    .split('\n')
-    .filter((line) => !line.trim().startsWith('--'))
-    .join('\n');
-  return cleaned
-    .split(/;\s*\n/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0 && !/^SET\s+NAMES/i.test(s));
 }
 
 async function main() {
@@ -165,6 +154,14 @@ async function main() {
     const [[tags]] = await conn.query('SELECT COUNT(*) AS n FROM tags');
     ok(`现有数据：${cats.n} 个分类 / ${apps.n} 个应用 / ${tags.n} 个标签`);
   }
+
+  // ---------------------------------------------------------------- 多分类回填
+  //
+  // 老库里应用只有 apps.category_id（单分类），新的关联表是空的。
+  // 不补的话「按分类筛选」会漏掉所有老应用。幂等，跑多少次都一样。
+  step('补齐多分类关联表（app_categories）');
+  const filled = await backfillAppCategories(conn);
+  ok(`本次补了 ${filled} 条（已有的不会重复插入）`);
 
   // ---------------------------------------------------------------- 汇总
   const [tables] = await conn.query('SHOW TABLES');

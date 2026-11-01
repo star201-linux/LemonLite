@@ -4,18 +4,25 @@
 //
 // 为什么不引前端框架、不挂 CDN：
 //   * 这个面板要在**没有外网**的内网服务器上用 —— 任何外链都是单点故障；
-//   * 它一共就四屏（概览 / 应用 / 用户 / 邮件），引入构建工具只会让
-//     「改一行文案」也要重新编译。
+//   * 它一共就六屏（概览 / 应用 / 分类标签 / 用户 / 管理员 / 邮件），
+//     引入构建工具只会让「改一行文案」也要重新编译。
 // 所以这里是纯静态字符串，浏览器直接吃。
 //
 // 注意：内层 <script> 里**不用模板字符串**（反引号 + ${}），
 // 因为它们会被外层这个 JS 模板字符串先求值。内层一律用拼接。
+//
+// 页面自己是「空壳」：加载后先请求 /api/session，返回
+//   { setup: true }        → 显示「创建第一个管理员」
+//   { setup: false, user: null } → 显示登录
+//   { setup: false, user: {...} } → 显示面板
+// 这样服务端不需要为三种状态渲染三份 HTML，也不会把「有没有账号」
+// 写进缓存住的页面里。
 
 /**
- * @param {{version: string, enabled: boolean}} opts
+ * @param {{version: string}} opts
  * @returns {string} 完整 HTML
  */
-export function renderAdminPage({ version, enabled }) {
+export function renderAdminPage({ version }) {
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -48,11 +55,12 @@ export function renderAdminPage({ version, enabled }) {
     -webkit-font-smoothing: antialiased;
   }
   header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-    padding: 18px 20px; max-width: 960px; margin: 0 auto; }
+    padding: 18px 20px; max-width: 980px; margin: 0 auto; }
   header h1 { font-size: 18px; margin: 0; font-weight: 650; }
+  header .spacer { flex: 1 1 auto; }
   .tag { font-size: 12px; padding: 3px 9px; border-radius: 999px;
     background: var(--surface-2); color: var(--muted); }
-  main { max-width: 960px; margin: 0 auto; padding: 0 16px 64px; }
+  main { max-width: 980px; margin: 0 auto; padding: 0 16px 64px; }
   .card { background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px; margin-bottom: 16px; }
   .tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
@@ -62,7 +70,7 @@ export function renderAdminPage({ version, enabled }) {
   h2 { font-size: 15px; margin: 0 0 12px; font-weight: 650; }
   h3 { font-size: 13px; margin: 18px 0 8px; color: var(--primary); font-weight: 650; }
   p.hint { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 6px 0; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; }
   .stat { background: var(--surface-2); border-radius: 14px; padding: 14px; }
   .stat b { display: block; font-size: 22px; font-weight: 700; }
   .stat span { font-size: 12px; color: var(--muted); }
@@ -103,7 +111,8 @@ export function renderAdminPage({ version, enabled }) {
   .kv:last-child { border-bottom: 0; }
   .kv span:first-child { color: var(--muted); }
   .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
-  .toolbar input[type=text] { flex: 1 1 220px; width: auto; }
+  .toolbar input[type=text], .toolbar input[type=password] { flex: 1 1 200px; width: auto; }
+  .toolbar input.narrow { flex: 0 1 180px; }
   .item { display: flex; gap: 12px; align-items: center; justify-content: space-between;
     padding: 12px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
   .item:last-child { border-bottom: 0; }
@@ -114,7 +123,7 @@ export function renderAdminPage({ version, enabled }) {
     align-items: flex-start; justify-content: center; padding: 24px 16px; overflow: auto; z-index: 40; }
   .modal[hidden] { display: none; }
   .modal-card { background: var(--surface); border-radius: 20px; padding: 20px; width: 100%;
-    max-width: 640px; box-shadow: var(--shadow); }
+    max-width: 660px; box-shadow: var(--shadow); }
   .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; flex-wrap: wrap; }
   .chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
   .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px;
@@ -126,33 +135,65 @@ export function renderAdminPage({ version, enabled }) {
   <h1>轻柠 · 管理面板</h1>
   <span class="tag">v${version}</span>
   <span id="conn" class="tag">连接中…</span>
+  <span class="spacer"></span>
+  <span id="who" class="tag" hidden></span>
+  <button id="logoutBtn" class="ghost small" type="button" hidden>退出</button>
 </header>
 <main>
-  <section id="login" class="card" hidden>
-    <h2>需要口令</h2>
-    <p class="hint">口令就是服务端 <code>.env</code> 里的 <code>ADMIN_PASSWORD</code>。</p>
-    <form id="loginForm">
-      <div class="field">
-        <label for="password">管理口令</label>
-        <input id="password" type="password" autocomplete="current-password" placeholder="输入 ADMIN_PASSWORD" />
+  <section id="setup" class="card" hidden>
+    <h2>第一次使用：创建管理员账号</h2>
+    <p class="hint">
+      数据库里还没有管理账号。现在创建的账号就是第一个管理员，
+      默认属于 <code>admin</code> 组，可以管理应用、分类标签、用户、邮件配置，
+      也可以再添加别的管理员。
+    </p>
+    <p class="hint">这个页面只会在「一个管理账号都没有」时出现，建完就消失。</p>
+    <form id="setupForm">
+      <div class="field" id="setupTokenField" hidden>
+        <label for="setup_token">初始化口令（ADMIN_SETUP_TOKEN）</label>
+        <input id="setup_token" type="password" autocomplete="off" placeholder="服务端 .env 里配置的口令" />
       </div>
-      <div class="actions"><button class="primary" type="submit">登录</button></div>
+      <div class="row">
+        <div class="field">
+          <label for="setup_user">用户名</label>
+          <input id="setup_user" type="text" autocomplete="username" placeholder="3~32 位字母数字" />
+        </div>
+        <div class="field">
+          <label for="setup_pass">密码</label>
+          <input id="setup_pass" type="password" autocomplete="new-password" placeholder="至少 8 位" />
+        </div>
+      </div>
+      <div class="field">
+        <label for="setup_pass2">确认密码</label>
+        <input id="setup_pass2" type="password" autocomplete="new-password" />
+      </div>
+      <div class="actions"><button class="primary" type="submit">创建并进入面板</button></div>
     </form>
   </section>
 
-  <section id="disabled" class="card" hidden>
-    <h2>面板未启用</h2>
-    <p class="hint">
-      在服务端 <code>.env</code> 里加一行 <code>ADMIN_PASSWORD=你的口令</code>，重启服务后即可使用。
-      没有口令时面板是关闭的 —— 一个谁都能打开的后台比没有后台更危险。
-    </p>
+  <section id="login" class="card" hidden>
+    <h2>登录</h2>
+    <p class="hint">用管理账号登录。账号存在服务端数据库里，忘了密码就让另一位管理员重置。</p>
+    <form id="loginForm">
+      <div class="field">
+        <label for="login_user">用户名</label>
+        <input id="login_user" type="text" autocomplete="username" />
+      </div>
+      <div class="field">
+        <label for="login_pass">密码</label>
+        <input id="login_pass" type="password" autocomplete="current-password" />
+      </div>
+      <div class="actions"><button class="primary" type="submit">登录</button></div>
+    </form>
   </section>
 
   <section id="panel" hidden>
     <div class="tabs">
       <button class="tab" data-tab="overview" aria-selected="true">概览</button>
       <button class="tab" data-tab="apps" aria-selected="false">应用</button>
+      <button class="tab" data-tab="taxonomy" aria-selected="false">分类标签</button>
       <button class="tab" data-tab="users" aria-selected="false">用户</button>
+      <button class="tab" data-tab="admins" aria-selected="false">管理员</button>
       <button class="tab" data-tab="mail" aria-selected="false">邮件</button>
     </div>
 
@@ -179,6 +220,31 @@ export function renderAdminPage({ version, enabled }) {
       </div>
     </div>
 
+    <div id="tab-taxonomy" hidden>
+      <div class="card">
+        <h2>分类</h2>
+        <p class="hint">
+          一个应用可以同时属于多个分类。分类 id 会出现在接口参数里（<code>?category=</code>），
+          留空就按名字自动生成（中文名会生成 <code>cat_xxxxxxxx</code> 这样的 id）。
+        </p>
+        <form id="catForm" class="toolbar">
+          <input id="cat_name" type="text" placeholder="分类名，如「效率」" />
+          <input id="cat_id" type="text" class="narrow" placeholder="id（可留空）" />
+          <button class="primary" type="submit">新建分类</button>
+        </form>
+        <div id="catList"><p class="hint">加载中…</p></div>
+      </div>
+      <div class="card">
+        <h2>标签</h2>
+        <p class="hint">标签用于搜索筛选与卡片展示，一个应用可以带多个标签。</p>
+        <form id="tagForm" class="toolbar">
+          <input id="tag_name" type="text" placeholder="标签名，如「开源」" />
+          <button class="primary" type="submit">新建标签</button>
+        </form>
+        <div id="tagList"><p class="hint">加载中…</p></div>
+      </div>
+    </div>
+
     <div id="tab-users" hidden>
       <div class="card">
         <div class="toolbar">
@@ -191,6 +257,39 @@ export function renderAdminPage({ version, enabled }) {
             <tbody></tbody>
           </table>
         </div>
+      </div>
+    </div>
+
+    <div id="tab-admins" hidden>
+      <div class="card">
+        <h2>管理员账号</h2>
+        <p class="hint">
+          新账号默认属于 <code>admin</code> 组，能管理应用、分类、用户、邮件配置和其他管理员。
+          改密码或停用某个账号，会让它在所有浏览器上的登录立刻失效。
+        </p>
+        <form id="adminForm" class="toolbar">
+          <input id="admin_user" type="text" autocomplete="off" placeholder="用户名（3~32 位字母数字）" />
+          <input id="admin_pass" type="password" autocomplete="new-password" placeholder="密码（至少 8 位）" />
+          <button class="primary" type="submit">添加管理员</button>
+        </form>
+        <div style="overflow:auto">
+          <table id="adminsTable">
+            <thead><tr><th>ID</th><th>用户名</th><th>组</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <h2>修改我的密码</h2>
+        <form id="selfPwForm">
+          <div class="row">
+            <div class="field"><label for="self_old">当前密码</label><input id="self_old" type="password" autocomplete="current-password" /></div>
+            <div class="field"><label for="self_new">新密码</label><input id="self_new" type="password" autocomplete="new-password" placeholder="至少 8 位" /></div>
+          </div>
+          <div class="field"><label for="self_new2">再输一次新密码</label><input id="self_new2" type="password" autocomplete="new-password" /></div>
+          <div class="actions"><button class="primary" type="submit">改密码</button></div>
+          <p class="hint">改完会保持当前登录，其它浏览器上的旧登录全部失效。</p>
+        </form>
       </div>
     </div>
 
@@ -302,21 +401,22 @@ export function renderAdminPage({ version, enabled }) {
       <div class="field"><label for="a_name">名称</label><input id="a_name" type="text" /></div>
     </div>
     <div class="field"><label for="a_desc">简介</label><textarea id="a_desc"></textarea></div>
+    <div class="field">
+      <label>分类（可多选，在「分类标签」页新建）</label>
+      <div id="a_categories" class="chip-list"></div>
+    </div>
     <div class="row">
-      <div class="field"><label for="a_category">分类</label><select id="a_category"></select></div>
       <div class="field"><label for="a_author">作者</label><input id="a_author" type="text" /></div>
-    </div>
-    <div class="row">
       <div class="field"><label for="a_version">版本（客户端靠它判断升级）</label><input id="a_version" type="text" placeholder="1.0.0" /></div>
-      <div class="field"><label for="a_sort">排序权重（越大越靠前）</label><input id="a_sort" type="number" /></div>
     </div>
     <div class="row">
+      <div class="field"><label for="a_sort">排序权重（越大越靠前）</label><input id="a_sort" type="number" /></div>
       <div class="field"><label for="a_icon">图标 URL</label><input id="a_icon" type="text" /></div>
-      <div class="field"><label for="a_home">主页 URL</label><input id="a_home" type="text" /></div>
     </div>
+    <div class="field"><label for="a_home">主页 URL</label><input id="a_home" type="text" /></div>
     <div class="field"><label for="a_shots">截图 URL（每行一个）</label><textarea id="a_shots"></textarea></div>
     <div class="field"><label for="a_perms">声明权限（逗号分隔，如 camera,microphone）</label><input id="a_perms" type="text" /></div>
-    <div class="field"><label>标签</label><div id="a_tags" class="chip-list"></div></div>
+    <div class="field"><label>标签（可多选）</label><div id="a_tags" class="chip-list"></div></div>
 
     <div id="pkgBlock" hidden>
       <h3>安装包</h3>
@@ -340,12 +440,12 @@ export function renderAdminPage({ version, enabled }) {
 <div class="toast" id="toast"></div>
 <script>
 (function () {
-  var ENABLED = ${enabled ? 'true' : 'false'};
   var $ = function (id) { return document.getElementById(id); };
   var toastEl = $('toast');
   var toastTimer = null;
   var appCache = [];        // 当前列表（编辑时按 id 取原始数据）
   var metaCache = { categories: [], tags: [] };
+  var currentUser = null;
 
   function esc(text) {
     return String(text == null ? '' : text).replace(/[&<>"']/g, function (c) {
@@ -357,7 +457,7 @@ export function renderAdminPage({ version, enabled }) {
     toastEl.textContent = message;
     toastEl.className = 'toast show' + (isError ? ' err' : '');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { toastEl.className = 'toast'; }, 3200);
+    toastTimer = setTimeout(function () { toastEl.className = 'toast'; }, 3600);
   }
 
   function api(path, options) {
@@ -373,7 +473,9 @@ export function renderAdminPage({ version, enabled }) {
       return res.json().catch(function () { return null; }).then(function (body) {
         if (!res.ok) {
           var msg = body && body.error && body.error.message ? body.error.message : ('请求失败 ' + res.status);
-          throw new Error(msg);
+          var err = new Error(msg);
+          err.code = body && body.error ? body.error.code : '';
+          throw err;
         }
         return body ? body.data : null;
       });
@@ -395,32 +497,81 @@ export function renderAdminPage({ version, enabled }) {
     });
   }
 
-  function showLogin() {
-    $('login').hidden = !ENABLED;
+  // ---------------- 三种页面状态
+  function showSetup(setupTokenRequired) {
+    $('setup').hidden = false;
+    $('login').hidden = true;
     $('panel').hidden = true;
-    $('disabled').hidden = ENABLED;
+    $('setupTokenField').hidden = !setupTokenRequired;
+    $('who').hidden = true;
+    $('logoutBtn').hidden = true;
+    $('conn').textContent = '等待初始化';
   }
 
-  function showPanel() {
+  function showLogin() {
+    $('setup').hidden = true;
+    $('login').hidden = false;
+    $('panel').hidden = true;
+    $('who').hidden = true;
+    $('logoutBtn').hidden = true;
+  }
+
+  function showPanel(user) {
+    currentUser = user || currentUser;
+    $('setup').hidden = true;
     $('login').hidden = true;
     $('panel').hidden = false;
-    $('disabled').hidden = true;
+    $('who').hidden = false;
+    $('who').textContent = currentUser
+      ? '已登录：' + currentUser.username + ' · ' + currentUser.role
+      : '已登录';
+    $('logoutBtn').hidden = false;
   }
 
-  // ---------------- 登录
+  // ---------------- 首次建号
+  $('setupForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var pass = $('setup_pass').value;
+    if (pass !== $('setup_pass2').value) { toast('两次输入的密码不一样', true); return; }
+    api('/setup', {
+      method: 'POST',
+      body: {
+        username: $('setup_user').value.trim(),
+        password: pass,
+        setupToken: $('setup_token').value
+      }
+    }).then(function (data) {
+      $('setup_pass').value = '';
+      $('setup_pass2').value = '';
+      showPanel(data.user);
+      toast('管理员已创建');
+      return refreshAll();
+    }).catch(function (err) { toast(err.message, true); });
+  });
+
+  // ---------------- 登录 / 退出
   $('loginForm').addEventListener('submit', function (e) {
     e.preventDefault();
-    api('/login', { method: 'POST', body: { password: $('password').value } })
-      .then(function () {
-        $('password').value = '';
-        showPanel();
-        return refreshAll();
-      })
-      .catch(function (err) { toast(err.message, true); });
+    api('/login', {
+      method: 'POST',
+      body: { username: $('login_user').value.trim(), password: $('login_pass').value }
+    }).then(function (data) {
+      $('login_pass').value = '';
+      showPanel(data.user);
+      return refreshAll();
+    }).catch(function (err) { toast(err.message, true); });
+  });
+
+  $('logoutBtn').addEventListener('click', function () {
+    api('/logout', { method: 'POST', body: {} }).then(function () {
+      currentUser = null;
+      showLogin();
+      toast('已退出');
+    }).catch(function () { showLogin(); });
   });
 
   // ---------------- Tab
-  var TAB_NAMES = ['overview', 'apps', 'users', 'mail'];
+  var TAB_NAMES = ['overview', 'apps', 'taxonomy', 'users', 'admins', 'mail'];
   Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (btn) {
     btn.addEventListener('click', function () {
       Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (b) {
@@ -430,7 +581,10 @@ export function renderAdminPage({ version, enabled }) {
         $('tab-' + name).hidden = name !== btn.dataset.tab;
       });
       if (btn.dataset.tab === 'apps') loadApps();
+      if (btn.dataset.tab === 'taxonomy') loadMeta();
       if (btn.dataset.tab === 'users') loadUsers();
+      if (btn.dataset.tab === 'admins') loadAdmins();
+      if (btn.dataset.tab === 'mail') loadMail();
     });
   });
 
@@ -441,6 +595,9 @@ export function renderAdminPage({ version, enabled }) {
       var stats = [
         ['用户', data.counts.users],
         ['应用', data.counts.apps],
+        ['分类', data.counts.categories],
+        ['标签', data.counts.tags],
+        ['管理员', data.counts.admins],
         ['活跃会话', data.counts.sessions],
         ['24h 验证码', data.counts.codes24h]
       ];
@@ -457,7 +614,7 @@ export function renderAdminPage({ version, enabled }) {
       ].map(function (pair) {
         return '<div class="kv"><span>' + pair[0] + '</span><span>' + pair[1] + '</span></div>';
       }).join('');
-    });
+    }).catch(function (err) { toast(err.message, true); });
   }
 
   // ================================================================ 应用
@@ -481,11 +638,14 @@ export function renderAdminPage({ version, enabled }) {
         ? '<span class="badge err">已下架</span>'
         : '<span class="badge ok">已上架</span>';
       var sha = a.packageSha256 ? ' · sha ' + a.packageSha256.slice(0, 8) : '';
+      var cats = (a.categories && a.categories.length)
+        ? a.categories.map(function (c) { return c.name; }).join(' / ')
+        : '未分类';
       return '<div class="item">' +
         '<div>' +
           '<div class="item-title">' + esc(a.name) +
             ' <span class="tag">' + esc(a.id) + '</span> ' + state + '</div>' +
-          '<div class="item-sub">v' + esc(a.version) + ' · ' + esc(a.categoryName || '未分类') +
+          '<div class="item-sub">v' + esc(a.version) + ' · ' + esc(cats) +
             ' · 包 ' + size + sha + '</div>' +
         '</div>' +
         '<div class="item-actions">' +
@@ -514,19 +674,165 @@ export function renderAdminPage({ version, enabled }) {
   });
   $('appNewBtn').addEventListener('click', function () { openAppModal(null); });
 
+  // ---------------- 分类 / 标签（下拉与勾选框共用一份数据）
   function loadMeta() {
-    return api('/categories').then(function (data) {
+    return api('/meta').then(function (data) {
       metaCache = data;
-      var select = $('a_category');
-      select.innerHTML = '<option value="">（未分类）</option>' + data.categories.map(function (c) {
-        return '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>';
-      }).join('');
-      $('a_tags').innerHTML = data.tags.map(function (t) {
-        return '<label class="chip"><input type="checkbox" value="' + esc(t.name) + '" />' + esc(t.name) + '</label>';
-      }).join('');
+      renderTaxonomy();
+      renderAppMetaChips();
+    }).catch(function (err) { toast(err.message, true); });
+  }
+
+  function renderAppMetaChips() {
+    var cats = metaCache.categories || [];
+    var tags = metaCache.tags || [];
+    $('a_categories').innerHTML = cats.length
+      ? cats.map(function (c) {
+          return '<label class="chip"><input type="checkbox" value="' + esc(c.id) + '" />' +
+            esc(c.name) + '</label>';
+        }).join('')
+      : '<span class="hint">还没有分类，去「分类标签」页新建</span>';
+    $('a_tags').innerHTML = tags.length
+      ? tags.map(function (t) {
+          return '<label class="chip"><input type="checkbox" value="' + esc(t.name) + '" />' +
+            esc(t.name) + '</label>';
+        }).join('')
+      : '<span class="hint">还没有标签，去「分类标签」页新建</span>';
+  }
+
+  function renderTaxonomy() {
+    var cats = metaCache.categories || [];
+    var tags = metaCache.tags || [];
+    $('catList').innerHTML = cats.length ? cats.map(function (c, i) {
+      return '<div class="item">' +
+        '<div>' +
+          '<div class="item-title">' + esc(c.name) + ' <span class="tag">' + esc(c.id) + '</span></div>' +
+          '<div class="item-sub">' + (c.appCount || 0) + ' 个应用 · 排序 ' + c.sortOrder + '</div>' +
+        '</div>' +
+        '<div class="item-actions">' +
+          '<button class="ghost small" data-cat="' + esc(c.id) + '" data-act="up"' +
+            (i === 0 ? ' disabled' : '') + '>上移</button>' +
+          '<button class="ghost small" data-cat="' + esc(c.id) + '" data-act="down"' +
+            (i === cats.length - 1 ? ' disabled' : '') + '>下移</button>' +
+          '<button class="ghost small" data-cat="' + esc(c.id) + '" data-act="rename">重命名</button>' +
+          '<button class="ghost small danger" data-cat="' + esc(c.id) + '" data-act="del">删除</button>' +
+        '</div>' +
+      '</div>';
+    }).join('') : '<p class="hint">还没有分类</p>';
+
+    $('tagList').innerHTML = tags.length ? tags.map(function (t) {
+      return '<div class="item">' +
+        '<div>' +
+          '<div class="item-title">' + esc(t.name) + ' <span class="tag">' + esc(t.slug) + '</span></div>' +
+          '<div class="item-sub">' + (t.appCount || 0) + ' 个应用</div>' +
+        '</div>' +
+        '<div class="item-actions">' +
+          '<button class="ghost small" data-tag="' + t.id + '" data-act="rename">重命名</button>' +
+          '<button class="ghost small danger" data-tag="' + t.id + '" data-act="del">删除</button>' +
+        '</div>' +
+      '</div>';
+    }).join('') : '<p class="hint">还没有标签</p>';
+  }
+
+  $('catForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    api('/categories', {
+      method: 'POST',
+      body: { name: $('cat_name').value.trim(), id: $('cat_id').value.trim() }
+    }).then(function (data) {
+      $('cat_name').value = '';
+      $('cat_id').value = '';
+      toast('已新建分类 ' + data.category.name);
+      return loadMeta();
+    }).then(loadApps).catch(function (err) { toast(err.message, true); });
+  });
+
+  $('tagForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    api('/tags', { method: 'POST', body: { name: $('tag_name').value.trim() } })
+      .then(function (data) {
+        $('tag_name').value = '';
+        toast('已新建标签 ' + data.tag.name);
+        return loadMeta();
+      }).catch(function (err) { toast(err.message, true); });
+  });
+
+  $('catList').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-cat]');
+    if (!btn) return;
+    var id = btn.dataset.cat;
+    var act = btn.dataset.act;
+    var cat = (metaCache.categories || []).find(function (c) { return c.id === id; });
+
+    if (act === 'up' || act === 'down') {
+      var ids = metaCache.categories.map(function (c) { return c.id; });
+      var index = ids.indexOf(id);
+      var target = act === 'up' ? index - 1 : index + 1;
+      if (index < 0 || target < 0 || target >= ids.length) return;
+      var moved = ids.splice(index, 1)[0];
+      ids.splice(target, 0, moved);
+      api('/categories/order', { method: 'PUT', body: { ids: ids } })
+        .then(loadMeta).catch(function (err) { toast(err.message, true); });
+      return;
+    }
+
+    if (act === 'rename') {
+      var name = prompt('新的分类名', cat ? cat.name : '');
+      if (!name) return;
+      api('/categories/' + encodeURIComponent(id), { method: 'PUT', body: { name: name.trim() } })
+        .then(function () { toast('已改名'); return loadMeta(); })
+        .then(loadApps).catch(function (err) { toast(err.message, true); });
+      return;
+    }
+
+    if (act === 'del') {
+      if (!confirm('删除分类「' + (cat ? cat.name : id) + '」？')) return;
+      deleteTaxonomy('/categories/' + encodeURIComponent(id), loadMeta);
+    }
+  });
+
+  $('tagList').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-tag]');
+    if (!btn) return;
+    var id = btn.dataset.tag;
+    var tag = (metaCache.tags || []).find(function (t) { return String(t.id) === String(id); });
+
+    if (btn.dataset.act === 'rename') {
+      var name = prompt('新的标签名', tag ? tag.name : '');
+      if (!name) return;
+      api('/tags/' + id, { method: 'PUT', body: { name: name.trim() } })
+        .then(function () { toast('已改名'); return loadMeta(); })
+        .then(loadApps).catch(function (err) { toast(err.message, true); });
+      return;
+    }
+    if (btn.dataset.act === 'del') {
+      if (!confirm('删除标签「' + (tag ? tag.name : id) + '」？')) return;
+      deleteTaxonomy('/tags/' + id, loadMeta);
+    }
+  });
+
+  /**
+   * 删除分类 / 标签。
+   * 还在被应用使用时服务端返回 409 + 人话（还有 N 个应用在用），
+   * 这里再问一次，确认后带 ?force=1 重试 —— 一次误点不应该清掉整类应用。
+   */
+  function deleteTaxonomy(path, done) {
+    api(path, { method: 'DELETE' }).then(function () {
+      toast('已删除');
+      return done();
+    }).then(loadApps).catch(function (err) {
+      if (err.code !== 'category_in_use' && err.code !== 'tag_in_use') {
+        toast(err.message, true);
+        return;
+      }
+      if (!confirm(err.message)) return;
+      api(path + '?force=1', { method: 'DELETE' })
+        .then(function () { toast('已删除'); return done(); })
+        .then(loadApps).catch(function (e2) { toast(e2.message, true); });
     });
   }
 
+  // ---------------- 应用编辑弹窗
   function openAppModal(app) {
     loadMeta().then(function () {
       var creating = !app;
@@ -542,11 +848,16 @@ export function renderAdminPage({ version, enabled }) {
       $('a_home').value = app ? app.homepage : '';
       $('a_shots').value = app ? app.screenshots.join('\\n') : '';
       $('a_perms').value = app ? app.permissions.join(',') : '';
-      $('a_category').value = app ? app.categoryId : '';
-      var tagSet = app ? app.tagNames : [];
+
+      var selectedCats = app && app.categoryIds ? app.categoryIds : [];
+      Array.prototype.forEach.call($('a_categories').querySelectorAll('input'), function (input) {
+        input.checked = selectedCats.indexOf(input.value) >= 0;
+      });
+      var tagSet = app && app.tagNames ? app.tagNames : [];
       Array.prototype.forEach.call($('a_tags').querySelectorAll('input'), function (input) {
         input.checked = tagSet.indexOf(input.value) >= 0;
       });
+
       $('pkgBlock').hidden = creating;
       if (!creating) loadPkgInfo(app);
       $('appModal').hidden = false;
@@ -560,6 +871,10 @@ export function renderAdminPage({ version, enabled }) {
   });
 
   function readAppModal() {
+    var categories = [];
+    Array.prototype.forEach.call($('a_categories').querySelectorAll('input:checked'), function (i) {
+      categories.push(i.value);
+    });
     var tags = [];
     Array.prototype.forEach.call($('a_tags').querySelectorAll('input:checked'), function (i) {
       tags.push(i.value);
@@ -568,7 +883,7 @@ export function renderAdminPage({ version, enabled }) {
       id: $('a_id').value.trim(),
       name: $('a_name').value.trim(),
       description: $('a_desc').value.trim(),
-      categoryId: $('a_category').value,
+      categoryIds: categories,
       author: $('a_author').value.trim(),
       version: $('a_version').value.trim(),
       sortWeight: Number($('a_sort').value) || 0,
@@ -582,18 +897,15 @@ export function renderAdminPage({ version, enabled }) {
 
   $('appSave').addEventListener('click', function () {
     var payload = readAppModal();
-    var creating = !payload.id || $('a_id').disabled === false;
-    if (creating) {
-      api('/apps', { method: 'POST', body: payload })
-        .then(function () { closeAppModal(); toast('已创建'); return loadApps(); })
-        .then(loadStatus)
-        .catch(function (err) { toast(err.message, true); });
-    } else {
-      api('/apps/' + encodeURIComponent(payload.id), { method: 'PUT', body: payload })
-        .then(function () { closeAppModal(); toast('已保存'); return loadApps(); })
-        .then(loadStatus)
-        .catch(function (err) { toast(err.message, true); });
-    }
+    var creating = !$('a_id').disabled;
+    var request = creating
+      ? api('/apps', { method: 'POST', body: payload })
+      : api('/apps/' + encodeURIComponent(payload.id), { method: 'PUT', body: payload });
+    request.then(function () {
+      closeAppModal();
+      toast(creating ? '已创建' : '已保存');
+      return loadApps();
+    }).then(loadStatus).catch(function (err) { toast(err.message, true); });
   });
 
   function toggleDeleted(app) {
@@ -608,7 +920,7 @@ export function renderAdminPage({ version, enabled }) {
 
   function deleteApp(app) {
     if (!app) return;
-    if (!confirm('删除「' + app.name + '」？\\n\\n这是软删除：市场里不再出现，数据还在，之后可以重新上架。')) return;
+    if (!confirm('删除「' + app.name + '」？这是软删除：市场里不再出现，数据还在。')) return;
     api('/apps/' + encodeURIComponent(app.id), { method: 'DELETE' })
       .then(function () { toast('已删除'); return loadApps(); })
       .then(loadStatus)
@@ -719,6 +1031,92 @@ export function renderAdminPage({ version, enabled }) {
     }
   });
 
+  // ================================================================ 管理员
+  function loadAdmins() {
+    return api('/admins').then(function (data) {
+      var tbody = $('adminsTable').querySelector('tbody');
+      tbody.innerHTML = data.admins.map(function (a) {
+        var disabled = a.status === 'disabled';
+        var isSelf = currentUser && a.id === currentUser.id;
+        return '<tr>' +
+          '<td>' + a.id + '</td>' +
+          '<td>' + esc(a.username) + (isSelf ? ' <span class="tag">我</span>' : '') + '</td>' +
+          '<td>' + esc(a.role) + '</td>' +
+          '<td>' + (disabled
+            ? '<span class="badge err">已停用</span>'
+            : '<span class="badge ok">正常</span>') + '</td>' +
+          '<td>' + esc(a.lastLoginAt || '从未登录') + '</td>' +
+          '<td><div class="item-actions">' +
+            '<button class="ghost small" data-admin="' + a.id + '" data-act="password">改密码</button>' +
+            '<button class="ghost small" data-admin="' + a.id + '" data-act="status" data-status="' +
+              (disabled ? 'active' : 'disabled') + '">' + (disabled ? '启用' : '停用') + '</button>' +
+            '<button class="ghost small danger" data-admin="' + a.id + '" data-act="del">删除</button>' +
+          '</div></td>' +
+        '</tr>';
+      }).join('');
+    }).catch(function (err) { toast(err.message, true); });
+  }
+
+  $('adminForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    api('/admins', {
+      method: 'POST',
+      body: { username: $('admin_user').value.trim(), password: $('admin_pass').value }
+    }).then(function (data) {
+      $('admin_user').value = '';
+      $('admin_pass').value = '';
+      toast('已添加管理员 ' + data.admin.username);
+      return loadAdmins();
+    }).then(loadStatus).catch(function (err) { toast(err.message, true); });
+  });
+
+  $('adminsTable').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-admin]');
+    if (!btn) return;
+    var id = btn.dataset.admin;
+    var act = btn.dataset.act;
+
+    if (act === 'password') {
+      var pw = prompt('给这个管理员设置新密码（至少 8 位）。它现有的登录会立刻失效。');
+      if (!pw) return;
+      api('/admins/' + id + '/password', { method: 'POST', body: { password: pw } })
+        .then(function () { toast('密码已重置'); })
+        .catch(function (err) { toast(err.message, true); });
+      return;
+    }
+    if (act === 'status') {
+      api('/admins/' + id + '/status', { method: 'POST', body: { status: btn.dataset.status } })
+        .then(function () {
+          toast(btn.dataset.status === 'disabled' ? '已停用' : '已启用');
+          return loadAdmins();
+        }).catch(function (err) { toast(err.message, true); });
+      return;
+    }
+    if (act === 'del') {
+      if (!confirm('删除这个管理员账号？')) return;
+      api('/admins/' + id, { method: 'DELETE' })
+        .then(function () { toast('已删除'); return loadAdmins(); })
+        .then(loadStatus).catch(function (err) { toast(err.message, true); });
+    }
+  });
+
+  $('selfPwForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    if ($('self_new').value !== $('self_new2').value) {
+      toast('两次输入的新密码不一样', true);
+      return;
+    }
+    api('/me/password', {
+      method: 'POST',
+      body: { oldPassword: $('self_old').value, newPassword: $('self_new').value }
+    }).then(function () {
+      $('self_old').value = '';
+      $('self_new').value = '';
+      $('self_new2').value = '';
+      toast('密码已修改');
+    }).catch(function (err) { toast(err.message, true); });
+  });
+
   // ================================================================ 邮件
   var DRIVER_BLOCKS = ['smtp', 'resend', 'sendgrid', 'aliyun'];
 
@@ -766,7 +1164,7 @@ export function renderAdminPage({ version, enabled }) {
       badge.className = 'badge ' + (mail.ready ? 'ok' : 'warn');
       $('mailReason').textContent = mail.ready ? ('当前通道：' + mail.driver) : ('原因：' + mail.reason);
       syncDriverBlocks();
-    });
+    }).catch(function (err) { toast(err.message, true); });
   }
 
   $('mailForm').addEventListener('submit', function (e) {
@@ -811,9 +1209,7 @@ export function renderAdminPage({ version, enabled }) {
       .catch(function (err) { toast(err.message, true); });
   });
 
-  $('reloadBtn').addEventListener('click', function () {
-    loadMail().catch(function (err) { toast(err.message, true); });
-  });
+  $('reloadBtn').addEventListener('click', function () { loadMail(); });
 
   $('testBtn').addEventListener('click', function () {
     var to = $('test_to').value.trim();
@@ -830,13 +1226,15 @@ export function renderAdminPage({ version, enabled }) {
   }
 
   // ---------------- 启动
-  if (!ENABLED) {
+  api('/session').then(function (data) {
+    if (data.setup) { showSetup(data.setupTokenRequired); return; }
+    if (!data.user) { showLogin(); return; }
+    showPanel(data.user);
+    return refreshAll();
+  }).catch(function () {
     showLogin();
-  } else {
-    api('/status')
-      .then(function () { showPanel(); return refreshAll(); })
-      .catch(function () { showLogin(); });
-  }
+    toast('连不上服务端', true);
+  });
 })();
 </script>
 </body>

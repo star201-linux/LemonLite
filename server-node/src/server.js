@@ -14,6 +14,8 @@ import { authRouter } from './routes/auth.js';
 import { uploadRouter, userDataRouter } from './routes/upload.js';
 import { packageRouter } from './routes/packages.js';
 import { adminRouter } from './routes/admin.js';
+import { adminCount, ensureAdminSecret } from './admin/auth.js';
+import { ensureSchema } from './lib/schema_guard.js';
 import { describeMail, mailStatus } from './lib/mailer.js';
 
 readEnvFile();
@@ -90,7 +92,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/upload', uploadRouter);
 // 用户私有 JSON：前缀是 /api/user，**不是** /api/upload（见 upload.js 里的说明）
 app.use('/api/user', userDataRouter);
-// 管理面板：/admin（没有 ADMIN_PASSWORD 时整块不可用，只显示一句提示）
+// 管理面板：/admin。账号在数据库里（admin_users），第一次打开时创建第一个管理员
 app.use('/admin', adminRouter);
 
 // 根路径给一句人话（否则访问 / 会拿到 404 JSON，看起来像挂了）
@@ -119,7 +121,7 @@ app.get('/', (_req, res) => {
       '  POST /api/auth/logout',
       '  POST /api/auth/logout-all',
       '',
-      '  GET  /admin                  （管理面板：概览 / 邮件通道 / 用户）',
+      '  GET  /admin                  （管理面板：概览 / 应用 / 分类标签 / 用户 / 管理员 / 邮件）',
       '  POST /api/upload/avatar       （multipart，字段名 file）',
       '  GET  /api/upload/avatar/:id',
       '  DELETE /api/upload/avatar',
@@ -149,7 +151,15 @@ async function start() {
     process.exit(1);
   }
 
-  const server = app.listen(config.http.port, config.http.host, () => {
+  // 表结构自检：升级后即使忘了跑 npm run init，也能把新表补上
+  const schema = await ensureSchema();
+  if (schema.filled > 0) {
+    console.log(`\x1b[32m✓\x1b[0m 已把 ${schema.filled} 个应用的主分类补进多分类关联表`);
+  }
+  // 面板 cookie 的签名密钥：没有就生成一个写回 .env
+  await ensureAdminSecret();
+
+  const server = app.listen(config.http.port, config.http.host, async () => {
     console.log('');
     console.log('\x1b[32mLemonLite 服务端已启动\x1b[0m');
     console.log('');
@@ -163,11 +173,13 @@ async function start() {
     if (!mail.ready) {
       console.log('  客户端注册会失败：先在 .env 里配好 MAIL_DRIVER 与对应凭据');
     }
-    // 管理面板能改邮件通道，所以把它当前是否可用也说清楚
-    if (config.admin.enabled) {
-      console.log(`\x1b[32m✓\x1b[0m 管理面板 http://<本机IP>:${config.http.port}/admin（口令 ADMIN_PASSWORD）`);
+    // 管理面板能改邮件通道，所以把它当前状态也说清楚
+    const admins = await adminCount();
+    const panel = `http://<本机IP>:${config.http.port}/admin`;
+    if (admins === 0) {
+      console.log(`\x1b[33m!\x1b[0m 管理面板 ${panel} 还没有管理员账号，首次打开时创建一个`);
     } else {
-      console.log('\x1b[33m!\x1b[0m 管理面板未启用：在 .env 里设置 ADMIN_PASSWORD 后重启');
+      console.log(`\x1b[32m✓\x1b[0m 管理面板 ${panel}（${admins} 个管理账号）`);
     }
     console.log('');
     console.log(`  本机   http://127.0.0.1:${config.http.port}`);

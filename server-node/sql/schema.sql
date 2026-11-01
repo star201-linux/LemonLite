@@ -237,3 +237,48 @@ CREATE TABLE IF NOT EXISTS app_tags (
   CONSTRAINT fk_app_tags_tag FOREIGN KEY (tag_id)
     REFERENCES tags (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- ============================================================ 4. 管理账号
+
+-- 面板账号和普通用户（users）**完全分开**：
+--   * 普通用户是市场里的「消费者」，管理账号是运维身份；
+--   * 混在一张表里意味着任何一个注册成功的用户都可能被提权成管理员，
+--     而这里出一次 bug 就是「整台服务器」级别的。
+--
+-- 口令只存 bcrypt hash。首次部署时表是空的，/admin 会让访问者**自己建**
+-- 第一个管理员账号（admin 组），之后只能由已有管理员新增管理员。
+-- 这条链路唯一的空窗期是「部署完还没建号」的那几分钟 ——
+-- 公网部署建议同时设 ADMIN_SETUP_TOKEN，建号时必须填那个口令。
+CREATE TABLE IF NOT EXISTS admin_users (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  username      VARCHAR(32)     NOT NULL,
+  password_hash VARCHAR(100)    NOT NULL,
+  -- 组：现在只有 admin（全权）。
+  -- 用 VARCHAR 而不是 ENUM，是为了将来加只读/运营角色时不用 ALTER 表；
+  -- 合法值由代码校验（ROLE_ADMIN）。
+  role          VARCHAR(16)     NOT NULL DEFAULT 'admin',
+  status        ENUM('active','disabled') NOT NULL DEFAULT 'active',
+  created_at    DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  created_ip    VARCHAR(45)     NOT NULL DEFAULT '',
+  last_login_at DATETIME(3)     NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_admin_username (username)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- ============================================================ 5. 应用 ↔ 分类
+
+-- 一个应用可以挂在多个分类下。
+--
+-- apps.category_id 保留为「主分类」：客户端详情页只认识一个分类字段，
+-- 主页的分类 chip 也按它兜底。真正的归类关系在这张表里。
+-- 两个地方都要维护，写入时由 replaceAppCategories() 一次做完。
+CREATE TABLE IF NOT EXISTS app_categories (
+  app_id      VARCHAR(64) NOT NULL,
+  category_id VARCHAR(32) NOT NULL,
+  PRIMARY KEY (app_id, category_id),
+  KEY idx_app_categories_cat (category_id),
+  CONSTRAINT fk_app_categories_app FOREIGN KEY (app_id)
+    REFERENCES apps (id) ON DELETE CASCADE,
+  CONSTRAINT fk_app_categories_cat FOREIGN KEY (category_id)
+    REFERENCES categories (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
