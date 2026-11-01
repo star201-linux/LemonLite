@@ -256,8 +256,8 @@ class _AppDetailPageState extends State<AppDetailPage> {
               Expanded(
                 child: Text(
                   app.canOpen
-                      ? '小程序以安装包形式提供：点「打开」时会先下载到本机，'
-                          '之后打开不需要联网。服务端发布新版本时会在主页提示升级。'
+                      ? '首次打开会自动下载到本机（之后离线也能打开）；'
+                          '服务端发布新版本时，主页会提示升级。'
                       : '这个条目还没有上架安装包，暂时无法打开。',
                   style: textTheme.bodySmall?.copyWith(
                     color: scheme.onSurfaceVariant,
@@ -270,30 +270,31 @@ class _AppDetailPageState extends State<AppDetailPage> {
       ),
 
       // ---------------- 底部动作条 ----------------
+      //
+      // 只有一个「打开」。安装不是用户要理解的概念：
+      // 包是这个小程序的运行形式，点打开时该下载就下载、该升级就升级，
+      // 用户只需要知道「点它就能用」。所以这枚按钮的文案会随状态变
+      //（未安装 → 下载并打开），但永远只有这一个。
       bottomNavigationBar: SafeArea(
         minimum: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-        child: Row(
-          children: <Widget>[
-            // 安装：第一阶段禁用（明确禁用比点了没反应更好）
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: null,
-                icon: const Icon(Icons.download_outlined),
-                label: const Text('安装（第二阶段）'),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: app.canOpen ? () => _openMiniapp(context) : null,
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('打开'),
-              ),
-            ),
-          ],
+        child: SizedBox(
+          width: double.infinity,
+          height: 48,
+          child: FilledButton.icon(
+            onPressed: app.canOpen ? () => _openMiniapp(context) : null,
+            icon: Icon(app.canOpen ? Icons.play_arrow : Icons.block),
+            label: Text(_openButtonLabel),
+          ),
         ),
       ),
     );
+  }
+
+  /// 「打开」按钮的文案：没装过就说清楚会先下载，装过就老老实实叫「打开」
+  String get _openButtonLabel {
+    if (!app.canOpen) return '暂不可用';
+    if (_installed == null) return '下载并打开';
+    return '打开';
   }
 
   /// 分类 id → 分类名（从已加载的市场数据里查，查不到就显示原始 id）

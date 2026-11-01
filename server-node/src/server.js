@@ -13,6 +13,7 @@ import { marketRouter } from './routes/market.js';
 import { authRouter } from './routes/auth.js';
 import { uploadRouter, userDataRouter } from './routes/upload.js';
 import { packageRouter } from './routes/packages.js';
+import { adminRouter } from './routes/admin.js';
 import { describeMail, mailStatus } from './lib/mailer.js';
 
 readEnvFile();
@@ -89,6 +90,8 @@ app.use('/api/auth', authRouter);
 app.use('/api/upload', uploadRouter);
 // 用户私有 JSON：前缀是 /api/user，**不是** /api/upload（见 upload.js 里的说明）
 app.use('/api/user', userDataRouter);
+// 管理面板：/admin（没有 ADMIN_PASSWORD 时整块不可用，只显示一句提示）
+app.use('/admin', adminRouter);
 
 // 根路径给一句人话（否则访问 / 会拿到 404 JSON，看起来像挂了）
 app.get('/', (_req, res) => {
@@ -115,6 +118,8 @@ app.get('/', (_req, res) => {
       '  DELETE /api/auth/sessions/:id',
       '  POST /api/auth/logout',
       '  POST /api/auth/logout-all',
+      '',
+      '  GET  /admin                  （管理面板：概览 / 邮件通道 / 用户）',
       '  POST /api/upload/avatar       （multipart，字段名 file）',
       '  GET  /api/upload/avatar/:id',
       '  DELETE /api/upload/avatar',
@@ -157,6 +162,12 @@ async function start() {
     );
     if (!mail.ready) {
       console.log('  客户端注册会失败：先在 .env 里配好 MAIL_DRIVER 与对应凭据');
+    }
+    // 管理面板能改邮件通道，所以把它当前是否可用也说清楚
+    if (config.admin.enabled) {
+      console.log(`\x1b[32m✓\x1b[0m 管理面板 http://<本机IP>:${config.http.port}/admin（口令 ADMIN_PASSWORD）`);
+    } else {
+      console.log('\x1b[33m!\x1b[0m 管理面板未启用：在 .env 里设置 ADMIN_PASSWORD 后重启');
     }
     console.log('');
     console.log(`  本机   http://127.0.0.1:${config.http.port}`);

@@ -12,9 +12,11 @@
 import 'package:flutter/material.dart';
 
 import '../../data/services/application_registry.dart';
+import '../../data/services/miniapp_package_service.dart';
 import '../../data/services/miniapp_storage_service.dart';
 import '../../theme/app_theme.dart';
 import '../home/widgets/app_icon.dart';
+import '../miniapp/miniapp_host.dart';
 import '../permissions/permission_controller_page.dart';
 import '../storage/storage_page.dart';
 
@@ -184,7 +186,8 @@ class _AppManageDetailPageState extends State<AppManageDetailPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               Text(
-                '它会从应用清单与权限管理器里消失，权限记录一并清掉。',
+                '它会从应用清单与权限管理器里消失，权限记录一并清掉，'
+                '**下载到本机的小程序文件也会被删除**（下次点「打开」会重新下载）。',
                 style: Theme.of(ctx).textTheme.bodyMedium,
               ),
               const SizedBox(height: 8),
@@ -217,12 +220,19 @@ class _AppManageDetailPageState extends State<AppManageDetailPage> {
     );
     if (ok != true) return;
 
+    // 顺序很重要：
+    //   1. 先把这个小程序的后台会话关掉 —— 它的 WebView 已经加载了
+    //      file:// 的页面，文件被删掉后再继续跑只会得到一堆「资源丢失」。
+    //   2. 再删包目录（这才是「移除」应有的含义：不占空间了）。
+    //   3. 数据是可选项（用户可能只是不想留文件，但想保留记录）。
+    await MiniappHost.instance.close(widget.appId);
+    await MiniappPackageService.instance.remove(widget.appId);
     if (clearData) {
       await MiniappStorageService.instance.clearAllData(widget.appId);
     }
     await ApplicationRegistry.instance.remove(widget.appId);
     if (!mounted) return;
-    AppTheme.showToast('已移除「${widget.appName}」');
+    AppTheme.showToast('已移除「${widget.appName}」，本机文件已删除');
     Navigator.of(context).pop();
   }
 

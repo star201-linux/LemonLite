@@ -5,7 +5,7 @@
 name: lemonlite
 description: "LemonLite：Flutter 宿主容器 + WebView 逻辑层 + JSBridge 的 Android 小程序框架"
 publish_to: "none"
-version: 0.1.2+3
+version: 0.1.3+4
 
 environment:
   # 下限由依赖决定，不是我们随手抬的：
