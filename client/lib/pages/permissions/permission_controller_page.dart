@@ -471,8 +471,8 @@ class _PermissionControllerPageState extends State<PermissionControllerPage> {
     final bool? ok = await _confirm(
       title: allowed ? '允许全部权限？' : '拒绝全部权限？',
       message: allowed
-          ? '该应用将可以使用摄像头、麦克风、管理所有文件，之后不再弹窗询问。'
-          : '该应用将无法使用摄像头、麦克风，也无法管理所有文件。'
+          ? '该应用将可以使用摄像头、麦克风、手机存储，之后不再弹窗询问。'
+          : '该应用将无法使用摄像头、麦克风，也无法读取手机存储。'
                 '它可能因此无法正常工作。',
       confirmLabel: allowed ? '允许' : '拒绝',
     );
@@ -622,7 +622,7 @@ class _ScanSummaryCard extends StatelessWidget {
                         title: const Text('拒绝全部应用的权限？'),
                         content: Text(
                           '将对全部 ${report.totalApps} 个应用把摄像头、麦克风、'
-                          '管理所有文件设为「拒绝」。',
+                          '手机存储设为「拒绝」。',
                         ),
                         actions: <Widget>[
                           TextButton(
@@ -776,7 +776,7 @@ class _PermissionDecisionTile extends StatelessWidget {
                   onChanged(selection.first),
             ),
           ),
-          // 「管理所有文件」在系统侧还有一层授权：应用内允许只是第一层，
+          // 「手机存储」在系统侧还有一层授权：应用内允许只是第一层，
           // 没有系统侧的「所有文件访问权限」照样读不到沙箱外的文件。
           // 所以这里直接给一个跳转入口，省得用户自己去设置里翻。
           if (permission.needsSystemSettings) ...<Widget>[

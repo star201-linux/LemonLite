@@ -1,0 +1,31 @@
+{
+  "type": "plugin",
+  "id": "lemonlite.wasm",
+  "name": "WebAssembly 运行时",
+  "version": "1.0.0",
+  "description": "为小程序提供 WebAssembly 模块：离线可用，模块字节来自插件包本身，不依赖网络。",
+  "author": "LemonLite",
+  "platforms": ["android", "ios", "macos", "windows", "linux", "web"],
+  "capabilities": ["wasm"],
+  "wasm": {
+    "modules": [
+      {
+        "name": "lemonlite",
+        "file": "modules/lemonlite.wasm",
+        "description": "通用整数/内存示例模块：四则运算、斐波那契、累加、gcd、popcount、clamp、内存求和",
+        "exports": [
+          "version",
+          "add",
+          "sub",
+          "mul",
+          "fib",
+          "sum_to",
+          "gcd",
+          "popcount",
+          "clamp",
+          "sum_bytes"
+        ]
+      }
+    ]
+  }
+}

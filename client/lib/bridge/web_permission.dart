@@ -18,7 +18,7 @@
 // 由此产生的一条**重要结论**：应用内授权（这里的 PermissionResponse）与
 //   Android 运行时权限（CAMERA / RECORD_AUDIO）是两层，缺一不可。
 //   Chromium 自己会去申请系统权限；系统没给，它最终仍会失败。
-//   所以「管理所有文件」那种需要跳系统设置的权限，在这里放行之后
+//   所以「手机存储」那种系统侧还有一层授权的权限，在这里放行之后
 //   依然可能失败 —— 弹窗里必须把这件事说清楚（见 permission_prompt.dart）。
 
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -51,7 +51,7 @@ class WebPermissionAsk {
   ///   CAMERA                        → camera
   ///   MICROPHONE                    → microphone
   ///   CAMERA_AND_MICROPHONE         → camera + microphone（两个都问）
-  ///   FILE_READ_WRITE               → allFiles
+  ///   FILE_READ_WRITE               → sdcard
   ///   CLIPBOARD_READ                → clipboard
   ///   NOTIFICATIONS                 → notifications
   ///
@@ -77,8 +77,8 @@ class WebPermissionAsk {
         wanted.add(MiniappPermission.microphone);
       } else if (resource == PermissionResourceType.FILE_READ_WRITE) {
         // File System Access API：网页请求读写用户选中的文件/目录。
-        // 在小程序语境里这就是「管理所有文件」。
-        wanted.add(MiniappPermission.allFiles);
+        // 在小程序语境里这就是「读手机存储（sdcard）」。
+        wanted.add(MiniappPermission.sdcard);
       } else if (resource == PermissionResourceType.CLIPBOARD_READ) {
         wanted.add(MiniappPermission.clipboard);
       } else if (resource == PermissionResourceType.NOTIFICATIONS) {
@@ -165,7 +165,7 @@ class WebPermissionAsk {
       };
     }
     if (resource == PermissionResourceType.FILE_READ_WRITE) {
-      return <MiniappPermission>{MiniappPermission.allFiles};
+      return <MiniappPermission>{MiniappPermission.sdcard};
     }
     if (resource == PermissionResourceType.CLIPBOARD_READ) {
       return <MiniappPermission>{MiniappPermission.clipboard};

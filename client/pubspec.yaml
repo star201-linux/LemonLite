@@ -5,7 +5,7 @@
 name: lemonlite
 description: "LemonLite：Flutter 宿主容器 + WebView 逻辑层 + JSBridge 的 Android 小程序框架"
 publish_to: "none"
-version: 0.1.4+5
+version: 0.1.5+6
 
 environment:
   # 下限由依赖决定，不是我们随手抬的：
@@ -118,7 +118,14 @@ flutter:
     # 端到端自检页（只在传了 --dart-define=LEMONLITE_AUTOTEST 的包里会被打开；
     # 它把 0.2 的每个受控能力真调一遍并把报告写进自己的文件沙箱，见 lib/core/autotest.dart）
     - assets/miniapp-selftest/
-    # 内置 WebAssembly 模块（小程序用 lemonlite.wasm.* 读取并实例化，离线可用）。
-    # 源码与构建 / 校验脚本见 tool/wasm/：改 C 之后跑 `bash tool/wasm/build_wasm.sh`
-    # 重编，再用 `node tool/wasm/verify_wasm.mjs` 校验。
-    - assets/wasm/lemonlite.wasm
+    # 随包附带的**插件**包：WebAssembly 运行时。
+    #
+    # 它已经不算是宿主的一部分了：manifest 与 wasm 模块都是一份独立的插件包
+    # （和用户从 ZIP 导入的插件格式完全相同），由用户在「设置 → 插件」里
+    # 安装/停用/卸载。宿主核心代码里没有任何 wasm 加载逻辑，只有
+    # PluginService 会按能力（capabilities）去问"哪个插件能提供 wasm"。
+    #
+    # 源码与构建 / 校验脚本见 tool/wasm/：改 C 之后跑
+    # `bash tool/wasm/build_wasm.sh` 重编，再用 `node tool/wasm/verify_wasm.mjs` 校验。
+    - assets/plugins/lemonlite-wasm/lemonlite.json
+    - assets/plugins/lemonlite-wasm/modules/lemonlite.wasm

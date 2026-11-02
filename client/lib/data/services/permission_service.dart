@@ -224,13 +224,31 @@ class PermissionService extends ChangeNotifier {
   static String _usageKey(String appId, MiniappPermission p) =>
       '$_kUsagePrefix$appId.${p.id}';
 
+  /// 某个权限在盘上的所有 decision key：当前 id 在前，历史 id 在后。
+  ///
+  /// 历史 id 只读不写（见 [MiniappPermission.aliases]）：
+  /// 升级前用户对 `allFiles` 点过的「允许」要能继续生效，
+  /// 但不能让新旧两份记录同时存在、以后谁也说不清哪个算数。
+  static List<String> _decisionKeys(String appId, MiniappPermission p) => <String>[
+    _decisionKey(appId, p),
+    for (final String legacy in p.legacyIds) '$_kDecisionPrefix$appId.$legacy',
+  ];
+
+  static List<String> _usageKeys(String appId, MiniappPermission p) => <String>[
+    _usageKey(appId, p),
+    for (final String legacy in p.legacyIds) '$_kUsagePrefix$appId.$legacy',
+  ];
+
   // -------------------------------------------------------------- 授权状态
 
   /// 用户对该能力的决定。没写过 = 还没问过（[PermissionDecision.ask]）。
   PermissionDecision decisionOf(String appId, MiniappPermission permission) {
-    final String? raw = _settings.readRaw(_decisionKey(appId, permission));
-    if (raw == null || raw.isEmpty) return permission.defaultDecision;
-    return PermissionDecision.byId(raw) ?? permission.defaultDecision;
+    for (final String key in _decisionKeys(appId, permission)) {
+      final String? raw = _settings.readRaw(key);
+      if (raw == null || raw.isEmpty) continue;
+      return PermissionDecision.byId(raw) ?? permission.defaultDecision;
+    }
+    return permission.defaultDecision;
   }
 
   /// 用户是否已经做过决定（控制器里用来区分「询问」与「允许/拒绝」）
@@ -245,10 +263,10 @@ class PermissionService extends ChangeNotifier {
     MiniappPermission permission,
     PermissionDecision decision,
   ) async {
-    if (decision == PermissionDecision.ask) {
-      // 「询问」= 没有记录，所以是删除而不是写值 —— 少一个状态就少一处不一致
-      await _settings.removeRaw(_decisionKey(appId, permission));
-    } else {
+    // 新旧 key 一起清：只删当前 key 会让旧记录在下次读取时"复活"，
+    // 用户点了「恢复询问」却又被问到的状态会非常费解。
+    await _settings.removeMany(_decisionKeys(appId, permission));
+    if (decision != PermissionDecision.ask) {
       await _settings.writeRaw(_decisionKey(appId, permission), decision.id);
     }
     notifyListeners();
@@ -286,7 +304,7 @@ class PermissionService extends ChangeNotifier {
 
   /// 只动敏感权限。
   ///
-  /// 这一版里三项权限（摄像头 / 麦克风 / 管理所有文件）都算敏感，
+  /// 这一版里三项权限（摄像头 / 麦克风 / 手机存储）都算敏感，
   /// 所以它等价于 [setAllDecisions]；保留独立入口是为了以后加入
   /// 常规等级的权限时，这个「一键收紧」的语义不会跟着变。
   Future<void> setSensitiveDecision(
@@ -328,7 +346,7 @@ class PermissionService extends ChangeNotifier {
   /// 下次用到哪个权限就为哪个弹窗。这是「我改错了想重来」的出口。
   Future<void> resetApp(String appId) async {
     final List<String> keys = MiniappPermission.values
-        .map((MiniappPermission p) => _decisionKey(appId, p))
+        .expand(_decisionKeys.bind(appId))
         .toList(growable: false);
     await _settings.removeMany(keys);
     notifyListeners();
@@ -337,7 +355,13 @@ class PermissionService extends ChangeNotifier {
   // -------------------------------------------------------------- 用量记录
 
   MiniappUsage usageOf(String appId, MiniappPermission permission) {
-    final String? raw = _settings.readRaw(_usageKey(appId, permission));
+    String? raw;
+    for (final String key in _usageKeys(appId, permission)) {
+      final String? value = _settings.readRaw(key);
+      if (value == null || value.isEmpty) continue;
+      raw = value;
+      break;
+    }
     if (raw == null || raw.isEmpty) return MiniappUsage.empty;
     try {
       final Object? decoded = jsonDecode(raw);
@@ -443,8 +467,8 @@ class PermissionService extends ChangeNotifier {
   Future<void> clearAppRecords(String appId) async {
     final List<String> keys = <String>[];
     for (final MiniappPermission p in MiniappPermission.values) {
-      keys.add(_decisionKey(appId, p));
-      keys.add(_usageKey(appId, p));
+      keys.addAll(_decisionKeys(appId, p));
+      keys.addAll(_usageKeys(appId, p));
     }
     await _settings.removeMany(keys);
     notifyListeners();

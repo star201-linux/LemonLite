@@ -67,7 +67,7 @@ class _AppManageDetailPageState extends State<AppManageDetailPage> {
             ListTile(
               leading: const Icon(Icons.verified_user_outlined),
               title: const Text('权限管理'),
-              subtitle: const Text('摄像头、麦克风、管理所有文件'),
+              subtitle: const Text('摄像头、麦克风、手机存储'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.of(context).push(
                 PermissionControllerPage.route(

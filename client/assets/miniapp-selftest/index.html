@@ -311,7 +311,7 @@
   step('setAllowScreenOff(true)', function () { return ll.setAllowScreenOff(true); },
     function (r) { return { status: 'ok', detail: 'allowScreenOff=' + r.allowScreenOff }; });
 
-  /* --------------------------------- 内置 WASM -------------------------------- */
+  /* ------------------------- WASM（由插件提供，需先安装） ------------------------ */
 
   step('wasm.list()', function () { return ll.wasm.list(); },
     function (r) {

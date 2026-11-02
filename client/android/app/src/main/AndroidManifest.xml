@@ -29,6 +29,18 @@
     <!-- Android 13+：网页发通知（Notification.requestPermission）需要它 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
+    <!--
+        下载管理：目标目录是公共「下载」目录（Download/）。
+
+        Android 10（API 29）起，往公共下载目录写文件由系统 DownloadManager 负责，
+        **不需要任何存储权限**；所以这两条只对 Android 9 及以下生效，
+        用 maxSdkVersion 把声明范围收窄 —— 新系统上连声明都没有，
+        系统设置里也不会出现一个「已授权但没用」的存储权限。
+    -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28"/>
+
     <!-- 摄像头/麦克风属于「硬件可选」：没有摄像头的设备也能装，
          装了之后调用 getUserMedia 会拿到 NotAllowedError，而不是装不上。 -->
     <uses-feature android:name="android.hardware.camera" android:required="false"/>

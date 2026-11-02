@@ -47,6 +47,15 @@ class MainActivity : FlutterActivity() {
     /** 是否因为数据目录锁冲突而启用了独立的 WebView 数据目录（Dart 侧启动时会查询并写日志）。 */
     private var webviewSuffixApplied = false
 
+    /**
+     * 下载桥。
+     *
+     * 单独一个类而不是继续堆在 MainActivity 里：下载与窗口级能力（亮度/方向）
+     * 没有任何共享状态，分开之后 MainActivity 只负责「注册」，逻辑各归各的。
+     * 这里持一下引用是为了让生命周期跟 Activity 对齐（通道本身也会持有它）。
+     */
+    private var downloadBridge: DownloadBridge? = null
+
     /** 预检用的探针 WebView，[preflightWebView] 的 finally 里销毁。 */
     private var webviewProbe: android.webkit.WebView? = null
 
@@ -134,6 +143,12 @@ class MainActivity : FlutterActivity() {
 
         val nativeChannel =
             MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL_NAME)
+        // 下载通道：目标目录是公共「下载」目录，落盘交给系统 DownloadManager。
+        DownloadBridge(this).also {
+            it.attach(flutterEngine.dartExecutor.binaryMessenger)
+            downloadBridge = it
+        }
+
         nativeChannel.setMethodCallHandler { call, result ->
             // 通道回调不保证在主线程，而 screenBrightness / FLAG_KEEP_SCREEN_ON /
             // requestedOrientation 都只能在主线程改；MethodChannel.Result 也要求回到主线程回调。

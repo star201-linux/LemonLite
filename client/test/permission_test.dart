@@ -1,6 +1,6 @@
 // test/permission_test.dart
 //
-// 权限模型 / 权限服务 / 应用清单 / 文件沙箱 / 内置 WASM / 桥接层的单元测试。
+// 权限模型 / 权限服务 / 应用清单 / 文件沙箱 / 插件提供的 WASM / 桥接层的单元测试。
 //
 // 这一版把「权限」收窄成**浏览器的受控资源**（摄像头 / 麦克风 / 文件系统访问），
 // 所以断言也围着这条线写：
@@ -10,6 +10,8 @@
 //   4. WebView 权限请求 → 框架权限的翻译与放行结果（这是安全边界，必须逐项断言）
 //   5. 文件沙箱的路径校验（越界一律拒绝）
 //   6. 桥接层**没有**权限闸门这件事本身（音量/亮度/文件不再弹窗）
+//   7. 权限改名（allFiles → sdcard）后的**旧数据兼容**：旧决定仍然生效
+//   8. WebAssembly 从"内置"改为"插件提供"之后：插件 manifest 与 wasm 载荷
 //
 // 约定：每个用例都从干净的 SharedPreferences 开始（setMockInitialValues 重置），
 // 这样用例之间不会通过持久化互相污染。
@@ -21,14 +23,15 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lemonlite/bridge/bridge_api.dart';
 import 'package:lemonlite/bridge/web_permission.dart';
-import 'package:lemonlite/core/builtin_wasm.dart';
 import 'package:lemonlite/core/native_bridge.dart';
+import 'package:lemonlite/data/models/bundle_manifest.dart';
 import 'package:lemonlite/data/models/json_utils.dart';
 import 'package:lemonlite/data/models/miniapp_permission.dart';
 import 'package:lemonlite/data/models/miniapp_session.dart';
 import 'package:lemonlite/data/services/application_registry.dart';
 import 'package:lemonlite/data/services/miniapp_storage_service.dart';
 import 'package:lemonlite/data/services/permission_service.dart';
+import 'package:lemonlite/data/services/plugin_service.dart';
 import 'package:lemonlite/data/services/settings_service.dart';
 import 'package:lemonlite/pages/permissions/permission_prompt.dart';
 import 'package:lemonlite/theme/theme_controller.dart';
@@ -84,7 +87,7 @@ void main() {
           'geolocationCoarse',
           'clipboard',
           'notifications',
-          'allFiles',
+          'sdcard',
         ],
       );
     });
@@ -131,7 +134,7 @@ void main() {
       }
     });
 
-    test('摄像头/麦克风需要系统运行时权限，文件访问不需要', () {
+    test('摄像头/麦克风需要系统运行时权限，手机存储不需要', () {
       expect(
         MiniappPermission.camera.runtimePermissions,
         <String>['android.permission.CAMERA'],
@@ -140,9 +143,10 @@ void main() {
         MiniappPermission.microphone.runtimePermissions,
         <String>['android.permission.RECORD_AUDIO'],
       );
-      expect(MiniappPermission.allFiles.runtimePermissions, isEmpty);
+      // 手机存储由系统文件选择器逐次确认，不需要额外的运行时权限
+      expect(MiniappPermission.sdcard.runtimePermissions, isEmpty);
       expect(MiniappPermission.camera.needsRuntimePermission, isTrue);
-      expect(MiniappPermission.allFiles.needsRuntimePermission, isFalse);
+      expect(MiniappPermission.sdcard.needsRuntimePermission, isFalse);
       // 定位两档都需要系统权限
       expect(MiniappPermission.geolocationFine.needsRuntimePermission, isTrue);
       expect(MiniappPermission.geolocationCoarse.needsRuntimePermission, isTrue);
@@ -158,10 +162,10 @@ void main() {
       expect(sensitive, contains(MiniappPermission.geolocationFine));
       expect(sensitive, contains(MiniappPermission.geolocationCoarse));
       expect(sensitive, contains(MiniappPermission.clipboard));
-      expect(sensitive, contains(MiniappPermission.allFiles));
+      expect(sensitive, contains(MiniappPermission.sdcard));
       // 通知是「常规」等级：它不读数据，只是打扰
       expect(sensitive, isNot(contains(MiniappPermission.notifications)));
-      expect(MiniappPermission.allFiles.risk, PermissionRisk.dangerous);
+      expect(MiniappPermission.sdcard.risk, PermissionRisk.dangerous);
     });
 
     test('定位归在「位置」分组，不与媒体采集混在一起', () {
@@ -277,14 +281,14 @@ void main() {
       );
     });
 
-    test('FILE_READ_WRITE → allFiles', () {
+    test('FILE_READ_WRITE → sdcard（手机存储）', () {
       final WebPermissionAsk ask = WebPermissionAsk.from(
         PermissionRequest(
           origin: WebUri('https://example.com'),
           resources: <PermissionResourceType>[PermissionResourceType.FILE_READ_WRITE],
         ),
       );
-      expect(ask.permissions, <MiniappPermission>[MiniappPermission.allFiles]);
+      expect(ask.permissions, <MiniappPermission>[MiniappPermission.sdcard]);
     });
 
     test('不认识的资源（AUTOPLAY）→ isUnmanaged，调用方应直接放行', () {
@@ -497,7 +501,7 @@ void main() {
     test('setAllDecisions(denied) 之后 resetApp 回到全部「询问」', () async {
       await permissions.setAllDecisions(app, PermissionDecision.denied);
       expect(
-        permissions.decisionOf(app, MiniappPermission.allFiles),
+        permissions.decisionOf(app, MiniappPermission.sdcard),
         PermissionDecision.denied,
       );
       await permissions.resetApp(app);
@@ -791,7 +795,7 @@ void main() {
 
     test('pendingDeclared：只挑"声明里且还没决定"的，顺序固定按枚举', () async {
       final List<MiniappPermission> declared = <MiniappPermission>[
-        MiniappPermission.allFiles,
+        MiniappPermission.sdcard,
         MiniappPermission.camera,
         MiniappPermission.microphone,
       ];
@@ -799,7 +803,7 @@ void main() {
         PermissionPromptService.pendingDeclared(appId: app, declared: declared)
             .map((MiniappPermission p) => p.id)
             .toList(),
-        <String>['camera', 'microphone', 'allFiles'],
+        <String>['camera', 'microphone', 'sdcard'],
       );
 
       await permissions.setDecision(
@@ -817,7 +821,7 @@ void main() {
         PermissionPromptService.pendingDeclared(appId: app, declared: declared)
             .map((MiniappPermission p) => p.id)
             .toList(),
-        <String>['allFiles'],
+        <String>['sdcard'],
       );
     });
 
@@ -1035,35 +1039,150 @@ void main() {
     });
   });
 
-  // ============================================================ 内置 WASM
+  // ==================================================== 权限改名后的兼容
 
-  group('内置 WASM', () {
-    test('清单里至少有一个模块，导出清单非空且不重复', () {
-      expect(kBuiltinWasmModules, isNotEmpty);
-      for (final BuiltinWasmModule m in kBuiltinWasmModules) {
-        expect(m.name.trim(), isNotEmpty);
-        expect(m.exports, isNotEmpty);
-        expect(m.exports.toSet().length, m.exports.length, reason: '${m.name} 导出重复');
-        expect(m.exports, contains('add'));
+  group('allFiles → sdcard 的兼容', () {
+    const String app = 'demo.app';
+
+    test('旧 id 仍能识别，并解析成新权限', () {
+      expect(MiniappPermission.byId('allFiles'), MiniappPermission.sdcard);
+      expect(MiniappPermission.byId('nope'), isNull);
+      // 声明里写旧 id 的应用不该被当成"未知权限"
+      expect(MiniappPermission.isRetired('allFiles'), isFalse);
+    });
+
+    test('升级前写下的旧决定继续生效', () async {
+      await freshPrefs(<String, Object>{
+        'perm.decision.$app.allFiles': 'granted',
+      });
+      expect(
+        permissions.decisionOf(app, MiniappPermission.sdcard),
+        PermissionDecision.granted,
+      );
+    });
+
+    test('重新设置决定时新旧键一起清，不会让旧记录"复活"', () async {
+      await freshPrefs(<String, Object>{
+        'perm.decision.$app.allFiles': 'denied',
+      });
+      await permissions.setDecision(
+        app,
+        MiniappPermission.sdcard,
+        PermissionDecision.ask,
+      );
+      expect(
+        permissions.decisionOf(app, MiniappPermission.sdcard),
+        PermissionDecision.ask,
+      );
+      // 旧键必须已经被删掉，否则下次读取还会拿到 denied
+      expect(settings.readRaw('perm.decision.$app.allFiles'), isNull);
+    });
+  });
+
+  // ============================================================ 插件 / WASM
+
+  group('插件 manifest', () {
+    Map<String, dynamic> pluginJson({
+      List<String> platforms = const <String>['android', 'ios'],
+      List<String> capabilities = const <String>['wasm'],
+      List<Map<String, dynamic>> modules = const <Map<String, dynamic>>[
+        <String, dynamic>{'name': 'lemonlite', 'file': 'modules/lemonlite.wasm'},
+      ],
+    }) => <String, dynamic>{
+      'type': 'plugin',
+      'id': 'lemonlite.wasm',
+      'name': 'WebAssembly 运行时',
+      'version': '1.0.0',
+      'platforms': platforms,
+      'capabilities': capabilities,
+      'wasm': <String, dynamic>{'modules': modules},
+    };
+
+    test('type = plugin 被识别，且落到 plugins 目录', () {
+      final BundleManifest m = BundleManifest.parse(pluginJson());
+      expect(m.type, BundleType.plugin);
+      expect(m.type.label, '插件');
+      expect(m.type.directoryName, 'plugins');
+      expect(m.capabilities, <String>['wasm']);
+      expect(m.hasCapability('wasm'), isTrue);
+      expect(m.hasCapability('camera'), isFalse);
+      expect(m.platforms, <String>['android', 'ios']);
+      expect(m.wasmModules.single.name, 'lemonlite');
+      expect(m.wasmModules.single.file, 'modules/lemonlite.wasm');
+    });
+
+    test('平台匹配按当前平台判断，空列表 = 全平台', () {
+      final BundleManifest limited = BundleManifest.parse(pluginJson());
+      final BundleManifest universal = BundleManifest.parse(
+        pluginJson(platforms: const <String>[]),
+      );
+      // 测试环境是 android（defaultTargetPlatform 的默认值）
+      expect(PluginService.platformMatches(limited), isTrue);
+      expect(PluginService.platformMatches(universal), isTrue);
+      expect(PluginService.currentPlatformId, 'android');
+    });
+
+    test('插件必须声明能力', () {
+      expect(
+        () => BundleManifest.parse(pluginJson(capabilities: const <String>[])),
+        throwsA(isA<BundleManifestException>()),
+      );
+    });
+
+    test('声明了 wasm 能力却没有模块 → 拒绝', () {
+      expect(
+        () => BundleManifest.parse(pluginJson(modules: const <Map<String, dynamic>>[])),
+        throwsA(isA<BundleManifestException>()),
+      );
+    });
+
+    test('wasm 模块缺 name / file → 拒绝', () {
+      expect(
+        () => BundleManifest.parse(
+          pluginJson(modules: <Map<String, dynamic>>[
+            <String, dynamic>{'name': 'x'},
+          ]),
+        ),
+        throwsA(isA<BundleManifestException>()),
+      );
+    });
+  });
+
+  group('随包附带的 wasm 插件载荷', () {
+    /// 插件包里的 wasm 路径（不再放在 assets/wasm 下 —— 它已经不是宿主的一部分了）
+    const String wasmPath = 'assets/plugins/lemonlite-wasm/modules/lemonlite.wasm';
+    const String manifestPath = 'assets/plugins/lemonlite-wasm/lemonlite.json';
+
+    test('插件包文件存在，且 pubspec 声明了它们', () {
+      expect(File(wasmPath).existsSync(), isTrue);
+      expect(File(manifestPath).existsSync(), isTrue);
+      final String pubspec = File('pubspec.yaml').readAsStringSync();
+      expect(pubspec.contains(wasmPath), isTrue);
+      expect(pubspec.contains(manifestPath), isTrue);
+      // 宿主不再内置 wasm：旧路径必须已经删掉
+      expect(File('assets/wasm/lemonlite.wasm').existsSync(), isFalse);
+    });
+
+    test('插件 manifest 声明的能力与模块和包内文件一致', () {
+      final Object? decoded = jsonDecode(File(manifestPath).readAsStringSync());
+      final BundleManifest manifest = BundleManifest.parse(
+        (decoded! as Map).map<String, dynamic>(
+          (Object? k, Object? v) => MapEntry<String, dynamic>(k.toString(), v),
+        ),
+      );
+      expect(manifest.type, BundleType.plugin);
+      expect(manifest.capabilities, contains('wasm'));
+      expect(manifest.wasmModules, isNotEmpty);
+      for (final PluginWasmModule module in manifest.wasmModules) {
+        final String path = 'assets/plugins/lemonlite-wasm/${module.file}';
+        expect(File(path).existsSync(), isTrue, reason: '$path 不存在');
+        expect(module.exports, contains('add'));
+        expect(module.exports.toSet().length, module.exports.length);
       }
     });
 
-    test('清单里的 asset 都真的存在（防止漏进 pubspec 的 assets）', () {
-      for (final BuiltinWasmModule m in kBuiltinWasmModules) {
-        expect(File(m.assetPath).existsSync(), isTrue, reason: '${m.assetPath} 不存在');
-        // pubspec.yaml 必须声明它，否则打进 APK 时会被漏掉
-        final String pubspec = File('pubspec.yaml').readAsStringSync();
-        expect(
-          pubspec.contains(m.assetPath) || pubspec.contains('assets/wasm/'),
-          isTrue,
-          reason: '${m.assetPath} 没有在 pubspec.yaml 的 assets 里声明',
-        );
-      }
-    });
-
-    test('wasm 二进制头合法（\\0asm + 版本 1），且导出符号名出现在二进制里', () {
-      final File file = File(kBuiltinWasmModules.first.assetPath);
-      final List<int> bytes = file.readAsBytesSync();
+    test('wasm 二进制头合法（\\0asm + 版本 1），导出符号名出现在二进制里', () {
+      final List<int> bytes = File(wasmPath).readAsBytesSync();
       expect(bytes.length, greaterThan(8));
       expect(bytes.sublist(0, 4), <int>[0x00, 0x61, 0x73, 0x6D]); // \0asm
       expect(bytes[4], 1); // version = 1
@@ -1072,59 +1191,10 @@ void main() {
       expect(bytes[7], 0);
 
       final String ascii = String.fromCharCodes(bytes);
-      for (final String symbol in kBuiltinWasmModules.first.exports) {
+      for (final String symbol in <String>['add', 'fib', 'sum_to', 'clamp']) {
         expect(ascii.contains(symbol), isTrue, reason: '二进制里找不到导出 $symbol');
       }
       expect(ascii.contains('memory'), isTrue);
-    });
-
-    test('BuiltinWasm.bytes 走 asset 能读到同一份字节', () async {
-      final List<int>? bytes = await BuiltinWasm.bytes(kBuiltinWasmModules.first.name);
-      expect(bytes, isNotNull);
-      expect(
-        bytes!.length,
-        File(kBuiltinWasmModules.first.assetPath).lengthSync(),
-      );
-    });
-
-    test('BuiltinWasm.byName：未知名字返回 null', () async {
-      expect(BuiltinWasm.byName('does-not-exist'), isNull);
-      expect(await BuiltinWasm.bytes('does-not-exist'), isNull);
-    });
-
-    test('wasmList 返回模块元信息', () async {
-      final BridgeApi api = apiFor('a');
-      final Map<String, dynamic> result =
-          (await api.dispatch('wasmList', <String, dynamic>{}))! as Map<String, dynamic>;
-      expect(result['count'], kBuiltinWasmModules.length);
-      final List<dynamic> modules = result['modules']! as List<dynamic>;
-      final Map<String, dynamic> first = modules.first as Map<String, dynamic>;
-      expect(first['name'], kBuiltinWasmModules.first.name);
-      expect(first['bytes'], greaterThan(0));
-      expect(first['exports'], contains('add'));
-    });
-
-    test('wasmRead 返回 base64，解码后就是那份 wasm', () async {
-      final BridgeApi api = apiFor('a');
-      final Map<String, dynamic> result =
-          (await api.dispatch('wasmRead', <String, dynamic>{
-                'name': kBuiltinWasmModules.first.name,
-              }))!
-              as Map<String, dynamic>;
-      final List<int> decoded = base64Decode(result['base64']! as String);
-      final List<int> onDisk =
-          File(kBuiltinWasmModules.first.assetPath).readAsBytesSync();
-      expect(decoded, onDisk);
-      expect(result['bytes'], onDisk.length);
-    });
-
-    test('wasmRead 未知名字报 10001 并提示可用模块', () async {
-      final BridgeApi api = apiFor('a');
-      final LemonBridgeException e = await captureBridgeError(
-        () => api.dispatch('wasmRead', <String, dynamic>{'name': 'nope'}),
-      );
-      expect(e.code, BridgeErrorCode.invalidArgument);
-      expect(e.message, contains(kBuiltinWasmModules.first.name));
     });
   });
 }

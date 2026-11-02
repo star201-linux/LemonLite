@@ -27,11 +27,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../core/builtin_wasm.dart';
 import '../core/globals.dart';
 import '../core/native_bridge.dart';
 import '../data/models/bundle_manifest.dart';
 import '../data/models/miniapp_session.dart';
+import '../data/services/download_service.dart';
+import '../data/services/plugin_service.dart';
 import '../data/services/miniapp_storage_service.dart';
 import '../data/services/settings_service.dart';
 import '../theme/app_theme.dart';
@@ -235,17 +236,27 @@ class BridgeApi {
       case 'fileInfo':
         return await fileInfo(params);
 
+      // ---- 下载（交给系统下载器） ----
+      case 'downloadSave':
+        return await downloadSave(params);
+      case 'downloadList':
+        return await downloadList();
+
       // ---- 会话 ----
       case 'runInBackground':
         return await runInBackground();
       case 'close':
         return await closeMiniapp();
 
-      // ---- 内置 WASM ----
+      // ---- WASM（由插件提供，宿主只负责转发字节） ----
       case 'wasmList':
         return await wasmList();
       case 'wasmRead':
         return await wasmRead(params);
+
+      // ---- 插件 ----
+      case 'pluginsList':
+        return await pluginsList();
 
       default:
         // 宿主内置 API 都没命中，才看是不是模块自己声明的方法
@@ -863,6 +874,71 @@ class BridgeApi {
     return info.toJson();
   }
 
+  // --------------------------------------------------------------- 下载
+
+  /// 把 http(s) 文件保存到系统下载目录。
+  ///
+  /// 为什么不由宿主自己下载：Android 10 起写公共「下载」目录需要
+  /// MANAGE_EXTERNAL_STORAGE 或 MediaStore，而这两条路都和本项目
+  /// 「不申请管理所有文件」的原则冲突。系统 DownloadManager 代为落盘
+  /// 不需要任何权限，还能在下完时给系统通知。
+  ///
+  /// 支持 fileName / filename（前者优先）；都不传就按 URL 推断。
+  /// 不支持 blob: / data: —— 那类内容没有可供下载器拉取的地址，
+  /// 页面应该自己把它转成 http(s) 链接再调这里。
+  Future<Map<String, dynamic>> downloadSave(Map<String, dynamic> params) async {
+    final String url = _string(params['url']).trim();
+    if (url.isEmpty) {
+      throw const LemonBridgeException(
+        BridgeErrorCode.invalidArgument,
+        'download.save(url)：缺少 url',
+      );
+    }
+    final String fileName =
+        _string(params['fileName'], _string(params['filename'])).trim();
+    try {
+      final DownloadTask task = await DownloadService.instance.enqueue(
+        url: url,
+        fileName: fileName.isEmpty ? null : fileName,
+        mimeType: _string(params['mimeType']).trim().isEmpty
+            ? null
+            : _string(params['mimeType']).trim(),
+      );
+      return <String, dynamic>{
+        'id': task.id,
+        'fileName': task.fileName,
+        'path': 'Download/${task.relativePath}',
+        'status': task.status.id,
+      };
+    } on DownloadException catch (e) {
+      throw LemonBridgeException(BridgeErrorCode.notSupported, e.message);
+    }
+  }
+
+  /// 当前下载记录（按新→旧）。只读，管理动作留给宿主界面。
+  Future<Map<String, dynamic>> downloadList() async {
+    final List<DownloadTask> tasks = DownloadService.instance.tasks;
+    return <String, dynamic>{
+      'count': tasks.length,
+      'directory': DownloadService.instance.directoryLabel,
+      'tasks': tasks
+          .map(
+            (DownloadTask t) => <String, dynamic>{
+              'id': t.id,
+              'fileName': t.fileName,
+              'path': t.relativePath,
+              'url': t.url,
+              'status': t.status.id,
+              'bytesReceived': t.bytesReceived,
+              'bytesTotal': t.bytesTotal,
+              'reason': t.reason,
+              'createdAt': t.createdAt.millisecondsSinceEpoch,
+            },
+          )
+          .toList(growable: false),
+    };
+  }
+
   // --------------------------------------------------------------- 会话
 
   /// 主动转入后台运行（与悬浮菜单里的「后台运行」等价）。
@@ -893,60 +969,52 @@ class BridgeApi {
 
   // ---------------------------------------------------------------- WASM
 
-  /// 列出随宿主内置的 WebAssembly 模块。
-  Future<Map<String, dynamic>> wasmList() async {
-    final List<Map<String, dynamic>> modules = <Map<String, dynamic>>[];
-    for (final BuiltinWasmModule module in kBuiltinWasmModules) {
-      final Object? bytes = await BuiltinWasm.bytes(module.name);
-      modules.add(<String, dynamic>{
-        'name': module.name,
-        'description': module.description,
-        'bytes': bytes is List<int> ? bytes.length : 0,
-        'exports': module.exports,
-        'hasMemory': module.hasMemory,
-      });
-    }
-    return <String, dynamic>{
-      'modules': modules,
-      'count': modules.length,
-      // WebAssembly 由 WebView 提供（Chromium 57+ 起内置），这里表示框架已经接好
-      'supported': true,
-    };
-  }
+  /// 列出**插件**提供的 WebAssembly 模块。
+  ///
+  /// 从 0.1.5 起 wasm 不再是宿主内置能力：宿主核心代码里没有模块清单、
+  /// 没有 asset 路径，只有一个"按能力去问插件"的转发层。
+  /// 没装插件时返回空 modules（`supported` 仍为 true —— WebView 本身支持 wasm，
+  /// 只是暂时没有模块可用），小程序据此提示去装插件。
+  Future<Map<String, dynamic>> wasmList() =>
+      PluginService.instance.wasmListPayload();
 
-  /// 读取内置模块的字节（base64）。
+  /// 读取模块字节（base64）。
   ///
   /// 为什么不返回数组：JSBridge 的返回值必须能 JSON 序列化，二进制过不去；
   /// base64 是唯一在所有 WebView 版本上都稳的编码。JS SDK 侧会解码成 Uint8Array
   /// 再交给 `WebAssembly.instantiate`，小程序不用自己处理编码。
   Future<Map<String, dynamic>> wasmRead(Map<String, dynamic> params) async {
-    final String name = _string(
-      params['name'],
-      kBuiltinWasmModules.isEmpty ? '' : kBuiltinWasmModules.first.name,
-    );
-    final BuiltinWasmModule? module = BuiltinWasm.byName(name);
-    if (module == null) {
+    final List<PluginWasmEntry> entries = await PluginService.instance.wasmEntries();
+    if (entries.isEmpty) {
+      throw const LemonBridgeException(
+        BridgeErrorCode.notSupported,
+        'wasmRead：没有启用中的 WebAssembly 插件。请到「设置 → 插件」安装或启用它。',
+      );
+    }
+    final String requested = _string(params['name']).trim();
+    // 不传名字 = 第一个模块（与旧版本行为一致，方便 "就看一眼" 的调用）
+    final String name = requested.isEmpty ? entries.first.module.name : requested;
+    final bool known = entries.any((PluginWasmEntry e) => e.module.name == name);
+    if (!known) {
+      final String available = entries.map((PluginWasmEntry e) => e.module.name).join(', ');
       throw LemonBridgeException(
         BridgeErrorCode.invalidArgument,
-        'wasmRead(name)：没有名为「$name」的内置模块（可用：${BuiltinWasm.names.join(", ")}）',
+        'wasmRead(name)：没有名为「$name」的 wasm 模块（可用：$available）',
       );
     }
-    final Object? bytes = await BuiltinWasm.bytes(name);
-    if (bytes is! List<int>) {
-      throw LemonBridgeException(
-        BridgeErrorCode.internal,
-        'wasmRead：内置模块 ${module.name} 读取失败（asset 可能没打进包）',
-      );
+    try {
+      return await PluginService.instance.wasmReadPayload(name);
+    } on PluginUnavailableException catch (e) {
+      throw LemonBridgeException(BridgeErrorCode.internal, 'wasmRead：${e.message}');
     }
-    return <String, dynamic>{
-      'name': module.name,
-      'description': module.description,
-      'bytes': bytes.length,
-      'base64': base64Encode(bytes),
-      'exports': module.exports,
-      'hasMemory': module.hasMemory,
-    };
   }
+
+  // ---------------------------------------------------------------- 插件
+
+  /// 当前设备上已安装/启用/平台匹配的插件总览。
+  /// 小程序侧用来做能力探测：「这台设备上有没有 wasm」。
+  Future<Map<String, dynamic>> pluginsList() =>
+      PluginService.instance.summary();
 
   // --------------------------------------------------------- 模块方法
 

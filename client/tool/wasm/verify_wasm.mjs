@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 /*
- * LemonLite 内置 WebAssembly 模块校验脚本
+ * LemonLite WebAssembly 插件包校验脚本
  * ======================================
  * 用法：
  *   node tool/wasm/verify_wasm.mjs
  *
  * 做什么：
- *   1. 读取 assets/wasm/lemonlite.wasm；
+ *   1. 读取插件包里的 wasm（assets/plugins/lemonlite-wasm/modules/lemonlite.wasm）
  *   2. 断言它是合法 wasm、import 数量为 0，并用 WebAssembly.instantiate(bytes, {})
  *      直接实例化（不提供任何 host 函数）；
  *   3. 逐个断言导出函数的行为，打印 PASS / FAIL；
- *   4. 打印导出列表与 wasm 字节数；
- *   5. 只要有一个断言失败，就以非 0 退出码结束。
+ *   4. 校验插件 manifest 与二进制一致（能力/模块/导出清单）；
+ *   5. 打印导出列表与 wasm 字节数；
+ *   6. 只要有一个断言失败，就以非 0 退出码结束。
  *
  * 退出码：0 = 全部通过；1 = 有用例失败或加载失败。
  */
@@ -21,7 +22,9 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const WASM_PATH = resolve(HERE, '../../assets/wasm/lemonlite.wasm');
+const PLUGIN_DIR = resolve(HERE, '../../assets/plugins/lemonlite-wasm');
+const WASM_PATH = resolve(PLUGIN_DIR, 'modules/lemonlite.wasm');
+const MANIFEST_PATH = resolve(PLUGIN_DIR, 'lemonlite.json');
 
 /* ---------------- 断言/计数基础设施 ---------------- */
 
@@ -134,6 +137,31 @@ assertTrue('memory 至少 1 页（>= 65536 字节）', ex.memory.buffer.byteLeng
 for (const name of REQUIRED_EXPORTS) {
   if (name === 'memory') continue;
   assertTrue(`导出是函数：${name}`, typeof ex[name] === 'function');
+}
+
+/* ---------------- 4.5 插件 manifest 与二进制一致 ---------------- */
+
+console.log('-'.repeat(66));
+console.log('[插件 manifest]');
+
+let manifest = null;
+try {
+  manifest = JSON.parse(readFileSync(MANIFEST_PATH, 'utf8'));
+} catch (err) {
+  fatal(`无法读取插件 manifest ${MANIFEST_PATH}：${err.message}`);
+}
+assertEq('manifest.type', manifest.type, 'plugin');
+assertTrue('manifest.capabilities 含 wasm',
+  Array.isArray(manifest.capabilities) && manifest.capabilities.includes('wasm'));
+const declaredModules = manifest.wasm?.modules ?? [];
+assertTrue('manifest.wasm.modules 非空', declaredModules.length > 0, `${declaredModules.length} 个`);
+for (const mod of declaredModules) {
+  const declaredFile = resolve(PLUGIN_DIR, mod.file);
+  assertEq(`模块 ${mod.name} 的文件路径与脚本读取的一致`, declaredFile, WASM_PATH);
+  for (const name of mod.exports ?? []) {
+    assertTrue(`manifest 声明的导出存在：${name}`,
+      Object.prototype.hasOwnProperty.call(ex, name));
+  }
 }
 
 /* ---------------- 5. 行为断言 ---------------- */

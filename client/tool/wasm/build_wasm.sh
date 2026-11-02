@@ -3,7 +3,10 @@
 # LemonLite 内置 WebAssembly 模块构建脚本
 # =======================================
 # 用本机 clang（wasm32 target + wasm-ld）把 tool/wasm/lemonlite_wasm.c
-# 编译成 assets/wasm/lemonlite.wasm。
+# 编译成 assets/plugins/lemonlite-wasm/modules/lemonlite.wasm。
+#
+# 注意路径：wasm 已经不属于宿主核心，而是随包附带的**插件**包的一部分
+# （manifest 见 assets/plugins/lemonlite-wasm/lemonlite.json）。
 #
 # 特点：
 #   * freestanding：-nostdlib，不链接任何 libc，保证产物零 import
@@ -23,7 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 SRC="${SCRIPT_DIR}/lemonlite_wasm.c"
-OUT_DIR="${REPO_ROOT}/assets/wasm"
+OUT_DIR="${REPO_ROOT}/assets/plugins/lemonlite-wasm/modules"
 OUT="${OUT_DIR}/lemonlite.wasm"
 
 CLANG="${CLANG:-clang}"

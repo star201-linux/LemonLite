@@ -53,18 +53,21 @@ class LemonJsSdk {
   /// 注入到页面的 SDK 源码。
   /// 用 raw string（r'''）以免 Dart 对 $ 做插值 —— JS 里的模板字符串才能正常书写。
   static const String source = r'''
-/* LemonLite JS SDK (0.6.0-phase6)
+/* LemonLite JS SDK (0.1.5)
  * 挂在 window.lemonlite 上；所有 API 均为异步，统一错误结构 { code, message }。
  *
  * 0.2 新增：音量 / 亮度、页面方向与熄屏标记、小程序专属文件目录（共享/私有
- *           两个作用域）、后台运行、内置 WebAssembly（lemonlite.wasm.*）。
+ *           两个作用域）、后台运行。
+ * 0.1.5 新增：下载（lemonlite.download.*，交给系统下载器）；
+ *           WebAssembly 改为**插件**提供（仍然挂在 lemonlite.wasm.* 上，
+ *           但实现已经不属于宿主核心 —— 没装插件时调用会得到明确错误）。
  *
  * 这些桥接能力**都不需要授权**：它们要么只作用于小程序自己的命名空间与
  * 沙箱目录，要么是 Android 本来就不禁止应用自行调整的设备状态。
  *
  * 受「权限管理」管辖的是**浏览器受控资源**，它们不走这里：
  *   navigator.mediaDevices.getUserMedia()  → 摄像头 / 麦克风
- *   File System Access API                 → 管理所有文件
+ *   File System Access API                 → 手机存储（sdcard）读写
  * 网页发出这类请求时由宿主在 WebView 层拦截并弹窗确认；
  * 被拒绝时页面收到的是浏览器的 DOMException（NotAllowedError），
  * 与 JSBridge 的错误码无关。
@@ -75,7 +78,7 @@ class LemonJsSdk {
   if (window.lemonlite && window.lemonlite.__installed) { return; }
 
   var HANDLER = 'lemonlite';
-  var SDK_VERSION = '0.6.0-phase6';
+  var SDK_VERSION = '0.1.5';
   var BRIDGE_TIMEOUT = 5000;
 
   /* ============================== 桥接调用 ============================== */
@@ -152,7 +155,7 @@ class LemonJsSdk {
     return null;
   }
 
-  /* ============================== 内置 WASM ============================== */
+  /* =========================== 插件提供的 WASM =========================== */
 
   /**
    * base64 → Uint8Array。
@@ -169,15 +172,15 @@ class LemonJsSdk {
     return bytes;
   }
 
-  /** 已编译模块缓存：同一个内置模块只编译一次 */
+  /** 已编译模块缓存：同一个模块只编译一次 */
   var wasmModuleCache = {};
 
-  /** 取内置模块的原始信息（含 base64 与导出清单） */
+  /** 取模块的原始信息（含 base64 与导出清单） */
   function wasmInfo(name) {
     return invoke('wasmRead', { name: name });
   }
 
-  /** 编译并缓存内置模块。注意 WebAssembly.compile 的结果可以反复 instantiate */
+  /** 编译并缓存模块。注意 WebAssembly.compile 的结果可以反复 instantiate */
   function wasmModule(name) {
     if (wasmModuleCache[name]) { return Promise.resolve(wasmModuleCache[name]); }
     if (typeof WebAssembly === 'undefined') {
@@ -593,6 +596,39 @@ class LemonJsSdk {
       return invoke('fileInfo', { path: path, scope: opts.scope || 'files' });
     },
 
+    /* -------------------------------- 下载 -------------------------------- */
+
+    /**
+     * 把 http(s) 文件保存到系统「下载」目录（Download/）。
+     *
+     * 落盘由系统的 DownloadManager 完成，所以：
+     *   * 不需要「所有文件」权限（Android 10+ 零权限）；
+     *   * 下载过程活过页面/宿主进程，进度可以在宿主「设置 → 下载管理」里看；
+     *   * 只能传 http(s) 地址；blob: / data: 这类没有可拉取地址的内容请先在
+     *     页面里转成真实链接。
+     *
+     * @param {string} url
+     * @param {Object} [options] { fileName?: string, mimeType?: string }
+     * @returns {Promise<{id:number, fileName:string, path:string, status:string}>}
+     * 示例：await lemonlite.download.save(pdfUrl, { fileName: '发票.pdf' });
+     */
+    download: {
+      save: function (url, options) {
+        if (typeof url !== 'string' || url.length === 0) {
+          return Promise.reject({ code: 10001, message: 'download.save(url)：url 必须是非空字符串' });
+        }
+        var opts = options || {};
+        return invoke('downloadSave', {
+          url: url,
+          fileName: opts.fileName === undefined ? '' : String(opts.fileName),
+          mimeType: opts.mimeType === undefined ? '' : String(opts.mimeType)
+        });
+      },
+
+      /** 当前下载记录：{count, directory, tasks: [{id,fileName,path,status,...}]} */
+      list: function () { return invoke('downloadList'); }
+    },
+
     /* -------------------------------- 会话 -------------------------------- */
 
     /**
@@ -608,12 +644,50 @@ class LemonJsSdk {
      */
     close: function () { return invoke('close'); },
 
-    /* ------------------------------ 内置 WASM ------------------------------ */
+    /* ------------------------------ 插件 ------------------------------ */
 
     /**
-     * 随宿主内置的 WebAssembly 模块。
+     * 插件总览（当前设备）。
      *
-     * 离线可用：模块是打进 APK 的 asset，不依赖网络，也不受 CSP 影响。
+     * 插件和「扩展 / 模块」是两种东西：扩展/模块往页面注入 JS/CSS，
+     * 插件则是给**宿主**增加能力（例如 WebAssembly 运行时）。插件会声明
+     * 自己支持哪些平台，宿主只在自己的平台上启用它。
+     *
+     * @returns {Promise<{platform:string, count:number, plugins:Array,
+     *                    wasm:{available:boolean, plugin?:string}}>}
+     * 示例：const s = await lemonlite.plugins.list();
+     *       if (!s.wasm.available) console.warn('请先安装 WebAssembly 插件');
+     */
+    plugins: {
+      /** 全部插件（含停用 / 平台不支持的，带 active 标记） */
+      list: function () { return invoke('pluginsList'); },
+
+      /**
+       * 这台设备上是否有一项能力可用。
+       * @param {string} capability 能力名，目前只有 'wasm'
+       * @returns {Promise<boolean>}
+       */
+      has: function (capability) {
+        var name = capability === undefined ? 'wasm' : String(capability);
+        return invoke('pluginsList').then(function (summary) {
+          if (name === 'wasm') { return !!(summary.wasm && summary.wasm.available); }
+          return (summary.plugins || []).some(function (p) {
+            return p.active && (p.capabilities || []).indexOf(name) >= 0;
+          });
+        });
+      }
+    },
+
+    /* ------------------------------ WASM ------------------------------ */
+
+    /**
+     * 由**插件**提供的 WebAssembly 模块（设置 → 插件 → WebAssembly 运行时）。
+     *
+     * 从 0.1.5 起 wasm 不再打进宿主：模块在插件包里，插件的 manifest 声明
+     * `capabilities: ["wasm"]` 与模块文件。没安装/没启用插件时，
+     * 这里会返回明确错误（10003），`list()` 则返回空模块列表。
+     *
+     * 离线可用：模块字节来自插件包，不依赖网络，也不受 CSP 影响。
      * 典型用法：
      *   const { instance } = await lemonlite.wasm.instantiate('lemonlite');
      *   console.log(instance.exports.add(2, 3));   // 5

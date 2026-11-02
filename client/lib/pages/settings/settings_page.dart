@@ -22,6 +22,7 @@ import '../../data/services/account_service.dart';
 import '../../data/services/settings_service.dart';
 import '../home/home_controller.dart';
 import '../account/account_page.dart';
+import '../download/download_page.dart';
 import '../permissions/permission_controller_page.dart';
 import '../storage/storage_page.dart';
 import 'bundles_page.dart';
@@ -99,7 +100,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ListTile(
               leading: const Icon(Icons.verified_user_outlined),
               title: const Text('权限管理'),
-              subtitle: const Text('摄像头、麦克风、管理所有文件；按应用逐个设置'),
+              subtitle: const Text('摄像头、麦克风、手机存储；按应用逐个设置'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.of(
                 context,
@@ -109,6 +110,17 @@ class _SettingsPageState extends State<SettingsPage> {
 
           // ------------------------------ 存储 ------------------------------
           _section(context, '存储', <Widget>[
+            // 下载管理排在存储占用前面：它是「有事可做」的页面，
+            // 而存储占用多数时候只是看一眼。
+            ListTile(
+              leading: const Icon(Icons.download_outlined),
+              title: const Text('下载管理'),
+              subtitle: const Text('下载目录、进度与记录；网页下载交给系统下载器'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () =>
+                  Navigator.of(context).push(DownloadPage.route()),
+            ),
+            const Divider(height: 1, indent: 16, endIndent: 16),
             ListTile(
               leading: const Icon(Icons.sd_storage_outlined),
               title: const Text('存储占用'),
@@ -158,7 +170,7 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ]),
 
-          _section(context, '页面扩展', <Widget>[
+          _section(context, '扩展与插件', <Widget>[
             ListTile(
               leading: const Icon(Icons.extension_outlined),
               title: const Text('页面扩展'),
@@ -167,6 +179,18 @@ class _SettingsPageState extends State<SettingsPage> {
               onTap: () => Navigator.of(
                 context,
               ).push(BundlesPage.route(BundleType.extension)),
+            ),
+            const Divider(height: 1, indent: 16, endIndent: 16),
+            // 插件是「宿主能力」，和扩展/模块（注入页面）不是一回事，
+            // 所以单开一行而不是塞进扩展页里当第三个标签。
+            ListTile(
+              leading: const Icon(Icons.hub_outlined),
+              title: const Text('插件'),
+              subtitle: const Text('给宿主增加能力（如 WebAssembly），可安装 / 停用 / 卸载'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(
+                context,
+              ).push(BundlesPage.route(BundleType.plugin)),
             ),
           ]),
 

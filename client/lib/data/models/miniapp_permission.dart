@@ -18,7 +18,7 @@
 //
 // 权限管理器管的三项都必须由用户本人点头：
 //   * camera / microphone —— 采集用户的影像与声音
-//   * allFiles            —— 网页请求读写用户选中的文件/目录
+//   * sdcard              —— 网页请求读写**手机存储（sdcard）**里的文件/目录
 //
 // 这份清单同时就是权限管理器与「应用管理」里权限页的真相来源：
 // 展示的条目、风险分级、分组全部由它推导。以后要纳入新的浏览器资源，
@@ -221,16 +221,30 @@ enum MiniappPermission {
     runtimePermissions: <String>['android.permission.POST_NOTIFICATIONS'],
   ),
 
-  allFiles(
-    id: 'allFiles',
-    label: '管理所有文件',
-    description: '网页通过 File System Access API 请求读写你选中的文件或目录。'
-        '它越过小程序沙箱，因此单独列为高风险项。'
-        '是否放行由你在这里与浏览器弹窗中决定。',
+  /// 手机存储（sdcard）读写。
+  ///
+  /// 这一项刻意**不是**「管理所有文件」：
+  ///   * 小程序自己的两个目录（Android/data/<包名>/files/appfiles/<id> 与
+  ///     data/data/<包名>/files/appfiles/<id>，见 FileScope）是它的沙箱，
+  ///     **读写它们不需要任何授权** —— 那些文件本来就是它自己的数据；
+  ///   * 只有要碰沙箱之外的手机存储（Download、Pictures、DCIM …）才需要这里，
+  ///     因为那是"别的应用/用户自己的东西"。
+  ///
+  /// 授权后的实际动作也和 Android 一致：Chromium 弹出系统文件选择器（SAF），
+  /// 用户选中的那个文件/目录才真正对页面可见。宿主不申请
+  /// MANAGE_EXTERNAL_STORAGE（那会拿到整块存储的空白通行证），所以：
+  ///   * 没有"一次性看到全部文件"的授权形态；
+  ///   * 也不存在「已放行就能随便遍历 sdcard」。
+  sdcard(
+    id: 'sdcard',
+    label: '读取手机存储',
+    description: '网页请求读写手机存储（sdcard）里的文件或目录，例如 Download、Pictures。'
+        '同意后由系统文件选择器逐个确认，页面只能拿到你选中的那些。'
+        '（读写小程序自己的两个沙箱目录不需要这个权限。）',
     group: PermissionGroup.storage,
     risk: PermissionRisk.dangerous,
-    // File System Access API 由 Chromium 自己弹文件选择器，
-    // 不需要 MANAGE_EXTERNAL_STORAGE 这类系统级授权。
+    // File System Access API 由 Chromium 自己弹系统文件选择器，
+    // 真正的逐次授权发生在系统侧，这里不需要额外的运行时权限。
     runtimePermissions: <String>[],
   );
 
@@ -291,7 +305,7 @@ enum MiniappPermission {
     MiniappPermission.geolocationCoarse => Icons.location_searching,
     MiniappPermission.clipboard => Icons.content_paste,
     MiniappPermission.notifications => Icons.notifications_outlined,
-    MiniappPermission.allFiles => Icons.folder_shared_outlined,
+    MiniappPermission.sdcard => Icons.folder_shared_outlined,
   };
 
   /// 精确/模糊定位是一对：用户选了其中一个，另一个的状态就不该再问。
@@ -322,12 +336,29 @@ enum MiniappPermission {
   static List<MiniappPermission> get sensitiveList =>
       values.where((MiniappPermission p) => p.isSensitive).toList(growable: false);
 
+  /// 旧 id → 当前枚举的别名。
+  ///
+  /// 为什么需要别名而不是直接把 id 改掉：用户在过去版本里对 `allFiles`
+  /// 做过的「允许/拒绝」还躺在 SharedPreferences 里，市场数据里也有
+  /// 应用在声明 `allFiles`。改 id 等于让这些记录全部失效、并且让那些
+  /// 应用在详情页被标成「未知权限」。别名把两件事都接住了：
+  /// 声明照旧能识别，旧决定也会被当作新权限的决定读出来。
+  static const Map<String, MiniappPermission> aliases = <String, MiniappPermission>{
+    'allFiles': MiniappPermission.sdcard,
+  };
+
+  /// 这一项曾经用过的 id（读旧记录时按顺序回退）。
+  List<String> get legacyIds => switch (this) {
+    MiniappPermission.sdcard => const <String>['allFiles'],
+    _ => const <String>[],
+  };
+
   /// 从持久化的 id 反查；未知 id 返回 null（旧版本写入的权限被删掉时不至于崩）
   static MiniappPermission? byId(String id) {
     for (final MiniappPermission p in values) {
       if (p.id == id) return p;
     }
-    return null;
+    return aliases[id];
   }
 
   /// 曾经是权限、但这一版**已经不再需要授权**的能力 id。
@@ -349,6 +380,7 @@ enum MiniappPermission {
     'background',
     'openUrl',
     'wasm',
+    'plugin',
   };
 
   /// 判断一个声明里的 id 是不是「已退役」的旧权限

@@ -15,6 +15,7 @@ import 'core/globals.dart';
 import 'core/run_log.dart';
 import 'data/services/account_service.dart';
 import 'data/services/application_registry.dart';
+import 'data/services/download_service.dart';
 import 'data/services/permission_service.dart';
 import 'data/services/settings_service.dart';
 
@@ -32,6 +33,9 @@ Future<void> main() async {
   // 应用清单的唯一真相来源。应用管理、权限管理器与存储页都从它取应用列表，
   // 所以它必须比任何页面都早就绪。
   ApplicationRegistry.init();
+  // 下载管理：先把落盘的记录读回来，再在后台回查未完成任务的真实进度。
+  // start() 是同步的（读 SharedPreferences），不会拖慢启动。
+  DownloadService.init().start();
   // 账号：只从本地读 token，**不等网络**。
   // 没网时不该让 App 卡在「正在校验登录态」上 —— 校验在后台静默做。
   await AccountService.instance.init(settings);

@@ -54,7 +54,7 @@ bool miniappForegroundActive = false;
 const String kFrameworkName = 'LemonLite';
 
 /// 框架阶段版本：阶段一只做「WebView 承载 + JSBridge」，不做原生渲染
-const String kFrameworkVersion = '0.1.0';
+const String kFrameworkVersion = '0.1.5';
 
 /// index.json 的 schema 版本（当前支持的版本号）
 const int kSupportedSchemaVersion = 1;

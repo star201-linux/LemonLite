@@ -1,9 +1,14 @@
 // lib/pages/settings/bundles_page.dart
 //
-// 模块管理仍收在开发者选项；页面扩展从普通设置页即可导入与管理。
+// 模块管理仍收在开发者选项；页面扩展与插件从普通设置页即可导入与管理。
 //
-// 两个类型共用这一页，因为它们的**操作流程完全一样**：选文件 → 校验 → 确认 → 装上 → 可启停。
-// 差别只在 manifest 的 type 字段与文案，所以用 type 参数区分而不是写两页。
+// 三种类型共用这一页，因为它们的**操作流程完全一样**：选文件 → 校验 → 确认 → 装上 → 可启停。
+// 差别只在 manifest 的 type 字段、文案，以及插件多出来的「平台 / 能力」信息，
+// 所以用 type 参数区分而不是写三页。
+//
+// 插件页还有一个**随包附带**的来源：WebAssembly 运行时。
+// 它不在宿主代码里，而是一个独立插件包（assets/plugins/lemonlite-wasm），
+// 装不装由用户决定 —— 所以这里给一张「可安装」的卡片，而不是启动时偷偷装上。
 //
 // 为什么导入后还要再弹一次确认：
 //   这类包等价于「往每个小程序页面里插一段代码」，属于安全敏感操作。
@@ -17,6 +22,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/models/bundle_manifest.dart';
 import '../../data/repositories/bundle_repository.dart';
+import '../../data/services/plugin_service.dart';
 import '../../theme/app_theme.dart';
 import '../home/widgets/state_views.dart';
 
@@ -41,6 +47,10 @@ class _BundlesPageState extends State<BundlesPage> {
   String? _error;
 
   bool get _isModule => widget.type == BundleType.module;
+  bool get _isPlugin => widget.type == BundleType.plugin;
+
+  /// 随包附带的 WebAssembly 插件是否已经装过（null = 还没查）
+  bool? _bundledWasmInstalled;
 
   @override
   void initState() {
@@ -59,6 +69,11 @@ class _BundlesPageState extends State<BundlesPage> {
       final BundleRepository repo = BundleRepository.instance;
       _items = await repo.scan(widget.type);
       _disabled = await repo.disabledIds();
+      if (_isPlugin) {
+        _bundledWasmInstalled = await PluginService.instance.isInstalled(
+          PluginService.bundledWasmPluginId,
+        );
+      }
     } catch (e) {
       _error = '$e';
     }
@@ -72,7 +87,11 @@ class _BundlesPageState extends State<BundlesPage> {
     if (_busy) return;
     setState(() => _busy = true);
 
-    final String verb = _isModule ? '安装模块' : '导入扩展 ZIP';
+    final String verb = _isPlugin
+        ? '导入插件 ZIP'
+        : _isModule
+        ? '安装模块'
+        : '导入扩展 ZIP';
     PlatformFile? picked;
     try {
       picked = await FilePicker.pickFile(
@@ -111,7 +130,10 @@ class _BundlesPageState extends State<BundlesPage> {
       setState(() => _busy = false);
       await _showText(
         '这个包读不出来',
-        _isModule
+        _isPlugin
+            ? '请导入插件 ZIP：需要包含 lemonlite.json，且 type = "plugin"、'
+                  '声明 capabilities（能力）与可选的 wasm 模块。'
+            : _isModule
             ? '请确认它是 LemonLite 模块包：一个 .zip（内含 ${BundleManifest.manifestFileName}）或单个 ${BundleManifest.manifestFileName}。'
             : '请导入 ZIP 文件：需要包含 lemonlite.json 扩展清单。',
       );
@@ -142,7 +164,8 @@ class _BundlesPageState extends State<BundlesPage> {
       AppTheme.showToast(
         result.replaced
             ? '${result.manifest.name} v${result.manifest.version} 已覆盖更新'
-            : '${result.manifest.name} v${result.manifest.version} ${_isModule ? '安装' : '已加入'}完成',
+            : '${result.manifest.name} v${result.manifest.version} '
+                  '${_isModule || _isPlugin ? '安装' : '已加入'}完成',
       );
     } catch (e) {
       if (!mounted) return;
@@ -181,7 +204,7 @@ class _BundlesPageState extends State<BundlesPage> {
       context: context,
       builder: (BuildContext dialogContext) => AlertDialog(
         icon: const Icon(Icons.inventory_2_outlined),
-        title: Text('${_isModule ? '安装' : '加入'}「${manifest.name}」？'),
+        title: Text('${_isModule || _isPlugin ? '安装' : '加入'}「${manifest.name}」？'),
         content: SingleChildScrollView(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -204,6 +227,19 @@ class _BundlesPageState extends State<BundlesPage> {
                           )
                           .join('；'),
               ),
+              if (_isPlugin) ...<Widget>[
+                _row(
+                  '支持平台',
+                  manifest.platforms.isEmpty ? '全平台' : manifest.platforms.join('、'),
+                ),
+                _row('能力', manifest.capabilities.join('、')),
+                if (manifest.wasmModules.isNotEmpty)
+                  _row(
+                    'wasm 模块',
+                    manifest.wasmModules.map((PluginWasmModule m) => m.name).join('、'),
+                  ),
+                _row('当前设备', PluginService.currentPlatformId),
+              ],
               if (jsFiles.isNotEmpty) _row('注入脚本', jsFiles.join('、')),
               if (cssFiles.isNotEmpty) _row('注入样式', cssFiles.join('、')),
               if (manifest.bridgeMethods.isNotEmpty)
@@ -215,7 +251,10 @@ class _BundlesPageState extends State<BundlesPage> {
                 ),
               const SizedBox(height: 12),
               Text(
-                _isModule
+                _isPlugin
+                    ? '插件不往页面注入任何代码：它给宿主增加一项能力（如 wasm），'
+                          '所有小程序都能用；只能在这台设备支持的平台上启用。'
+                    : _isModule
                     ? '模块的脚本会注入到匹配的小程序页面里运行。'
                           '它声明的 API 由宿主已有能力组合而成，不会获得宿主之外的能力。'
                     : manifest.contentScripts.isNotEmpty
@@ -237,7 +276,7 @@ class _BundlesPageState extends State<BundlesPage> {
           ),
           FilledButton(
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: Text(_isModule ? '安装' : '加入'),
+            child: Text(_isModule || _isPlugin ? '安装' : '加入'),
           ),
         ],
       ),
@@ -334,7 +373,9 @@ class _BundlesPageState extends State<BundlesPage> {
     final TextTheme textTheme = Theme.of(context).textTheme;
 
     return Scaffold(
-      appBar: AppBar(title: Text(_isModule ? '模块' : '页面扩展')),
+      appBar: AppBar(
+        title: Text(_isPlugin ? '插件' : _isModule ? '模块' : '页面扩展'),
+      ),
       body: _loading
           ? const LoadingView()
           : (_error != null
@@ -345,6 +386,7 @@ class _BundlesPageState extends State<BundlesPage> {
                       padding: const EdgeInsets.only(bottom: 40),
                       children: <Widget>[
                         _intro(scheme, textTheme),
+                        if (_isPlugin) _bundledCard(scheme, textTheme),
                         Padding(
                           padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                           child: FilledButton.icon(
@@ -358,19 +400,36 @@ class _BundlesPageState extends State<BundlesPage> {
                                     ),
                                   )
                                 : const Icon(Icons.add),
-                            label: Text(_isModule ? '安装模块' : '导入扩展 ZIP'),
+                            label: Text(_isPlugin
+                                ? '导入插件 ZIP'
+                                : _isModule
+                                ? '安装模块'
+                                : '导入扩展 ZIP'),
                           ),
                         ),
                         if (_items.isEmpty)
                           EmptyView(
-                            icon: _isModule
+                            icon: _isPlugin
+                                ? Icons.hub_outlined
+                                : _isModule
                                 ? Icons.extension_outlined
                                 : Icons.widgets_outlined,
-                            title: _isModule ? '还没有安装模块' : '还没有页面扩展',
-                            message: _isModule
+                            title: _isPlugin
+                                ? '还没有安装插件'
+                                : _isModule
+                                ? '还没有安装模块'
+                                : '还没有页面扩展',
+                            message: _isPlugin
+                                ? '插件给宿主增加能力（例如 WebAssembly 运行时）。'
+                                      '可以导入 ZIP，或直接安装上面随包附带的那个。'
+                                : _isModule
                                 ? '模块只能在这里安装：它会向小程序注入脚本，并可用宿主能力组合出新的 API。'
                                 : '导入包含 lemonlite.json 的扩展 ZIP，给匹配的小程序页面注入脚本与样式。',
-                            actionLabel: _isModule ? '安装模块' : '导入扩展 ZIP',
+                            actionLabel: _isPlugin
+                                ? '导入插件 ZIP'
+                                : _isModule
+                                ? '安装模块'
+                                : '导入扩展 ZIP',
                             onAction: _import,
                           )
                         else
@@ -381,6 +440,53 @@ class _BundlesPageState extends State<BundlesPage> {
                     ),
                   )),
     );
+  }
+
+  /// 随包附带的 WebAssembly 插件包。
+  ///
+  /// 刻意**不自动安装**：插件是「给宿主加能力」的东西，用户应该知道
+  /// 自己装了它、也随时能卸掉。没装时这里显示"可安装"，装完之后卡片消失。
+  Widget _bundledCard(ColorScheme scheme, TextTheme textTheme) {
+    if (_bundledWasmInstalled != false) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      child: Card.outlined(
+        margin: EdgeInsets.zero,
+        clipBehavior: Clip.antiAlias,
+        child: ListTile(
+          leading: const Icon(Icons.inventory_2_outlined),
+          title: const Text('随包附带：WebAssembly 运行时'),
+          subtitle: const Text(
+            'v1.0.0 · 能力 wasm · 全平台\n'
+            '装上之后 lemonlite.wasm.* 才能用；之后也可以随时卸载',
+          ),
+          isThreeLine: true,
+          trailing: FilledButton.tonal(
+            onPressed: _busy ? null : _installBundledWasm,
+            child: const Text('安装'),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 安装随包附带的插件包（和导入 ZIP 走同一套落盘/校验）。
+  Future<void> _installBundledWasm() async {
+    setState(() => _busy = true);
+    try {
+      final bool installed = await PluginService.instance.installBundledWasm();
+      await _reload();
+      if (!mounted) return;
+      AppTheme.showToast(installed ? 'WebAssembly 运行时已安装' : '已经安装过了');
+    } on PluginUnavailableException catch (e) {
+      if (!mounted) return;
+      await _showText('安装失败', e.message);
+    } catch (e) {
+      if (!mounted) return;
+      await _showText('安装失败', '$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   Widget _intro(ColorScheme scheme, TextTheme textTheme) {
@@ -406,14 +512,22 @@ class _BundlesPageState extends State<BundlesPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
                   Text(
-                    _isModule ? '模块（mod 式）' : '扩展（浏览器插件式）',
+                    _isPlugin
+                        ? '插件（宿主能力 / 多平台）'
+                        : _isModule
+                        ? '模块（mod 式）'
+                        : '扩展（浏览器插件式）',
                     style: textTheme.titleSmall?.copyWith(
                       color: scheme.onSecondaryContainer,
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    _isModule
+                    _isPlugin
+                        ? '插件不注入页面代码，而是给宿主增加一项能力（如 wasm）。'
+                              'manifest 里用 platforms 声明支持的平台、用 capabilities 声明能力；'
+                              '宿主只在这台设备匹配时启用它。'
+                        : _isModule
                         ? '一个 zip 包，内含 lemonlite.json 与脚本。可向匹配的小程序注入脚本，'
                               '并通过 manifest.bridge 声明新的 API —— 那些 API 由宿主已有能力组合实现。'
                         : '导入扩展 ZIP（lemonlite.json + 脚本 / 样式），'
@@ -431,6 +545,36 @@ class _BundlesPageState extends State<BundlesPage> {
     );
   }
 
+  /// 详情弹窗的正文。三种包字段完全不同，集中在这里生成，
+  /// 免得 _tile 里拼一个越来越长的字符串。
+  String _detailText(BundleManifest manifest) {
+    final List<String> lines = <String>[
+      'id: ${manifest.id}',
+      '版本: ${manifest.version}',
+      '作者: ${manifest.author.isEmpty ? '未填写' : manifest.author}',
+      '说明: ${manifest.description.isEmpty ? '未填写' : manifest.description}',
+    ];
+    if (_isPlugin) {
+      lines.addAll(<String>[
+        '支持平台: ${manifest.platforms.isEmpty ? '全平台' : manifest.platforms.join('、')}',
+        '当前设备: ${PluginService.currentPlatformId}'
+            '${PluginService.platformMatches(manifest) ? '（支持）' : '（不支持，已跳过）'}',
+        '能力: ${manifest.capabilities.join('、')}',
+        'wasm 模块: ${manifest.wasmModules.isEmpty ? '无' : manifest.wasmModules.map((PluginWasmModule m) => m.name).join('、')}',
+        '注入页面: 无（插件不注入代码）',
+      ]);
+    } else {
+      lines.addAll(<String>[
+        '生效页面: ${manifest.matches.join('、')}',
+        '注入时机: ${manifest.runAt.label}',
+        '脚本: ${_jsFiles(manifest).isEmpty ? '无' : _jsFiles(manifest).join('、')}',
+        '样式: ${_cssFiles(manifest).isEmpty ? '无' : _cssFiles(manifest).join('、')}',
+        '新增 API: ${manifest.bridgeMethods.isEmpty ? '无' : manifest.bridgeMethods.map((BundleBridgeMethod m) => '${m.name}() → ${m.action}').join('、')}',
+      ]);
+    }
+    return lines.join('\n');
+  }
+
   Widget _tile(
     BundleManifest manifest,
     ColorScheme scheme,
@@ -446,7 +590,11 @@ class _BundlesPageState extends State<BundlesPage> {
           children: <Widget>[
             ListTile(
               leading: Icon(
-                _isModule ? Icons.extension_outlined : Icons.widgets_outlined,
+                _isPlugin
+                    ? Icons.hub_outlined
+                    : _isModule
+                    ? Icons.extension_outlined
+                    : Icons.widgets_outlined,
               ),
               title: Text(manifest.name),
               subtitle: Text(
@@ -467,15 +615,7 @@ class _BundlesPageState extends State<BundlesPage> {
                   TextButton.icon(
                     onPressed: () => _showText(
                       '${manifest.type.label}详情',
-                      'id: ${manifest.id}\n'
-                          '版本: ${manifest.version}\n'
-                          '作者: ${manifest.author.isEmpty ? '未填写' : manifest.author}\n'
-                          '说明: ${manifest.description.isEmpty ? '未填写' : manifest.description}\n'
-                          '生效页面: ${manifest.matches.join('、')}\n'
-                          '注入时机: ${manifest.runAt.label}\n'
-                          '脚本: ${_jsFiles(manifest).isEmpty ? '无' : _jsFiles(manifest).join('、')}\n'
-                          '样式: ${_cssFiles(manifest).isEmpty ? '无' : _cssFiles(manifest).join('、')}\n'
-                          '新增 API: ${manifest.bridgeMethods.isEmpty ? '无' : manifest.bridgeMethods.map((BundleBridgeMethod m) => '${m.name}() → ${m.action}').join('、')}',
+                      _detailText(manifest),
                     ),
                     icon: const Icon(Icons.info_outline),
                     label: const Text('详情'),

@@ -43,6 +43,7 @@ import '../../data/models/bundle_manifest.dart';
 import '../../data/models/miniapp_permission.dart';
 import '../../data/models/miniapp_session.dart';
 import '../../data/repositories/bundle_repository.dart';
+import '../../data/services/download_service.dart';
 import '../../theme/app_theme.dart';
 import '../../theme/theme_controller.dart';
 import '../../theme/theme_injector.dart';
@@ -156,7 +157,12 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
       final BundleRepository repo = BundleRepository.instance;
       final Set<String> disabled = await repo.disabledIds();
       final List<BundleManifest> all = <BundleManifest>[];
-      for (final BundleType type in BundleType.values) {
+      // 只读会注入页面的两类；插件（plugin）是宿主能力，不参与注入 ——
+      // 把它也读进来只会多出一份空 payload。
+      for (final BundleType type in <BundleType>[
+        BundleType.extension,
+        BundleType.module,
+      ]) {
         all.addAll(await repo.scan(type));
       }
       // matches 为 "*" 的包对所有小程序生效；带具体模式的按当前入口地址过滤。
@@ -585,6 +591,26 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
           retain: false,
         );
       },
+      // ---------------------------------------------------------------- 下载
+      //
+      // 网页里点 `<a download>` / 触发下载时，WebView 自己**不会**下载任何东西
+      // （Android WebView 没有内建下载器），必须在宿主这边接住。
+      //
+      // 这里把任务交给系统的 DownloadManager（见 DownloadService / DownloadBridge）：
+      // 落盘在公共「下载」目录、下载过程活过宿主进程、下完有系统通知。
+      // 宿主不申请「所有文件」权限 —— 写公共下载目录这件事由系统组件代劳。
+      //
+      // 返回 CANCEL 是**必须**的：我们不希望 WebView 再走它自己的默认路径
+      // （那是一条什么都没发生的静默失败），无论我们这边成功还是失败，
+      // 下载都已经在我们的记录里，失败了也在管理页能看到原因。
+      onDownloadStarting:
+          (InAppWebViewController controller, DownloadStartRequest request) async {
+            await _handleDownloadStart(request);
+            return DownloadStartResponse(
+              handled: true,
+              action: DownloadStartResponseAction.CANCEL,
+            );
+          },
       onProgressChanged: (InAppWebViewController controller, int progress) {
         if (!mounted) return;
         setState(() => _progress = progress / 100);
@@ -757,6 +783,33 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
       await _controller?.pauseTimers();
     } catch (e) {
       lemonLog('Miniapp', 'pauseTimers 失败：$e');
+    }
+  }
+
+  /// 网页触发的下载 → 系统下载器。
+  ///
+  /// 失败原因全部当场告诉用户（弹一个 toast）并写进运行日志：
+  /// 下载是少数"用户明确期待一个结果"的操作，静默失败比报错更糟。
+  Future<void> _handleDownloadStart(DownloadStartRequest request) async {
+    final String url = request.url.toString();
+    try {
+      final DownloadTask task = await DownloadService.instance.enqueue(
+        url: url,
+        // suggestedFilename 来自 Content-Disposition / URL，WebView 已经帮我们猜过一轮；
+        // 它为空时 DownloadService 会自己按 URL 与 MIME 推断。
+        fileName: request.suggestedFilename,
+        mimeType: request.mimeType,
+      );
+      await autotestLog('网页下载：$url → #${task.id} ${task.relativePath}');
+      AppTheme.showToast('已开始下载：${task.fileName}');
+    } on DownloadException catch (e) {
+      await autotestLog('网页下载失败：$url · ${e.message}');
+      lemonLogError('Miniapp', '下载失败：$url · ${e.message}');
+      AppTheme.showToast(e.message, isError: true);
+    } catch (e) {
+      await autotestLog('网页下载失败：$url · $e');
+      lemonLogError('Miniapp', '下载失败：$url · $e');
+      AppTheme.showToast('下载失败：$e', isError: true);
     }
   }
 

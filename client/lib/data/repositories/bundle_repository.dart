@@ -109,6 +109,10 @@ class BundleRepository {
   Future<Directory> _bundleDir(BundleManifest manifest) async =>
       Directory(p.join((await _typeDir(manifest.type)).path, manifest.id));
 
+  /// 某个包落盘后的目录（插件读自己的 wasm 文件要用）。
+  /// 只读路径，不创建 —— 调用方自己判断是否存在。
+  Future<Directory> directoryOf(BundleManifest manifest) => _bundleDir(manifest);
+
   /// 导入前预扫描：只读文件头里的 manifest，用于让用户「加入前先看一眼是什么」
   static Future<BundleManifest?> peekManifest(
     Uint8List bytes,
@@ -183,7 +187,15 @@ class BundleRepository {
     Uint8List bytes,
     String fileName,
   ) async {
-    final BundleArchive raw = parseArchive(bytes, fileName);
+    return installArchive(parseArchive(bytes, fileName));
+  }
+
+  /// 把已经解好的包落盘。
+  ///
+  /// 单独拆出来是为了让「不经用户选文件」的安装路径（内置插件包、
+  /// 将来的在线安装）复用同一套校验与原子写入 —— 两条路走两份代码
+  /// 迟早会有一边忘了校验。
+  Future<BundleImportResult> installArchive(BundleArchive raw) async {
     final BundleManifest manifest = raw.manifest;
 
     // manifest 引用的脚本必须真实存在，否则装完是哑的。
@@ -191,6 +203,9 @@ class BundleRepository {
     final Iterable<String> references = <String>[
       ...manifest.jsFiles,
       ...manifest.cssFiles,
+      // 插件声明的 wasm 模块同样必须真的在包里：装完才发现读不到
+      // 等于装了一个"声明有 wasm 能力但其实是空的"插件。
+      for (final PluginWasmModule module in manifest.wasmModules) module.file,
       for (final BundleContentScript rule
           in manifest.effectiveContentScripts) ...<String>[
         ...rule.jsFiles,
