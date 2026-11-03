@@ -124,6 +124,7 @@ class _DownloadPageState extends State<DownloadPage> {
                 TextButton.icon(
                   onPressed: () async {
                     final bool ok = await service.openDirectory();
+                    if (!mounted) return;
                     if (!ok) _toast('这台设备的系统没有「下载」界面');
                   },
                   icon: const Icon(Icons.open_in_new),
@@ -320,6 +321,7 @@ class _DownloadPageState extends State<DownloadPage> {
             icon: const Icon(Icons.open_in_new),
             onPressed: () async {
               final bool ok = await service.open(task.id);
+              if (!mounted) return;
               if (!ok) _toast('没有能找到打开这个文件的应用');
             },
           ),
@@ -340,6 +342,7 @@ class _DownloadPageState extends State<DownloadPage> {
             icon: const Icon(Icons.refresh),
             onPressed: () async {
               final DownloadTask? again = await service.retry(task.id);
+              if (!mounted) return;
               _toast(again == null ? '重试失败（可能没有存储权限）' : '已重新加入下载队列');
             },
           ),
@@ -363,6 +366,7 @@ class _DownloadPageState extends State<DownloadPage> {
       icon: const Icon(Icons.close),
       onPressed: () async {
         final bool ok = await service.cancel(task.id);
+        if (!mounted) return;
         _toast(ok ? '已取消' : '系统里没找到这个任务');
       },
     );

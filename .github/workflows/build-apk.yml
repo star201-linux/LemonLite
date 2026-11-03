@@ -96,13 +96,33 @@ jobs:
         run: flutter analyze
 
       - name: 构建 release APK
+        id: apk
         working-directory: client
         run: |
           # 只覆盖 versionCode（= run_number）：本机能装上升级包的前提是它比
           # 已装的大。versionName 保持 pubspec 里的值，免得「关于」页对不上。
+          set -o pipefail
           flutter build apk --release \
             --target-platform "$TARGET_ABI" \
-            --build-number "${{ github.run_number }}"
+            --build-number "${{ github.run_number }}" 2>&1 | tee /tmp/build.log
+
+      # 排障用（临时）：构建失败时把错误行推到 ci-log 分支。
+      # 原因：Actions 的日志下载需要 GitHub 认证，而开发机（手机容器）没有 token；
+      # 推到公开分支后 raw.githubusercontent 直接可读。定位完可以删掉这一步。
+      - name: 失败时把日志推到 ci-log 分支
+        if: failure()
+        run: |
+          mkdir -p /tmp/ci-log && cd /tmp/ci-log
+          echo "run=${{ github.run_number }} sha=${{ github.sha }}" > ci-build-error.log
+          grep -nE "error:|e: |FAILURE|What went wrong|Execution failed|Exception|\.dart:[0-9]+|Caused by" /tmp/build.log 2>/dev/null | tail -n 300 >> ci-build-error.log || true
+          if [ "$(wc -l < ci-build-error.log)" -le 2 ]; then
+            tail -n 400 /tmp/build.log >> ci-build-error.log 2>/dev/null || true
+          fi
+          git init -q
+          git checkout -q -b ci-log
+          git add ci-build-error.log
+          git -c user.email=ci@local -c user.name=ci-bot commit -qm "ci log ${{ github.run_number }}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" ci-log
 
       - name: 收集产物
         run: |

@@ -346,7 +346,7 @@ class PermissionService extends ChangeNotifier {
   /// 下次用到哪个权限就为哪个弹窗。这是「我改错了想重来」的出口。
   Future<void> resetApp(String appId) async {
     final List<String> keys = MiniappPermission.values
-        .expand(_decisionKeys.bind(appId))
+        .expand((MiniappPermission p) => _decisionKeys(appId, p))
         .toList(growable: false);
     await _settings.removeMany(keys);
     notifyListeners();
