@@ -43,6 +43,12 @@
 //   const off = lemonlite.onThemeChange((t) => console.log(t.mode));
 //   off();
 //
+//   // 8) 蓝牙 / NFC（首次调用会弹权限确认框；拒绝时 reject code=40001）
+//   const devs = await lemonlite.bluetooth.scan({ durationMs: 5000 });
+//   await lemonlite.bluetooth.connect(devs.devices[0].address);
+//   const tag = await lemonlite.nfc.read();
+//   await lemonlite.nfc.writeText('你好，NFC');
+//
 //   // 统一错误结构
 //   try { await lemonlite.openUrl(''); }
 //   catch (e) { console.warn(e.code, e.message); } // 10001 openUrl(url)：url 必须是非空字符串
@@ -62,15 +68,16 @@ class LemonJsSdk {
  *           WebAssembly 改为**插件**提供（仍然挂在 lemonlite.wasm.* 上，
  *           但实现已经不属于宿主核心 —— 没装插件时调用会得到明确错误）。
  *
- * 这些桥接能力**都不需要授权**：它们要么只作用于小程序自己的命名空间与
+ * 大多数桥接能力不需要授权：它们要么只作用于小程序自己的命名空间与
  * 沙箱目录，要么是 Android 本来就不禁止应用自行调整的设备状态。
  *
- * 受「权限管理」管辖的是**浏览器受控资源**，它们不走这里：
- *   navigator.mediaDevices.getUserMedia()  → 摄像头 / 麦克风
- *   File System Access API                 → 手机存储（sdcard）读写
- * 网页发出这类请求时由宿主在 WebView 层拦截并弹窗确认；
- * 被拒绝时页面收到的是浏览器的 DOMException（NotAllowedError），
- * 与 JSBridge 的错误码无关。
+ * 两类能力要走「权限管理」：
+ *   1) 浏览器受控资源（不走这里）：
+ *      getUserMedia() → 摄像头 / 麦克风；File System Access API → 手机存储
+ *      被拒绝时页面拿到的是浏览器的 DOMException（NotAllowedError）。
+ *   2) 宿主原生能力（走这里）：
+ *      lemonlite.bluetooth.* / lemonlite.nfc.*
+ *      第一次调用会弹应用内确认框；拒绝时 Promise 以 {code:40001} reject。
  */
 (function () {
   'use strict';
@@ -172,6 +179,19 @@ class LemonJsSdk {
     return bytes;
   }
 
+  /**
+   * Uint8Array / 字节数组 → base64。
+   * 蓝牙写特征值、NFC 记录这类二进制过桥都要它（JSON 传不了二进制）。
+   */
+  function bytesToBase64(bytes) {
+    if (!bytes || typeof bytes.length !== 'number') { return ''; }
+    var binary = '';
+    for (var i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i] & 0xFF);
+    }
+    return btoa(binary);
+  }
+
   /** 已编译模块缓存：同一个模块只编译一次 */
   var wasmModuleCache = {};
 
@@ -198,6 +218,41 @@ class LemonJsSdk {
 
   var currentTheme = null;
   var themeListeners = [];
+
+  /* ============================== 宿主事件 ============================== */
+
+  /**
+   * 宿主 → 页面的事件订阅。
+   *
+   * 蓝牙的 notify / 连接状态 / 扫描结果 / 配对状态是**原生主动推送**的，
+   * 不属于请求/响应，所以单独一条事件通道：
+   *   宿主 evaluateJavascript → lemonlite.__dispatchEvent(type, payload)
+   *   页面通过 lemonlite.bluetooth.onNotification(cb) 等订阅。
+   */
+  var eventListeners = Object.create(null);
+
+  function subscribeEvent(type, callback) {
+    if (typeof callback !== 'function') { return function () {}; }
+    var key = String(type || '');
+    if (!key) { return function () {}; }
+    var list = eventListeners[key];
+    if (!list) { list = []; eventListeners[key] = list; }
+    list.push(callback);
+    return function () {
+      var i = list.indexOf(callback);
+      if (i >= 0) { list.splice(i, 1); }
+    };
+  }
+
+  function dispatchEvent(type, payload) {
+    var list = eventListeners[String(type || '')];
+    if (!list || !list.length) { return; }
+    // 复制一份再遍历：回调里取消订阅不能影响这一轮派发
+    var snapshot = list.slice();
+    for (var i = 0; i < snapshot.length; i++) {
+      try { snapshot[i](payload, type); } catch (e) { /* 页面回调异常不影响框架 */ }
+    }
+  }
 
   /**
    * 把主题快照写成 CSS 变量。
@@ -469,6 +524,296 @@ class LemonJsSdk {
 
     /** 读取熄屏标记：{keepScreenOn, allowScreenOff} */
     getKeepScreenOn: function () { return invoke('getKeepScreenOn'); },
+
+    /* ------------------------------ 蓝牙（BLE） ------------------------------ */
+
+    /**
+     * 蓝牙能力。
+     *
+     * 首次执行扫描 / 配对列表 / 连接 / 读写时，宿主会先弹应用内权限确认框；
+     * 同意后才申请 Android 运行时权限。拒绝时 Promise 会以 code=40001 reject。
+     *
+     * 只支持 BLE（GATT）：扫描、连接、按服务/特征值读写。
+     * 不支持经典蓝牙 SPP / A2DP —— 那类能力没有适合网页的通用读写语义。
+     * 本版也没有「订阅通知」：JSBridge 只有请求/响应，没有服务端推送；
+     * 需要持续数据的特征值请用 read() 轮询（或由模块/扩展自行封装）。
+     */
+    bluetooth: {
+      /**
+       * 适配器状态：{supported, enabled, bleSupported, permissionGranted}
+       * （查询不弹权限框；permissionGranted=false 时先调 listPaired/scan 触发授权）
+       */
+      status: function () { return invoke('bluetoothStatus'); },
+
+      /** 已配对（已绑定）的设备：{count, devices:[{address,name,type,rssi}]} */
+      listPaired: function () { return invoke('bluetoothListPaired'); },
+
+      /** 本 App 当前已连接的设备。 */
+      connections: function () { return invoke('bluetoothConnections'); },
+
+      /** 请求系统打开蓝牙（会弹系统确认框；用 status() 轮询是否已打开）。 */
+      requestEnable: function () { return invoke('bluetoothRequestEnable'); },
+
+      /**
+       * 扫描附近的 BLE / 经典蓝牙设备。
+       * @param {Object} [options] { durationMs: 1000~20000，默认 5000 }
+       * @returns {Promise<{count:number, devices:Array<{
+       *            address:string, name:string, rssi:number,
+       *            type:'le'|'classic'|'dual'|'unknown', connectable:boolean }>}>}
+       * 示例：const r = await lemonlite.bluetooth.scan({ durationMs: 4000 });
+       */
+      scan: function (options) {
+        var opts = options || {};
+        var duration = Number(opts.durationMs);
+        if (!isFinite(duration) || duration <= 0) { duration = 5000; }
+        var mode = opts.mode ? String(opts.mode) : 'ble';
+        var uuids = [];
+        if (opts.serviceUuids && typeof opts.serviceUuids.length === 'number') {
+          for (var i = 0; i < opts.serviceUuids.length; i++) {
+            uuids.push(String(opts.serviceUuids[i]));
+          }
+        }
+        return invoke('bluetoothScan', {
+          durationMs: Math.round(duration),
+          mode: mode,
+          serviceUuids: uuids,
+          namePrefix: opts.namePrefix ? String(opts.namePrefix) : ''
+        });
+      },
+
+      /**
+       * 订阅扫描过程中的实时发现事件。
+       * 回调参数：{address,name,rssi,type,source,connectable}
+       * @returns {Function} 取消订阅
+       */
+      onScanResult: function (callback) {
+        return subscribeEvent('bluetooth:scanResult', callback);
+      },
+
+      /** 订阅连接状态变化：{address,name,connected,state} */
+      onConnectionState: function (callback) {
+        return subscribeEvent('bluetooth:connectionState', callback);
+      },
+
+      /**
+       * 订阅特征值通知（notify / indicate）。
+       * 回调参数：{address,service,characteristic,value(base64),time}
+       */
+      onNotification: function (callback) {
+        return subscribeEvent('bluetooth:notification', callback);
+      },
+
+      /** 订阅配对状态变化：{address,name,state:'bonded'|'bonding'|'none',previousState} */
+      onBondState: function (callback) {
+        return subscribeEvent('bluetooth:bondState', callback);
+      },
+
+      /**
+       * 连接 BLE 设备并发现服务。
+       * @param {string} address 设备地址（扫描结果里的 address）
+       * @returns {Promise<{address:string,name:string,services:Array<{
+       *            uuid:string, characteristics:Array<{uuid:string, properties:string[]}> }>}>}
+       * 示例：const info = await lemonlite.bluetooth.connect(address);
+       */
+      connect: function (address) {
+        var value = address == null ? '' : String(address);
+        if (!value) {
+          return Promise.reject({ code: 10001, message: 'bluetooth.connect(address)：address 不能为空' });
+        }
+        return invoke('bluetoothConnect', { address: value });
+      },
+
+      /** 断开连接（没连上也返回成功）。 */
+      disconnect: function (address) {
+        return invoke('bluetoothDisconnect', { address: address == null ? '' : String(address) });
+      },
+
+      /**
+       * 读特征值。
+       * @param {Object} options { address, service, characteristic }
+       * @returns {Promise<{address,service,characteristic,value:string,bytes:Uint8Array}>}
+       *          value 是 base64；bytes 已经替你解码好。
+       * 示例：const r = await lemonlite.bluetooth.read({ address, service, characteristic });
+       *       console.log(new TextDecoder().decode(r.bytes));
+       */
+      read: function (options) {
+        var opts = options || {};
+        if (!opts.address || !opts.service || !opts.characteristic) {
+          return Promise.reject({
+            code: 10001,
+            message: 'bluetooth.read(options)：需要 address / service / characteristic'
+          });
+        }
+        return invoke('bluetoothRead', {
+          address: String(opts.address),
+          service: String(opts.service),
+          characteristic: String(opts.characteristic)
+        }).then(function (data) {
+          data.bytes = base64ToBytes(data.value || '');
+          return data;
+        });
+      },
+
+      /**
+       * 写特征值。
+       * @param {Object} options {
+       *   address, service, characteristic,
+       *   data: string(base64) | Uint8Array | number[],
+       *   withResponse: boolean（默认 true；false 走无响应写入）
+       * }
+       * 示例：await lemonlite.bluetooth.write({
+       *   address, service, characteristic,
+       *   data: new TextEncoder().encode('hello')
+       * });
+       */
+      write: function (options) {
+        var opts = options || {};
+        if (!opts.address || !opts.service || !opts.characteristic) {
+          return Promise.reject({
+            code: 10001,
+            message: 'bluetooth.write(options)：需要 address / service / characteristic'
+          });
+        }
+        var raw = opts.data !== undefined ? opts.data : opts.value;
+        var data;
+        if (typeof raw === 'string') {
+          data = raw;
+        } else if (raw && typeof raw.length === 'number') {
+          data = bytesToBase64(raw);
+        } else {
+          return Promise.reject({
+            code: 10001,
+            message: 'bluetooth.write(options)：data 必须是 base64 字符串或字节数组'
+          });
+        }
+        return invoke('bluetoothWrite', {
+          address: String(opts.address),
+          service: String(opts.service),
+          characteristic: String(opts.characteristic),
+          data: data,
+          withResponse: opts.withResponse !== false
+        });
+      },
+
+      /**
+       * 订阅特征值通知（notify / indicate）。
+       * @param {Object} options { address, service, characteristic }
+       * 示例：await lemonlite.bluetooth.subscribe({ address, service, characteristic });
+       *       const off = lemonlite.bluetooth.onNotification(function (e) { ... });
+       */
+      subscribe: function (options) {
+        var opts = options || {};
+        if (!opts.address || !opts.service || !opts.characteristic) {
+          return Promise.reject({
+            code: 10001,
+            message: 'bluetooth.subscribe(options)：需要 address / service / characteristic'
+          });
+        }
+        return invoke('bluetoothSubscribe', {
+          address: String(opts.address),
+          service: String(opts.service),
+          characteristic: String(opts.characteristic)
+        });
+      },
+
+      /** 取消订阅特征值通知。参数同 subscribe。 */
+      unsubscribe: function (options) {
+        var opts = options || {};
+        return invoke('bluetoothUnsubscribe', {
+          address: opts.address == null ? '' : String(opts.address),
+          service: opts.service == null ? '' : String(opts.service),
+          characteristic: opts.characteristic == null ? '' : String(opts.characteristic)
+        });
+      },
+
+      /** 读取连接 RSSI：{address, rssi} */
+      rssi: function (address) {
+        return invoke('bluetoothRssi', { address: address == null ? '' : String(address) });
+      },
+
+      /**
+       * 请求更大的 MTU。
+       * @param {Object} options { address, mtu:23~517（默认 512） }
+       * @returns {Promise<{address,mtu}>}
+       */
+      mtu: function (options) {
+        var opts = options || {};
+        var mtu = Number(opts.mtu);
+        if (!isFinite(mtu) || mtu <= 0) { mtu = 512; }
+        return invoke('bluetoothMtu', {
+          address: opts.address == null ? '' : String(opts.address),
+          mtu: Math.round(mtu)
+        });
+      },
+
+      /**
+       * 发起配对（经典蓝牙 / 双模设备）。
+       * 结果通过 onBondState 事件通知。
+       */
+      pair: function (address) {
+        return invoke('bluetoothPair', { address: address == null ? '' : String(address) });
+      },
+
+      /** 断开全部连接（清理动作，不弹权限框）。 */
+      disconnectAll: function () { return invoke('bluetoothDisconnectAll'); }
+    },
+
+    /* -------------------------------- NFC -------------------------------- */
+
+    /**
+     * NFC（Reader Mode）。
+     *
+     * 调用 read() / writeText() 后请让用户把标签贴到手机背面；
+     * 原生侧会在 timeoutMs 内等一张卡。超时会以 code=20002 reject，
+     * 取消 / 页面离开则以 message 说明原因（code 为 90001）。
+     * 首次调用会先弹应用内权限确认框（NFC 本身不需要 Android 运行时权限，
+     * 但「哪个小程序能读你的卡」必须由你确认）。
+     */
+    nfc: {
+      /** 设备是否有 NFC、是否已打开：{supported, enabled} */
+      status: function () { return invoke('nfcStatus'); },
+
+      /**
+       * 等待一张 NFC 标签。
+       * @param {Object} [options] { timeoutMs: 2000~60000，默认 15000 }
+       * @returns {Promise<{
+       *   id:string, techList:string[], ndefSupported:boolean, writable:boolean,
+       *   formatable:boolean, maxSize:number,
+       *   records:Array<{tnf:number,type:string,payload:string,text:string|null,uri:string|null}>
+       * }>}
+       * 示例：const tag = await lemonlite.nfc.read({ timeoutMs: 10000 });
+       */
+      read: function (options) {
+        var opts = options || {};
+        var timeout = Number(opts.timeoutMs);
+        if (!isFinite(timeout) || timeout <= 0) { timeout = 15000; }
+        return invoke('nfcRead', { timeoutMs: Math.round(timeout) });
+      },
+
+      /** 取消正在等待的读卡 / 写卡（幂等）。 */
+      cancel: function () { return invoke('nfcCancel'); },
+
+      /**
+       * 等待一张标签并写入一条 NDEF Text 记录。
+       * @param {string} text 写入内容（UTF-8，上限 4096 字符）
+       * @param {Object} [options] { timeoutMs, formatIfNeeded:boolean（默认 true） }
+       * 示例：await lemonlite.nfc.writeText('你好，NFC');
+       */
+      writeText: function (text, options) {
+        var value = text == null ? '' : String(text);
+        if (!value) {
+          return Promise.reject({ code: 10001, message: 'nfc.writeText(text)：text 不能为空' });
+        }
+        var opts = options || {};
+        var timeout = Number(opts.timeoutMs);
+        if (!isFinite(timeout) || timeout <= 0) { timeout = 15000; }
+        return invoke('nfcWriteText', {
+          text: value,
+          timeoutMs: Math.round(timeout),
+          formatIfNeeded: opts.formatIfNeeded !== false
+        });
+      }
+    },
 
     /* ---------------------------- 文件（专属目录） ---------------------------- */
 
@@ -773,6 +1118,16 @@ class LemonJsSdk {
 
     /** 内部使用：宿主做主题热更新时调用，小程序不要直接调用 */
     __applyTheme: applyTheme,
+
+    /**
+     * 订阅任意宿主事件（高级用法；蓝牙请优先用 bluetooth.onXxx）。
+     * 事件名例如 'bluetooth:notification'。
+     * @returns {Function} 取消订阅
+     */
+    onEvent: subscribeEvent,
+
+    /** 内部使用：宿主把原生事件送进页面时调用，小程序不要直接调用 */
+    __dispatchEvent: dispatchEvent,
 
     /**
      * 内部使用：模块（manifest.bridge 声明的方法）通过它转发到宿主。

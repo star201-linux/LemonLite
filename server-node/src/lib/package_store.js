@@ -39,6 +39,44 @@ export function packagePath(appId, version) {
   return { dir, file };
 }
 
+/**
+ * 把一个「相对/绝对」的静态资源路径补成绝对地址。
+ *
+ * icon 在库里既可能是完整 https 地址（图标放在 CDN / 别处），也可能是
+ * `icons/<appId>.png` 这种本机相对路径（管理员在面板上传）。客户端最终要
+ * 拿它去下载，没有 base 可以拼，所以服务端返回给客户端的一律是绝对地址。
+ */
+export function absoluteAssetUrl(value, origin = '') {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) return raw;
+  const base = String(origin || '').replace(/\/+$/, '');
+  if (!base) return raw;
+  return raw.startsWith('/') ? `${base}${raw}` : `${base}/${raw}`;
+}
+
+/**
+ * 小程序包的下载地址。
+ *
+ * 库里存两种东西：
+ *   * 完整 http(s) 地址（包放在 CDN / 别的机器上）→ 原样返回；
+ *   * `packages/<appId>/<version>.zip` 这种本机相对路径 → 走下载接口。
+ *
+ * **必须走接口**：服务端并没有静态托管 `packages/`，直接拼
+ * `${origin}/packages/...` 会 404（列表能看、一点开就失败）。
+ * 走接口还能顺带得到 ETag / Cache-Control。
+ */
+export function packageDownloadUrl(row, origin = '') {
+  const raw = String(row?.package_url ?? '').trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) return raw;
+  const base = String(origin || '').replace(/\/+$/, '');
+  return (
+    `${base}/api/market/${encodeURIComponent(row.id)}/package` +
+    `?version=${encodeURIComponent(row.version ?? '')}`
+  );
+}
+
 /** zip 魔数：PK\x03\x04（正常包）/ PK\x05\x06（空包） */
 export function isZipBuffer(buf) {
   return (

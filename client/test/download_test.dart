@@ -73,13 +73,13 @@ void main() {
 
     test('名字里的路径分隔符被替换，不会写出子目录', () {
       expect(
-        DownloadService.deriveFileName(suggested: '../../etc/passwd'),
+        DownloadService.deriveFileName(
+          suggested: '../../etc/passwd',
+          url: 'https://example.com/download',
+        ),
         'passwd',
       );
-      expect(
-        DownloadService.sanitizeFileName('a/b\\c.txt'),
-        'a_b_c.txt',
-      );
+      expect(DownloadService.sanitizeFileName('a/b\\c.txt'), 'a_b_c.txt');
     });
 
     test('控制字符与前导点被清掉（不在下载目录里制造隐藏文件）', () {

@@ -25,15 +25,18 @@ import 'package:provider/provider.dart';
 import '../../core/globals.dart';
 import '../../data/models/json_utils.dart';
 import '../../data/services/application_registry.dart';
+import '../../data/services/icon_cache_service.dart';
 import '../../data/services/miniapp_storage_service.dart';
+import '../../data/services/update_service.dart';
 import '../../theme/app_theme.dart';
 import '../home/home_controller.dart';
 
 class StoragePage extends StatefulWidget {
   const StoragePage({super.key});
 
-  static Route<void> route() =>
-      MaterialPageRoute<void>(builder: (BuildContext context) => const StoragePage());
+  static Route<void> route() => MaterialPageRoute<void>(
+    builder: (BuildContext context) => const StoragePage(),
+  );
 
   @override
   State<StoragePage> createState() => _StoragePageState();
@@ -55,16 +58,20 @@ class _StorageSnapshot {
   /// 私有目录根（data/data/<包名>/files/appfiles）
   final String privateRootPath;
 
-  int get totalBytes =>
-      usages.fold<int>(0, (int sum, MiniappStorageUsage u) => sum + u.totalBytes);
+  int get totalBytes => usages.fold<int>(
+    0,
+    (int sum, MiniappStorageUsage u) => sum + u.totalBytes,
+  );
 
   int get storageBytes => usages.fold<int>(
     0,
     (int sum, MiniappStorageUsage u) => sum + u.storageBytes,
   );
 
-  int get fileBytes =>
-      usages.fold<int>(0, (int sum, MiniappStorageUsage u) => sum + u.fileBytes);
+  int get fileBytes => usages.fold<int>(
+    0,
+    (int sum, MiniappStorageUsage u) => sum + u.fileBytes,
+  );
 
   int get privateBytes => usages.fold<int>(
     0,
@@ -210,9 +217,9 @@ class _StoragePageState extends State<StoragePage> {
               padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
               child: Text(
                 '单个应用的数据',
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  color: scheme.primary,
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleSmall?.copyWith(color: scheme.primary),
               ),
             ),
             for (final MiniappStorageUsage usage in data.usages)
@@ -242,9 +249,9 @@ class _StoragePageState extends State<StoragePage> {
                     children: <Widget>[
                       Text(
                         usage.totalLabel,
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          color: scheme.primary,
-                        ),
+                        style: Theme.of(
+                          context,
+                        ).textTheme.titleSmall?.copyWith(color: scheme.primary),
                       ),
                       const Icon(Icons.chevron_right, size: 18),
                     ],
@@ -267,10 +274,7 @@ class _StoragePageState extends State<StoragePage> {
               child: OutlinedButton.icon(
                 onPressed: () => _confirmClearAll(data),
                 icon: Icon(Icons.delete_sweep_outlined, color: scheme.error),
-                label: Text(
-                  '清理全部应用数据',
-                  style: TextStyle(color: scheme.error),
-                ),
+                label: Text('清理全部应用数据', style: TextStyle(color: scheme.error)),
               ),
             ),
           ],
@@ -282,9 +286,9 @@ class _StoragePageState extends State<StoragePage> {
               '（即 Android/data/${AppInfo.packageName}/files/appfiles/<应用 id>）\n'
               '私有目录：${data.privateRootPath}/<应用 id>'
               '（即 data/data/${AppInfo.packageName}/files/appfiles/<应用 id>）',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
           ),
         ],
@@ -307,7 +311,10 @@ class _StoragePageState extends State<StoragePage> {
           children: <Widget>[
             Row(
               children: <Widget>[
-                Icon(Icons.pie_chart_outline, color: scheme.onSecondaryContainer),
+                Icon(
+                  Icons.pie_chart_outline,
+                  color: scheme.onSecondaryContainer,
+                ),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
@@ -371,7 +378,11 @@ class _StoragePageState extends State<StoragePage> {
 
 /// 单个应用的数据详情：键值逐条可删，两个文件目录可分别清空。
 class MiniappDataPage extends StatefulWidget {
-  const MiniappDataPage({super.key, required this.appId, required this.appName});
+  const MiniappDataPage({
+    super.key,
+    required this.appId,
+    required this.appName,
+  });
 
   final String appId;
   final String appName;
@@ -395,8 +406,10 @@ class _MiniappDataPageState extends State<MiniappDataPage> {
     _future = _load();
   }
 
-  Future<MiniappStorageUsage> _load() =>
-      MiniappStorageService.instance.usageOf(widget.appId, name: widget.appName);
+  Future<MiniappStorageUsage> _load() => MiniappStorageService.instance.usageOf(
+    widget.appId,
+    name: widget.appName,
+  );
 
   Future<void> _reload() async {
     final Future<MiniappStorageUsage> next = _load();
@@ -411,7 +424,10 @@ class _MiniappDataPageState extends State<MiniappDataPage> {
       body: FutureBuilder<MiniappStorageUsage>(
         future: _future,
         builder:
-            (BuildContext context, AsyncSnapshot<MiniappStorageUsage> snapshot) {
+            (
+              BuildContext context,
+              AsyncSnapshot<MiniappStorageUsage> snapshot,
+            ) {
               if (snapshot.connectionState != ConnectionState.done) {
                 return const Center(child: CircularProgressIndicator());
               }
@@ -426,8 +442,8 @@ class _MiniappDataPageState extends State<MiniappDataPage> {
 
   Widget _buildBody(BuildContext context, MiniappStorageUsage usage) {
     final ColorScheme scheme = Theme.of(context).colorScheme;
-    final List<MiniappStorageEntry> entries =
-        MiniappStorageService.instance.storageEntries(widget.appId);
+    final List<MiniappStorageEntry> entries = MiniappStorageService.instance
+        .storageEntries(widget.appId);
 
     return ListView(
       padding: const EdgeInsets.only(bottom: 32),
@@ -500,9 +516,7 @@ class _MiniappDataPageState extends State<MiniappDataPage> {
                 leading: const Icon(Icons.folder_outlined),
                 title: Text(scope.label),
                 subtitle: SelectableText(
-                  usage.pathOf(scope).isEmpty
-                      ? '（不可用）'
-                      : usage.pathOf(scope),
+                  usage.pathOf(scope).isEmpty ? '（不可用）' : usage.pathOf(scope),
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 trailing: IconButton(
@@ -529,7 +543,10 @@ class _MiniappDataPageState extends State<MiniappDataPage> {
               ),
               const Divider(height: 1, indent: 16, endIndent: 16),
               ListTile(
-                leading: Icon(Icons.folder_delete_outlined, color: scheme.error),
+                leading: Icon(
+                  Icons.folder_delete_outlined,
+                  color: scheme.error,
+                ),
                 title: Text(
                   '清空${scope.label}',
                   style: TextStyle(color: scheme.error),
@@ -671,6 +688,10 @@ class _MiniappDataPageState extends State<MiniappDataPage> {
     if (ok != true || !mounted) return;
     await MiniappStorageService.instance.clearAllData(widget.appId);
     await ApplicationRegistry.instance.remove(widget.appId);
+    // 图标缓存与待更新状态也一起清掉：清单里已经没有它了，
+    // 留着只会在下次同 id 出现时显示一张过期的图 / 一个假的小红点。
+    await IconCacheService.instance.remove(widget.appId);
+    UpdateService.instance.forget(widget.appId);
     if (!mounted) return;
     AppTheme.showToast('已移除「${widget.appName}」');
     Navigator.of(context).pop();

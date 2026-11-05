@@ -1,5 +1,6 @@
 package xyz.star201.lemonlite
 
+import android.Manifest
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
@@ -55,6 +56,10 @@ class MainActivity : FlutterActivity() {
      * 这里持一下引用是为了让生命周期跟 Activity 对齐（通道本身也会持有它）。
      */
     private var downloadBridge: DownloadBridge? = null
+
+    /** 蓝牙 / NFC 原生桥。与下载桥同理：各自一个通道，生命周期跟 Activity 对齐。 */
+    private var bluetoothBridge: BluetoothBridge? = null
+    private var nfcBridge: NfcBridge? = null
 
     /** 预检用的探针 WebView，[preflightWebView] 的 finally 里销毁。 */
     private var webviewProbe: android.webkit.WebView? = null
@@ -147,6 +152,14 @@ class MainActivity : FlutterActivity() {
         DownloadBridge(this).also {
             it.attach(flutterEngine.dartExecutor.binaryMessenger)
             downloadBridge = it
+        }
+        BluetoothBridge(this).also {
+            it.attach(flutterEngine.dartExecutor.binaryMessenger)
+            bluetoothBridge = it
+        }
+        NfcBridge(this).also {
+            it.attach(flutterEngine.dartExecutor.binaryMessenger)
+            nfcBridge = it
         }
 
         nativeChannel.setMethodCallHandler { call, result ->
@@ -241,6 +254,19 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onPause() {
+        // 页面切走：停止扫描、取消正在等待的 NFC 读卡（它们都是「此刻才成立」的操作）
+        try { bluetoothBridge?.onPause() } catch (_: Throwable) {}
+        try { nfcBridge?.onPause() } catch (_: Throwable) {}
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        try { bluetoothBridge?.onDestroy() } catch (_: Throwable) {}
+        try { nfcBridge?.onDestroy() } catch (_: Throwable) {}
+        super.onDestroy()
+    }
+
     /**
      * 申请 Android 运行时权限，结果通过 [pendingPermissionResult] 异步回给 Dart。
      *
@@ -259,10 +285,25 @@ class MainActivity : FlutterActivity() {
             return
         }
 
+        // 蓝牙在 Android 12+ 是 BLUETOOTH_SCAN / CONNECT，11 及以下没有这两个权限，
+        // 扫描改由定位权限把关。Dart 侧只写新权限名，版本差异在这里统一抹平。
+        val effective = permissions.flatMap { permission ->
+            when (permission) {
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT ->
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        listOf(permission)
+                    } else {
+                        listOf(Manifest.permission.ACCESS_FINE_LOCATION)
+                    }
+                else -> listOf(permission)
+            }
+        }.distinct().toTypedArray()
+
         // 只保留本应用在清单里声明过的权限：没声明的申请一定会被系统立刻拒绝，
         // 提前过滤掉可以让「是否已授予」的判断更准确。
         val declared =
-            permissions.filter {
+            effective.filter {
                 try {
                     packageManager.getPermissionInfo(it, 0)
                     true

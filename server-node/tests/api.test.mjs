@@ -47,6 +47,10 @@ const fakedb = await import(fakePath);
 // 让 config 指向测试用户数据目录
 process.env.USERDATA_DIR = 'userdata-test';
 process.env.TOKEN_TTL = '7d';
+// 注册/登录验证码由环境决定：这里固定关掉，否则本机 .env 打开验证码时
+// 这批接口测试会全部卡在「请输入邮箱验证码」上（和被测逻辑无关）。
+process.env.AUTH_REGISTER_CODE = 'off';
+process.env.AUTH_LOGIN_CODE = 'off';
 
 const { default: express } = await import('express');
 const { config } = await import('../src/config.js');
@@ -625,13 +629,38 @@ describe('小程序包', () => {
     assert.equal(r.json.data.version, '1.0.0');
     assert.equal(r.json.data.hasPackage, true);
     assert.equal(r.json.data.packageSha256, 'deadbeef');
-    assert.ok(r.json.data.packageUrl.includes('/packages/pkg.app/1.0.0.zip'));
+    // 走下载接口而不是假想的静态路径（静态路径会 404）
+    assert.ok(r.json.data.packageUrl.includes('/api/market/pkg.app/package'));
+    assert.ok(r.json.data.packageUrl.includes('version=1.0.0'));
   });
 
   test('meta 对没上架包的条目返回 hasPackage=false', async () => {
     const r = await api('GET', '/api/market/demo.app/package/meta');
     assert.equal(r.status, 200);
     assert.equal(r.json.data.hasPackage, false);
+  });
+
+  test('version 返回单个应用的最新版本（打开小程序前检查用）', async () => {
+    const r = await api('GET', '/api/market/pkg.app/version');
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.data.id, 'pkg.app');
+    assert.equal(r.json.data.version, '1.0.0');
+    assert.equal(r.json.data.hasPackage, true);
+    assert.equal(r.json.data.packageSha256, 'deadbeef');
+    assert.ok(r.json.data.packageUrl.includes('/api/market/pkg.app/package'));
+  });
+
+  test('version 对没上架包的条目返回 hasPackage=false', async () => {
+    const r = await api('GET', '/api/market/demo.app/version');
+    assert.equal(r.status, 200);
+    assert.equal(r.json.data.hasPackage, false);
+    assert.equal(r.json.data.packageUrl, '');
+  });
+
+  test('version 对不存在的应用返回 404', async () => {
+    const r = await api('GET', '/api/market/nope.app/version');
+    assert.equal(r.status, 404);
+    assert.equal(r.json.ok, false);
   });
 
   test('feed 里带出包字段', async () => {
@@ -659,6 +688,8 @@ describe('小程序包', () => {
     assert.equal(old.json.data.updates.length, 1);
     assert.equal(old.json.data.updates[0].latestVersion, '1.0.0');
     assert.equal(old.json.data.updates[0].installedVersion, '0.9.0');
+    // 包地址同样必须走下载接口（否则「提示能更新、点了 404」）
+    assert.ok(old.json.data.updates[0].packageUrl.includes('/api/market/pkg.app/package'));
   });
 
   test('updates 对没装过的（空版本）也返回', async () => {

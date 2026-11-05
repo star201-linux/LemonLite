@@ -45,6 +45,7 @@ import '../../data/models/miniapp_session.dart';
 import '../../data/repositories/bundle_repository.dart';
 import '../../data/services/download_service.dart';
 import '../../theme/app_theme.dart';
+import '../../theme/md3e_styles.dart';
 import '../../theme/theme_controller.dart';
 import '../../theme/theme_injector.dart';
 import '../home/widgets/state_views.dart';
@@ -52,9 +53,6 @@ import '../permissions/permission_controller_page.dart';
 import '../permissions/permission_prompt.dart';
 import '../background/background_apps_page.dart';
 import 'miniapp_host.dart';
-
-/// 内置示例小程序的资源路径（pubspec.yaml 已声明 `assets/miniapp-demo/`）
-const String kDemoMiniappAsset = 'assets/miniapp-demo/index.html';
 
 /// 会话视图。由 MiniappHost 的覆盖层为每个会话创建一个，key = appId。
 class MiniappSessionView extends StatefulWidget {
@@ -105,6 +103,9 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
   /// 供 onWebViewCreated 回调使用（那里不宜再用 BuildContext 取 Provider）
   late ThemeController _themeController;
 
+  /// 当前 WebView 对应的桥接实例（dispose 时要取消蓝牙事件订阅）
+  BridgeApi? _bridge;
+
   InAppWebViewController? _controller;
 
   /// WebView widget 只构建一次并缓存（见文件头注释）
@@ -129,7 +130,8 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
 
   /// 当前生效的模块 / 扩展内容（在 initState 时读好，WebView 只构建一次）
   List<BundlePayload> _payloads = const <BundlePayload>[];
-  Map<String, BundleBridgeMethod> _moduleMethods = <String, BundleBridgeMethod>{};
+  Map<String, BundleBridgeMethod> _moduleMethods =
+      <String, BundleBridgeMethod>{};
   bool _bundleLoadFailed = false;
 
   @override
@@ -202,8 +204,12 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
   @override
   void dispose() {
     // 会话可能比视图活得久（后台运行），所以这里只解绑回调，不动会话本身
+    _bridge?.dispose();
+    _bridge = null;
+    _session.onEvent = null;
     if (_session.onSystemBack == _handleBack) _session.onSystemBack = null;
-    if (_session.onResumeTimers == _resumeTimers) _session.onResumeTimers = null;
+    if (_session.onResumeTimers == _resumeTimers)
+      _session.onResumeTimers = null;
     if (_session.onPauseTimers == _pauseTimers) _session.onPauseTimers = null;
     if (_session.onReload == _reload) _session.onReload = null;
     super.dispose();
@@ -253,10 +259,13 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
     );
   }
 
-  /// 注入顺序：[主题数据] → [JS SDK] → [模块/扩展] → [包清单]
+  /// 注入顺序：[主题数据] → [MD3E 基础样式] → [JS SDK] → [模块/扩展] → [包清单]
   ///
   /// 扩展排在 SDK 之后，才能一上来就用 window.lemonlite.*；
   /// 清单单独最早注入，方便小程序在任何时候读 window.__LEMONLITE_BUNDLES__。
+  ///
+  /// MD3E 样式放在 SDK 之前：它只依赖 `--md-*` 变量（主题数据已经先注入），
+  /// 并且必须在页面解析出第一个元素之前就位，否则默认元素会先闪一下旧样式。
   static List<UserScript> _buildUserScripts(
     Map<String, dynamic> payload,
     List<BundlePayload> bundles,
@@ -264,6 +273,10 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
     final List<UserScript> scripts = <UserScript>[
       UserScript(
         source: ThemeInjector.buildPayloadScript(payload),
+        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+      ),
+      UserScript(
+        source: Md3eStyles.buildInjectScript(),
         injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
       ),
       UserScript(
@@ -297,10 +310,7 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
     // 既没有已装包也没有本地资源：给个明确的错误页，而不是白屏
     if (_session.fileUri == null && _session.localAsset == null) {
       return _shell(
-        child: const ErrorView(
-          title: '无法打开',
-          message: '这个小程序还没有安装到本机，也没有内置资源',
-        ),
+        child: const ErrorView(title: '无法打开', message: '这个小程序还没有安装到本机，也没有内置资源'),
       );
     }
 
@@ -314,13 +324,13 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
     // 0.5 及之前这个问题被掩盖了：那时还有 initialUrlRequest（远程 url 不为
     // null）兜底，所以 WebView 至少会加载点什么。删掉远程入口之后它才暴露。
     if (_session.localAsset != null && _loadingAsset) {
-      return _shell(child: const LoadingView(message: '正在准备示例小程序…'));
+      return _shell(child: const LoadingView(message: '正在准备小程序…'));
     }
 
     if (_assetError != null) {
       return _shell(
         child: ErrorView(
-          title: '示例小程序读取失败',
+          title: '小程序读取失败',
           message: '无法从 assets 载入 ${_session.localAsset}',
           detail: '$_assetError',
           onRetry: () {
@@ -442,16 +452,21 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
 
     lemonLog(
       'Miniapp',
-      '构建 WebView：模式=${assetHtml != null ? "initialData(asset)" : fileUri != null ? "fileUrl" : "无入口"}'
-      ' · html=${assetHtml == null ? "null" : "${assetHtml.length} 字符"}'
-      ' · fileUri=$fileUri'
-      ' · scripts=${_buildUserScripts(payload, _payloads).length}',
+      '构建 WebView：模式=${assetHtml != null
+              ? "initialData(asset)"
+              : fileUri != null
+              ? "fileUrl"
+              : "无入口"}'
+          ' · html=${assetHtml == null ? "null" : "${assetHtml.length} 字符"}'
+          ' · fileUri=$fileUri'
+          ' · scripts=${_buildUserScripts(payload, _payloads).length}',
     );
 
     return InAppWebView(
       // 本地包：file:// 地址。**不要**用 initialFile（asset 语义，见上）。
-      initialUrlRequest:
-          fileUri == null ? null : URLRequest(url: WebUri(fileUri)),
+      initialUrlRequest: fileUri == null
+          ? null
+          : URLRequest(url: WebUri(fileUri)),
       // 内置 asset：HTML 字符串。baseUrl 给 https 以便相对资源按 web 解析。
       initialData: assetHtml == null
           ? null
@@ -476,60 +491,62 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
       //
       // 这个回调必须返回一个响应，否则请求会一直挂着（页面表现为
       // getUserMedia 永远 pending，摄像头黑屏且没有报错）。
-      onPermissionRequest: (InAppWebViewController controller, PermissionRequest request) async {
-        final WebPermissionAsk ask = WebPermissionAsk.from(request);
+      onPermissionRequest:
+          (InAppWebViewController controller, PermissionRequest request) async {
+            final WebPermissionAsk ask = WebPermissionAsk.from(request);
 
-        // 我们不管理的资源（AUTOPLAY / GEOLOCATION …）：直接放行，
-        // 让 Chromium 用它的默认行为，而不是因为不认识就把页面功能掐掉。
-        if (ask.isUnmanaged) {
-          return PermissionResponse(
-            action: PermissionResponseAction.GRANT,
-            resources: request.resources,
-          );
-        }
+            // 我们不管理的资源（AUTOPLAY / GEOLOCATION …）：直接放行，
+            // 让 Chromium 用它的默认行为，而不是因为不认识就把页面功能掐掉。
+            if (ask.isUnmanaged) {
+              return PermissionResponse(
+                action: PermissionResponseAction.GRANT,
+                resources: request.resources,
+              );
+            }
 
-        final Set<MiniappPermission> granted =
-            await PermissionPromptService.instance.ensureAll(
-          _session.appId,
-          ask.permissions,
-          appName: _session.title,
-        );
+            final Set<MiniappPermission> granted = await PermissionPromptService
+                .instance
+                .ensureAll(
+                  _session.appId,
+                  ask.permissions,
+                  appName: _session.title,
+                );
 
-        // 第二层：Android 运行时权限。
-        //
-        // 顺序至关重要 —— 必须**先**拿到系统权限，再回 ALLOW。
-        // WebView 不会替宿主申请系统权限，而 Chromium 真正开设备时
-        // Android 还会拦一道；如果先回了 ALLOW 再去申请，用户会看到
-        // 「弹窗点了允许，摄像头却打不开且没有报错」。
-        //
-        // 只在用户已经同意之后才去申请：否则会先弹系统的框、再弹我们的框，
-        // 顺序反了，用户会觉得莫名其妙。
-        final Set<MiniappPermission> systemGranted = <MiniappPermission>{};
-        for (final MiniappPermission permission in granted) {
-          if (!permission.needsRuntimePermission) {
-            systemGranted.add(permission);
-            continue;
-          }
-          final bool ok = await NativeBridge.requestRuntimePermissions(
-            permission.runtimePermissions,
-          );
-          if (ok) {
-            systemGranted.add(permission);
-          } else {
+            // 第二层：Android 运行时权限。
+            //
+            // 顺序至关重要 —— 必须**先**拿到系统权限，再回 ALLOW。
+            // WebView 不会替宿主申请系统权限，而 Chromium 真正开设备时
+            // Android 还会拦一道；如果先回了 ALLOW 再去申请，用户会看到
+            // 「弹窗点了允许，摄像头却打不开且没有报错」。
+            //
+            // 只在用户已经同意之后才去申请：否则会先弹系统的框、再弹我们的框，
+            // 顺序反了，用户会觉得莫名其妙。
+            final Set<MiniappPermission> systemGranted = <MiniappPermission>{};
+            for (final MiniappPermission permission in granted) {
+              if (!permission.needsRuntimePermission) {
+                systemGranted.add(permission);
+                continue;
+              }
+              final bool ok = await NativeBridge.requestRuntimePermissions(
+                permission.runtimePermissions,
+              );
+              if (ok) {
+                systemGranted.add(permission);
+              } else {
+                await autotestLog(
+                  '系统运行时权限被拒绝：${permission.runtimePermissions.join(",")}',
+                );
+              }
+            }
+
             await autotestLog(
-              '系统运行时权限被拒绝：${permission.runtimePermissions.join(",")}',
+              'WebView 权限请求：${ask.permissions.map((MiniappPermission p) => p.id).join(",")}'
+              ' → 应用内允许 ${granted.map((MiniappPermission p) => p.id).join(",")}'
+              ' · 系统层允许 ${systemGranted.map((MiniappPermission p) => p.id).join(",")}',
             );
-          }
-        }
 
-        await autotestLog(
-          'WebView 权限请求：${ask.permissions.map((MiniappPermission p) => p.id).join(",")}'
-          ' → 应用内允许 ${granted.map((MiniappPermission p) => p.id).join(",")}'
-          ' · 系统层允许 ${systemGranted.map((MiniappPermission p) => p.id).join(",")}',
-        );
-
-        return WebPermissionAsk.response(ask: ask, granted: systemGranted);
-      },
+            return WebPermissionAsk.response(ask: ask, granted: systemGranted);
+          },
       // ------------------------------------------------------- 定位（另一条路）
       //
       // Android WebView 把定位权限从 onPermissionRequest 里**独立**出来了：
@@ -541,56 +558,53 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
       // 然后按**实际同意的那档**去申请系统权限 —— 只同意大致时
       // 只申请 COARSE，系统的定位服务自己会把坐标模糊掉。
       onGeolocationPermissionsShowPrompt:
-          (
-            InAppWebViewController controller,
-            String origin,
-          ) async {
-        final List<MiniappPermission> ask = WebPermissionAsk.forGeolocation();
+          (InAppWebViewController controller, String origin) async {
+            final List<MiniappPermission> ask =
+                WebPermissionAsk.forGeolocation();
 
-        final Set<MiniappPermission> granted =
-            await PermissionPromptService.instance.ensureAll(
-          _session.appId,
-          ask,
-          appName: _session.title,
-        );
+            final Set<MiniappPermission> granted = await PermissionPromptService
+                .instance
+                .ensureAll(_session.appId, ask, appName: _session.title);
 
-        // 用户至少要给「大致位置」才算数；只给了精细而没给粗略是矛盾的，
-        // 但 Android 上 FINE 隐含 COARSE，所以这里把 FINE 也当作已授权 COARSE。
-        final bool allow = granted.contains(MiniappPermission.geolocationCoarse) ||
-            granted.contains(MiniappPermission.geolocationFine);
-        if (!allow) {
-          await autotestLog('定位请求被拒绝：$origin');
-          return GeolocationPermissionShowPromptResponse(
-            origin: origin,
-            allow: false,
-            retain: false,
-          );
-        }
+            // 用户至少要给「大致位置」才算数；只给了精细而没给粗略是矛盾的，
+            // 但 Android 上 FINE 隐含 COARSE，所以这里把 FINE 也当作已授权 COARSE。
+            final bool allow =
+                granted.contains(MiniappPermission.geolocationCoarse) ||
+                granted.contains(MiniappPermission.geolocationFine);
+            if (!allow) {
+              await autotestLog('定位请求被拒绝：$origin');
+              return GeolocationPermissionShowPromptResponse(
+                origin: origin,
+                allow: false,
+                retain: false,
+              );
+            }
 
-        // 系统层：只申请用户实际同意的那一档。
-        // FINE 会隐含 COARSE（Android 规则），所以给了 FINE 就不必再要 COARSE。
-        final List<String> runtime = <String>[
-          if (granted.contains(MiniappPermission.geolocationFine))
-            'android.permission.ACCESS_FINE_LOCATION'
-          else
-            'android.permission.ACCESS_COARSE_LOCATION',
-        ];
-        final bool systemOk =
-            await NativeBridge.requestRuntimePermissions(runtime);
-        await autotestLog(
-          '定位请求：$origin → 应用内 ${granted.map((MiniappPermission p) => p.id).join(",")}'
-          ' · 系统层 $runtime = $systemOk',
-        );
+            // 系统层：只申请用户实际同意的那一档。
+            // FINE 会隐含 COARSE（Android 规则），所以给了 FINE 就不必再要 COARSE。
+            final List<String> runtime = <String>[
+              if (granted.contains(MiniappPermission.geolocationFine))
+                'android.permission.ACCESS_FINE_LOCATION'
+              else
+                'android.permission.ACCESS_COARSE_LOCATION',
+            ];
+            final bool systemOk = await NativeBridge.requestRuntimePermissions(
+              runtime,
+            );
+            await autotestLog(
+              '定位请求：$origin → 应用内 ${granted.map((MiniappPermission p) => p.id).join(",")}'
+              ' · 系统层 $runtime = $systemOk',
+            );
 
-        return GeolocationPermissionShowPromptResponse(
-          origin: origin,
-          allow: systemOk,
-          // retain=true 会让 WebView 记住这个 origin 的决定，
-          // 后续同源请求不再回调我们 —— 那样用户在权限管理里改成「拒绝」
-          // 就不会生效了。所以一律 false，每次都问我们的模型。
-          retain: false,
-        );
-      },
+            return GeolocationPermissionShowPromptResponse(
+              origin: origin,
+              allow: systemOk,
+              // retain=true 会让 WebView 记住这个 origin 的决定，
+              // 后续同源请求不再回调我们 —— 那样用户在权限管理里改成「拒绝」
+              // 就不会生效了。所以一律 false，每次都问我们的模型。
+              retain: false,
+            );
+          },
       // ---------------------------------------------------------------- 下载
       //
       // 网页里点 `<a download>` / 触发下载时，WebView 自己**不会**下载任何东西
@@ -604,7 +618,10 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
       // （那是一条什么都没发生的静默失败），无论我们这边成功还是失败，
       // 下载都已经在我们的记录里，失败了也在管理页能看到原因。
       onDownloadStarting:
-          (InAppWebViewController controller, DownloadStartRequest request) async {
+          (
+            InAppWebViewController controller,
+            DownloadStartRequest request,
+          ) async {
             await _handleDownloadStart(request);
             return DownloadStartResponse(
               handled: true,
@@ -675,7 +692,8 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
             //
             // 注意：ConsoleMessage 只有 message 与 messageLevel 两个字段
             //（没有 sourceId / lineNumber），所以这里拿不到行号。
-            final String text = '${message.messageLevel.name} ${message.message}';
+            final String text =
+                '${message.messageLevel.name} ${message.message}';
             if (message.messageLevel == ConsoleMessageLevel.ERROR) {
               lemonLogError('console', text);
             } else {
@@ -722,23 +740,50 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
     // （见上面的回调与 bridge/web_permission.dart），不在 JSBridge 这一层。
     final BridgeApi api = BridgeApi(
       appId: _session.appId,
+      appName: _session.title,
       themeController: _themeController,
+      // 蓝牙 notify / 连接状态 / 扫描结果等原生主动事件 → WebView 里的 JS SDK
+      onEvent: (String appId, String type, Map<String, dynamic> data) {
+        _session.onEvent?.call(type, data);
+      },
       session: _session,
+      // 蓝牙 / NFC 这类原生能力：桥接层调用前先走同一个权限弹窗。
+      permissionPrompter:
+          (String appId, MiniappPermission permission, {String? appName}) =>
+              PermissionPromptService.instance.ensure(
+                appId,
+                permission,
+                appName: appName ?? _session.title,
+              ),
       onSetTitle: (String title) {
         _titleOverridden = true;
         _session.titleNotifier.value = title;
       },
       onNavigateBack: _navigateBack,
-      onRunInBackground: () => MiniappHost.instance.sendToBackground(_session.appId),
+      onRunInBackground: () =>
+          MiniappHost.instance.sendToBackground(_session.appId),
       onCloseMiniapp: () => MiniappHost.instance.close(_session.appId),
       moduleMethods: _moduleMethods,
     );
 
+    _bridge = api;
+    _session.onEvent = _dispatchEvent;
     JsBridge.attach(controller: controller, api: api);
-    lemonLog(
-      'Miniapp',
-      '打开小程序 ${_session.appId}：${_session.entry}',
-    );
+    lemonLog('Miniapp', '打开小程序 ${_session.appId}：${_session.entry}');
+  }
+
+  /// 把宿主事件安全地送进页面：
+  ///   * 页面可能已经导航走 / WebView 还没创建：直接丢弃；
+  ///   * type 与 data 都做 JSON 编码，不拼字符串（避免引号/换行破坏 JS）；
+  ///   * SDK 还没装好时 `window.lemonlite` 不存在，表达式短路即可。
+  void _dispatchEvent(String type, Map<String, dynamic> data) {
+    final InAppWebViewController? controller = _controller;
+    if (controller == null) return;
+    final String script =
+        'window.lemonlite && window.lemonlite.__dispatchEvent && '
+        'window.lemonlite.__dispatchEvent('
+        '${jsonEncode(type)}, ${jsonEncode(data)});';
+    controller.evaluateJavascript(source: script);
   }
 
   /// JSBridge 的 lemonlite.navigateBack()
@@ -1004,4 +1049,3 @@ class _FloatingMoreButton extends StatelessWidget {
     );
   }
 }
-

@@ -5,7 +5,7 @@
 // 阶段一只有三件事：
 //   1. 自定义市场服务器地址（保存 / 重置为默认），保存后**立即生效**
 //      —— 保存后直接调 HomeController.load()，用新地址重新拉 index.json
-//   2. 「测试工具 → 小程序测试」二级菜单，用来跑内置示例小程序或本地包目录
+//   2. 「测试工具 → 小程序测试」二级菜单，用来跑 SDK 自检或本地包目录
 //   3. 关闭开发者模式
 // 另外附一块「运行时信息」，调主题/桥接问题时不用再翻日志。
 
@@ -126,14 +126,16 @@ class _DeveloperPageState extends State<DeveloperPage> {
         DioExceptionType.connectionTimeout ||
         DioExceptionType.receiveTimeout ||
         DioExceptionType.sendTimeout ||
-        DioExceptionType.transformTimeout =>
-          '连接超时：服务没起，或者手机连不到这台机器',
-        DioExceptionType.connectionError =>
-          '连不上：检查地址与端口，以及手机是否在同一网络',
+        DioExceptionType.transformTimeout => '连接超时：服务没起，或者手机连不到这台机器',
+        DioExceptionType.connectionError => '连不上：检查地址与端口，以及手机是否在同一网络',
         DioExceptionType.badCertificate => '证书校验失败（自签名 HTTPS 会这样）',
         _ => '请求失败：${e.message ?? e.type.name}',
       };
-      AppTheme.showToast(hint, isError: true, duration: const Duration(seconds: 5));
+      AppTheme.showToast(
+        hint,
+        isError: true,
+        duration: const Duration(seconds: 5),
+      );
     } catch (e) {
       if (!mounted) return;
       AppTheme.showToast('探测失败：$e', isError: true);
@@ -332,7 +334,7 @@ class _DeveloperPageState extends State<DeveloperPage> {
               subtitle: Text(
                 home.hasData
                     ? '${home.loadedCount} 个'
-                        '${home.hasMore ? '（还有更多）' : '（已全部加载）'}'
+                          '${home.hasMore ? '（还有更多）' : '（已全部加载）'}'
                     : '还没有加载过',
               ),
             ),
@@ -360,7 +362,9 @@ class _DeveloperPageState extends State<DeveloperPage> {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.wifi_tethering),
-                    onPressed: _probing ? null : () => _probeApi(settings.serverUrl),
+                    onPressed: _probing
+                        ? null
+                        : () => _probeApi(settings.serverUrl),
                   ),
                 ],
               ),
@@ -406,7 +410,7 @@ class _DeveloperPageState extends State<DeveloperPage> {
             ListTile(
               leading: const Icon(Icons.science_outlined),
               title: const Text('小程序测试'),
-              subtitle: const Text('打开内置示例小程序，或指定一个本地包目录'),
+              subtitle: const Text('运行 SDK 自检，或打开一个本地包目录'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.of(context).push(MiniappTestPage.route()),
             ),

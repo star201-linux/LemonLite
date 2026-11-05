@@ -20,6 +20,7 @@
 import { Router } from 'express';
 import { query } from '../db.js';
 import { ApiError, sendOk, wrap } from '../lib/http.js';
+import { packageDownloadUrl } from '../lib/package_store.js';
 import { config } from '../config.js';
 
 export const marketRouter = Router();
@@ -71,19 +72,17 @@ function parseCategoryPairs(value) {
 function toAppDto(row, origin = '') {
   // 包地址补成绝对地址：客户端要直接拿它去下载，没有 base 可拼。
   //
-  // 两种情况：
+  // 两种情况（细节见 lib/package_store.js 的 packageDownloadUrl）：
   //   * 库里存的是完整 http(s) 地址（包放在 CDN / 别的机器上）→ 原样给它；
   //   * 存的是 packages/<appId>/<version>.zip 这种本机相对路径 → 走下载接口
   //     `/api/market/<appId>/package?version=<v>`。
   //     以前这里拼的是 `${origin}/packages/...`，但服务端**并没有**静态托管
   //     那个目录，结果就是「列表能看、一点开就 404」。走接口还能顺带得到
   //     ETag / Cache-Control，客户端也能复用缓存。
-  const pkgUrl = row.package_url
-    ? /^https?:\/\//i.test(row.package_url)
-      ? row.package_url
-      : `${origin}/api/market/${encodeURIComponent(row.id)}/package` +
-        `?version=${encodeURIComponent(row.version)}`
-    : '';
+  //
+  // 版本检查（/updates、/:appId/version）也调用同一个函数 —— 同一个字段
+  // 在三个接口里算出两种地址，客户端迟早会栽在其中一个上。
+  const pkgUrl = packageDownloadUrl(row, origin);
 
   // 多分类：category 仍是「主分类」（客户端详情页只认一个字段），
   // categories 是完整的归类列表。没有主分类时用列表第一个兜底 ——

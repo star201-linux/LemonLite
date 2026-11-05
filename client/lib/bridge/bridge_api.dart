@@ -19,6 +19,7 @@
 //   );
 //   controller.addJavaScriptHandler(handlerName: 'lemonlite', callback: ...); // 见 js_bridge.dart
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:device_info_plus/device_info_plus.dart';
@@ -27,11 +28,15 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../core/bluetooth_bridge.dart';
 import '../core/globals.dart';
 import '../core/native_bridge.dart';
+import '../core/nfc_bridge.dart';
 import '../data/models/bundle_manifest.dart';
+import '../data/models/miniapp_permission.dart';
 import '../data/models/miniapp_session.dart';
 import '../data/services/download_service.dart';
+import '../data/services/permission_service.dart';
 import '../data/services/plugin_service.dart';
 import '../data/services/miniapp_storage_service.dart';
 import '../data/services/settings_service.dart';
@@ -61,15 +66,16 @@ class BridgeErrorCode {
   /// 存储相关
   static const int storage = 30001;
 
-  /// 40001 曾用于「权限被拒绝」。
+  /// 权限被拒绝。
   ///
-  /// **这一版不再由桥接层返回它**：权限管的是浏览器受控资源，
-  /// 网页被拒绝时拿到的是 Chromium 自己的 DOMException（NotAllowedError），
-  /// 不会走到 JSBridge。保留这个常量是为了不改变已发布的错误码含义
-  /// （小程序里可能有 `err.code === 40001` 的判断，贸然删除会让那些
-  /// 判断变成 undefined 比较），但它现在是**只读的兼容值**，不再抛出。
-  @Deprecated('权限拒绝不再经由 JSBridge 返回，网页会收到 DOMException')
+  /// 浏览器受控资源（摄像头 / 麦克风 / 存储）被拒时，网页拿到的是 Chromium
+  /// 自己的 DOMException，不会走到 JSBridge；但**原生能力**（蓝牙 / NFC）
+  /// 走的是 `lemonlite.bluetooth.*` / `lemonlite.nfc.*`，它们被拒时
+  /// 就是这里返回 40001 —— 小程序据此提示「去权限管理里打开」。
   static const int permissionDenied = 40001;
+
+  /// 设备能力不可用（蓝牙 / NFC 关闭、硬件不存在）
+  static const int deviceUnavailable = 50001;
 
   /// 兜底
   static const int internal = 90001;
@@ -91,15 +97,35 @@ class BridgeApi {
     required this.themeController,
     required this.onSetTitle,
     required this.onNavigateBack,
+    this.appName = '',
     this.session,
     this.storageService,
     this.onRunInBackground,
     this.onCloseMiniapp,
+    this.permissionPrompter,
+    this.onEvent,
     this.moduleMethods = const <String, BundleBridgeMethod>{},
-  });
+  }) {
+    // 蓝牙原生事件（通知 / 连接状态 / 扫描结果 / 配对状态）只转发给
+    // 当前这个小程序：按它连接过 / 正在扫描 / 配对过的地址过滤。
+    _bluetoothEvents = BluetoothBridge.events.listen(_onBluetoothEvent);
+  }
 
   /// 当前小程序的 id（storage 命名空间、权限授权、文件沙箱都用它隔离）
   final String appId;
+
+  /// 弹窗里显示的小程序名字（空则用 appId）
+  final String appName;
+
+  /// 权限确认弹窗的注入点。
+  ///
+  /// 为什么由调用方注入而不是直接 import PermissionPromptService：
+  /// 桥接层不应该依赖 pages/（层级方向是 pages → bridge）。注入之后，
+  /// 测试里可以直接塞一个「永远允许 / 永远拒绝」的假实现。
+  ///
+  /// 为 null 时按 [PermissionService] 里**已经保存的决定**判断：
+  /// 只有「已允许」才放行，其余一律拒绝（fail closed）。
+  final PermissionPrompter? permissionPrompter;
 
   final ThemeController themeController;
 
@@ -121,6 +147,15 @@ class BridgeApi {
 
   /// close 的回调
   final Future<void> Function()? onCloseMiniapp;
+
+  /// 宿主 → 小程序的事件回调（由 MiniappPage 接到 WebView 的
+  /// `window.lemonlite.__dispatchEvent`）。type 形如 `bluetooth:notification`。
+  final void Function(String appId, String type, Map<String, dynamic> data)?
+  onEvent;
+
+  StreamSubscription<Map<String, dynamic>>? _bluetoothEvents;
+  final Set<String> _bluetoothAddresses = <String>{};
+  bool _bluetoothScanning = false;
 
   /// 模块通过 manifest.bridge 声明的新方法（方法名 → 定义）。
   /// 由 MiniappPage 在打开小程序时从 BundleRepository 取好塞进来；
@@ -159,115 +194,160 @@ class BridgeApi {
 
   /// method 名与 injected_js.dart 里 lemonlite.* 一一对应
   ///
-  /// **这里没有权限闸门**，这是有意的：本框架的权限管的是**浏览器的**
-  /// 受控资源（摄像头 / 麦克风 / 文件系统访问），它们由网页自己通过
-  /// `getUserMedia()` 等 Web API 发起，拦截点在 WebView 的
-  /// `onPermissionRequest` 上（见 bridge/web_permission.dart）。
+  /// 大部分方法**没有权限闸门**，这是有意的：浏览器的受控资源
+  /// （摄像头 / 麦克风 / 定位 / 存储）由网页自己通过 Web API 发起，
+  /// 拦截点在 WebView 的 `onPermissionRequest` / `onGeolocationPermissions`
+  /// 上（见 bridge/web_permission.dart）。
   ///
-  /// 桥接层的这些方法不碰受控资源：
+  /// 只有**宿主原生能力**需要在桥接层加闸门：蓝牙与 NFC
+  /// （`lemonlite.bluetooth.*` / `lemonlite.nfc.*`）。它们不是浏览器 API，
+  /// 原生层一旦执行就已经拿到设备/标签了，所以必须在执行前先问用户
+  /// —— 见 `_ensureCapability()`。
+  ///
+  /// 其余方法不碰受控资源：
   ///   * 网络 / 存储 / 文件沙箱 —— 只作用于小程序自己的命名空间与沙箱目录；
   ///   * 音量 / 亮度 / 屏幕方向 / 常亮 —— Android 本来就不禁止应用自行调整。
-  /// 把它们也做成「权限」只会让真正的风险项淹没在一堆没有意义的开关里。
   Future<Object?> dispatch(String method, Map<String, dynamic> params) async {
     try {
       switch (method) {
-      case 'getSystemInfo':
-        return await getSystemInfo();
-      case 'getTheme':
-        return await getTheme();
-      case 'setTitle':
-        return await setTitle(params);
-      case 'showToast':
-        return await showToast(params);
-      case 'navigateBack':
-        return await navigateBack(params);
-      case 'openUrl':
-        return await openUrl(params);
-      case 'request':
-        return await request(params);
-      case 'setStorage':
-        return await setStorage(params);
-      case 'getStorage':
-        return await getStorage(params);
-      case 'removeStorage':
-        return await removeStorage(params);
-      case 'clearStorage':
-        return await clearStorage();
-      case 'getStorageKeys':
-        return await getStorageKeys();
+        case 'getSystemInfo':
+          return await getSystemInfo();
+        case 'getTheme':
+          return await getTheme();
+        case 'setTitle':
+          return await setTitle(params);
+        case 'showToast':
+          return await showToast(params);
+        case 'navigateBack':
+          return await navigateBack(params);
+        case 'openUrl':
+          return await openUrl(params);
+        case 'request':
+          return await request(params);
+        case 'setStorage':
+          return await setStorage(params);
+        case 'getStorage':
+          return await getStorage(params);
+        case 'removeStorage':
+          return await removeStorage(params);
+        case 'clearStorage':
+          return await clearStorage();
+        case 'getStorageKeys':
+          return await getStorageKeys();
 
-      // ---- 音量 / 亮度 ----
-      case 'getVolume':
-        return await getVolume();
-      case 'setVolume':
-        return await setVolume(params);
-      case 'getBrightness':
-        return await getBrightness();
-      case 'setBrightness':
-        return await setBrightness(params);
+        // ---- 蓝牙 / NFC（原生能力，调用前先过权限弹窗） ----
+        case 'bluetoothStatus':
+          return await bluetoothStatus();
+        case 'bluetoothListPaired':
+          return await bluetoothListPaired();
+        case 'bluetoothScan':
+          return await bluetoothScan(params);
+        case 'bluetoothConnect':
+          return await bluetoothConnect(params);
+        case 'bluetoothDisconnect':
+          return await bluetoothDisconnect(params);
+        case 'bluetoothRead':
+          return await bluetoothRead(params);
+        case 'bluetoothWrite':
+          return await bluetoothWrite(params);
+        case 'bluetoothConnections':
+          return await bluetoothConnections();
+        case 'bluetoothRequestEnable':
+          return await bluetoothRequestEnable();
+        case 'bluetoothSubscribe':
+          return await bluetoothSubscribe(params);
+        case 'bluetoothUnsubscribe':
+          return await bluetoothSubscribe(params, enable: false);
+        case 'bluetoothRssi':
+          return await bluetoothRssi(params);
+        case 'bluetoothMtu':
+          return await bluetoothMtu(params);
+        case 'bluetoothPair':
+          return await bluetoothPair(params);
+        case 'bluetoothDisconnectAll':
+          return await bluetoothDisconnectAll();
 
-      // ---- 页面标记：方向 / 熄屏 ----
-      case 'getPageOrientation':
-        return await getPageOrientation();
-      case 'setPageOrientation':
-        return await setPageOrientation(params);
-      case 'getKeepScreenOn':
-        return await getKeepScreenOn();
-      case 'setKeepScreenOn':
-        return await setKeepScreenOn(params);
+        case 'nfcStatus':
+          return await nfcStatus();
+        case 'nfcRead':
+          return await nfcRead(params);
+        case 'nfcCancel':
+          return await nfcCancel();
+        case 'nfcWriteText':
+          return await nfcWriteText(params);
 
-      // ---- 小程序专属文件目录（共享 / 私有两个作用域） ----
-      case 'getAppFileDir':
-        return await getAppFileDir(params);
-      case 'readFile':
-        return await readFile(params);
-      case 'writeFile':
-        return await writeFile(params);
-      case 'appendFile':
-        return await writeFile(params, append: true);
-      case 'listFiles':
-        return await listFiles(params);
-      case 'deleteFile':
-        return await deleteFile(params);
-      case 'mkdir':
-        return await mkdir(params);
-      case 'exists':
-        return await exists(params);
-      case 'fileInfo':
-        return await fileInfo(params);
+        // ---- 音量 / 亮度 ----
+        case 'getVolume':
+          return await getVolume();
+        case 'setVolume':
+          return await setVolume(params);
+        case 'getBrightness':
+          return await getBrightness();
+        case 'setBrightness':
+          return await setBrightness(params);
 
-      // ---- 下载（交给系统下载器） ----
-      case 'downloadSave':
-        return await downloadSave(params);
-      case 'downloadList':
-        return await downloadList();
+        // ---- 页面标记：方向 / 熄屏 ----
+        case 'getPageOrientation':
+          return await getPageOrientation();
+        case 'setPageOrientation':
+          return await setPageOrientation(params);
+        case 'getKeepScreenOn':
+          return await getKeepScreenOn();
+        case 'setKeepScreenOn':
+          return await setKeepScreenOn(params);
 
-      // ---- 会话 ----
-      case 'runInBackground':
-        return await runInBackground();
-      case 'close':
-        return await closeMiniapp();
+        // ---- 小程序专属文件目录（共享 / 私有两个作用域） ----
+        case 'getAppFileDir':
+          return await getAppFileDir(params);
+        case 'readFile':
+          return await readFile(params);
+        case 'writeFile':
+          return await writeFile(params);
+        case 'appendFile':
+          return await writeFile(params, append: true);
+        case 'listFiles':
+          return await listFiles(params);
+        case 'deleteFile':
+          return await deleteFile(params);
+        case 'mkdir':
+          return await mkdir(params);
+        case 'exists':
+          return await exists(params);
+        case 'fileInfo':
+          return await fileInfo(params);
 
-      // ---- WASM（由插件提供，宿主只负责转发字节） ----
-      case 'wasmList':
-        return await wasmList();
-      case 'wasmRead':
-        return await wasmRead(params);
+        // ---- 下载（交给系统下载器） ----
+        case 'downloadSave':
+          return await downloadSave(params);
+        case 'downloadList':
+          return await downloadList();
 
-      // ---- 插件 ----
-      case 'pluginsList':
-        return await pluginsList();
+        // ---- 会话 ----
+        case 'runInBackground':
+          return await runInBackground();
+        case 'close':
+          return await closeMiniapp();
 
-      default:
-        // 宿主内置 API 都没命中，才看是不是模块自己声明的方法
-        final BundleBridgeMethod? moduleMethod = moduleMethods[method];
-        if (moduleMethod != null) {
-          return await _runModuleMethod(moduleMethod, params);
-        }
-        throw LemonBridgeException(
-          BridgeErrorCode.notSupported,
-          '不支持的 API：$method',
-        );
+        // ---- WASM（由插件提供，宿主只负责转发字节） ----
+        case 'wasmList':
+          return await wasmList();
+        case 'wasmRead':
+          return await wasmRead(params);
+
+        // ---- 插件 ----
+        case 'pluginsList':
+          return await pluginsList();
+
+        default:
+          // 宿主内置 API 都没命中，才看是不是模块自己声明的方法
+          final BundleBridgeMethod? moduleMethod = moduleMethods[method];
+          if (moduleMethod != null) {
+            return await _runModuleMethod(moduleMethod, params);
+          }
+          throw LemonBridgeException(
+            BridgeErrorCode.notSupported,
+            '不支持的 API：$method',
+          );
       }
     } on AppFileException catch (e) {
       // 文件类失败都是可预期的（路径越界、文件过大、base64 不合法…），
@@ -332,7 +412,8 @@ class BridgeApi {
   // ---------------------------------------------------------- getTheme
 
   /// 返回当前 MD3 主题（结构见 ThemeInjector.toThemePayload 的注释）
-  Future<Map<String, dynamic>> getTheme() async => themeController.themeSnapshot();
+  Future<Map<String, dynamic>> getTheme() async =>
+      themeController.themeSnapshot();
 
   // ---------------------------------------------------------- setTitle
 
@@ -347,10 +428,16 @@ class BridgeApi {
   Future<Map<String, dynamic>> showToast(Map<String, dynamic> params) async {
     final String message = _string(params['message']);
     if (message.isEmpty) {
-      throw const LemonBridgeException(BridgeErrorCode.invalidArgument, 'showToast：message 不能为空');
+      throw const LemonBridgeException(
+        BridgeErrorCode.invalidArgument,
+        'showToast：message 不能为空',
+      );
     }
     final String type = _string(params['type'], 'info');
-    final int durationMs = _int(params['duration'], 2000).clamp(500, 10000).toInt();
+    final int durationMs = _int(
+      params['duration'],
+      2000,
+    ).clamp(500, 10000).toInt();
 
     AppTheme.showToast(
       message,
@@ -373,11 +460,17 @@ class BridgeApi {
   Future<Map<String, dynamic>> openUrl(Map<String, dynamic> params) async {
     final String raw = _string(params['url']);
     if (raw.isEmpty) {
-      throw const LemonBridgeException(BridgeErrorCode.invalidArgument, 'openUrl：url 必填');
+      throw const LemonBridgeException(
+        BridgeErrorCode.invalidArgument,
+        'openUrl：url 必填',
+      );
     }
     final Uri? uri = Uri.tryParse(raw);
     if (uri == null || !uri.hasScheme) {
-      throw const LemonBridgeException(BridgeErrorCode.invalidArgument, 'openUrl：url 不是合法地址');
+      throw const LemonBridgeException(
+        BridgeErrorCode.invalidArgument,
+        'openUrl：url 不是合法地址',
+      );
     }
     const Set<String> allowed = <String>{'http', 'https', 'mailto', 'tel'};
     final String scheme = uri.scheme.toLowerCase();
@@ -389,9 +482,15 @@ class BridgeApi {
     }
 
     try {
-      final bool opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      final bool opened = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
       if (!opened) {
-        throw const LemonBridgeException(BridgeErrorCode.internal, 'openUrl：没有可打开该链接的应用');
+        throw const LemonBridgeException(
+          BridgeErrorCode.internal,
+          'openUrl：没有可打开该链接的应用',
+        );
       }
       return <String, dynamic>{'opened': true, 'url': raw};
     } on LemonBridgeException {
@@ -409,18 +508,27 @@ class BridgeApi {
     final String url = _string(params['url']);
     final Uri? uri = Uri.tryParse(url);
     if (url.isEmpty || uri == null || !uri.hasScheme) {
-      throw const LemonBridgeException(BridgeErrorCode.invalidArgument, 'request：url 必须是绝对地址');
+      throw const LemonBridgeException(
+        BridgeErrorCode.invalidArgument,
+        'request：url 必须是绝对地址',
+      );
     }
     final String scheme = uri.scheme.toLowerCase();
     if (scheme != 'http' && scheme != 'https') {
-      throw LemonBridgeException(BridgeErrorCode.notSupported, 'request：仅支持 http/https，收到 $scheme');
+      throw LemonBridgeException(
+        BridgeErrorCode.notSupported,
+        'request：仅支持 http/https，收到 $scheme',
+      );
     }
 
     final String method = _string(params['method'], 'GET').toUpperCase();
     final Map<String, dynamic>? headers = _map(params['headers']);
     final Map<String, dynamic>? query = _map(params['params']);
     final Object? data = params['data'];
-    final int timeoutMs = _int(params['timeout'], 15000).clamp(1000, 60000).toInt();
+    final int timeoutMs = _int(
+      params['timeout'],
+      15000,
+    ).clamp(1000, 60000).toInt();
 
     final Stopwatch watch = Stopwatch()..start();
     try {
@@ -445,7 +553,8 @@ class BridgeApi {
         'status': response.statusCode ?? 0,
         'statusText': response.statusMessage ?? '',
         'headers': response.headers.map.map(
-          (String key, List<String> value) => MapEntry<String, String>(key, value.join(', ')),
+          (String key, List<String> value) =>
+              MapEntry<String, String>(key, value.join(', ')),
         ),
         'data': _decodeBody(body),
         'durationMs': watch.elapsedMilliseconds,
@@ -462,7 +571,8 @@ class BridgeApi {
   Object? _decodeBody(String body) {
     final String trimmed = body.trim();
     if (trimmed.isEmpty) return '';
-    final bool looksLikeJson = trimmed.startsWith('{') || trimmed.startsWith('[');
+    final bool looksLikeJson =
+        trimmed.startsWith('{') || trimmed.startsWith('[');
     if (!looksLikeJson) return body;
     try {
       return jsonDecode(trimmed);
@@ -511,24 +621,36 @@ class BridgeApi {
     try {
       encoded = jsonEncode(value);
     } catch (e) {
-      throw LemonBridgeException(BridgeErrorCode.invalidArgument, 'setStorage：value 无法序列化（$e）');
+      throw LemonBridgeException(
+        BridgeErrorCode.invalidArgument,
+        'setStorage：value 无法序列化（$e）',
+      );
     }
     if (encoded.length > _maxStorageBytes) {
-      throw const LemonBridgeException(BridgeErrorCode.storage, 'setStorage：单个键值不能超过 512KB');
+      throw const LemonBridgeException(
+        BridgeErrorCode.storage,
+        'setStorage：单个键值不能超过 512KB',
+      );
     }
 
-    final bool ok = await SettingsService.instance
-        .writeRaw(SettingsService.miniappStorageKey(appId, key), encoded);
+    final bool ok = await SettingsService.instance.writeRaw(
+      SettingsService.miniappStorageKey(appId, key),
+      encoded,
+    );
     if (!ok) {
-      throw const LemonBridgeException(BridgeErrorCode.storage, 'setStorage：写入失败');
+      throw const LemonBridgeException(
+        BridgeErrorCode.storage,
+        'setStorage：写入失败',
+      );
     }
     return <String, dynamic>{'key': key, 'bytes': encoded.length};
   }
 
   Future<Map<String, dynamic>> getStorage(Map<String, dynamic> params) async {
     final String key = _requireKey(params, 'getStorage(key)');
-    final String? raw =
-        SettingsService.instance.readRaw(SettingsService.miniappStorageKey(appId, key));
+    final String? raw = SettingsService.instance.readRaw(
+      SettingsService.miniappStorageKey(appId, key),
+    );
 
     if (raw == null) {
       return <String, dynamic>{
@@ -547,24 +669,552 @@ class BridgeApi {
     return <String, dynamic>{'key': key, 'value': decoded, 'found': true};
   }
 
-  Future<Map<String, dynamic>> removeStorage(Map<String, dynamic> params) async {
+  Future<Map<String, dynamic>> removeStorage(
+    Map<String, dynamic> params,
+  ) async {
     final String key = _requireKey(params, 'removeStorage(key)');
-    final bool ok = await SettingsService.instance
-        .removeRaw(SettingsService.miniappStorageKey(appId, key));
+    final bool ok = await SettingsService.instance.removeRaw(
+      SettingsService.miniappStorageKey(appId, key),
+    );
     return <String, dynamic>{'key': key, 'removed': ok};
   }
 
   Future<Map<String, dynamic>> clearStorage() async {
-    final List<String> keys = SettingsService.instance.miniappStorageKeys(appId);
+    final List<String> keys = SettingsService.instance.miniappStorageKeys(
+      appId,
+    );
     for (final String key in keys) {
-      await SettingsService.instance.removeRaw(SettingsService.miniappStorageKey(appId, key));
+      await SettingsService.instance.removeRaw(
+        SettingsService.miniappStorageKey(appId, key),
+      );
     }
     return <String, dynamic>{'cleared': keys.length};
   }
 
   Future<Map<String, dynamic>> getStorageKeys() async => <String, dynamic>{
-        'keys': SettingsService.instance.miniappStorageKeys(appId),
+    'keys': SettingsService.instance.miniappStorageKeys(appId),
+  };
+
+  // ------------------------------------------------------ 蓝牙事件路由
+
+  /// 原生事件的过滤与转发。
+  ///
+  /// 只转发给「和这个地址有关」的会话：连接过 / 订阅过 / 配对过。
+  /// 扫描结果只在本次 scan 调用进行中转发（原生同一时刻只允许一个扫描）。
+  void _onBluetoothEvent(Map<String, dynamic> event) {
+    final String type = _string(event['type']);
+    if (type.isEmpty) return;
+    final String address = _string(event['address']);
+    final bool allowed =
+        (_bluetoothScanning && type == 'scanResult') ||
+        (address.isNotEmpty && _bluetoothAddresses.contains(address));
+    if (!allowed) return;
+    onEvent?.call(appId, 'bluetooth:$type', Map<String, dynamic>.of(event));
+  }
+
+  /// 会话销毁时取消事件订阅（不主动断开连接：同地址可能被同一个小程序的
+  /// 其它会话使用；清理由小程序的 disconnect / 页面切后台策略决定）。
+  Future<void> dispose() async {
+    await _bluetoothEvents?.cancel();
+    _bluetoothEvents = null;
+    _bluetoothAddresses.clear();
+  }
+
+  // ---------------------------------------------------------- 蓝牙
+
+  /// 适配器状态。查询本身不涉及用户数据，不需要弹窗；
+  /// 真正拿到设备清单 / 连接设备时才过权限。
+  Future<Map<String, dynamic>> bluetoothStatus() async {
+    if (!BluetoothBridge.isSupported) {
+      return <String, dynamic>{
+        'supported': false,
+        'enabled': false,
+        'bleSupported': false,
+        'permissionGranted': false,
       };
+    }
+    try {
+      return await BluetoothBridge.status();
+    } on BluetoothException catch (e) {
+      throw _mapBluetoothError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> bluetoothListPaired() async {
+    await _ensureCapability(MiniappPermission.bluetooth);
+    try {
+      final List<Map<String, dynamic>> devices =
+          await BluetoothBridge.listPaired();
+      return <String, dynamic>{'count': devices.length, 'devices': devices};
+    } on BluetoothException catch (e) {
+      throw _mapBluetoothError(e);
+    }
+  }
+
+  /// 当前 App 建立的连接（不是系统里所有已连接设备）。
+  Future<Map<String, dynamic>> bluetoothConnections() async {
+    await _ensureCapability(MiniappPermission.bluetooth);
+    try {
+      final List<Map<String, dynamic>> devices =
+          await BluetoothBridge.connections();
+      return <String, dynamic>{'count': devices.length, 'devices': devices};
+    } on BluetoothException catch (e) {
+      throw _mapBluetoothError(e);
+    }
+  }
+
+  /// 请求系统打开蓝牙。系统框没有同步结果，调用方用 status() 轮询。
+  Future<Map<String, dynamic>> bluetoothRequestEnable() async {
+    await _ensureCapability(MiniappPermission.bluetooth);
+    try {
+      return await BluetoothBridge.requestEnable();
+    } on BluetoothException catch (e) {
+      throw _mapBluetoothError(e);
+    }
+  }
+
+  /// BLE / 经典蓝牙扫描。持续时间由调用方给，原生侧封顶 20 秒。
+  ///
+  /// 扫描期间原生会持续发 `scanResult` 事件；JS 侧用
+  /// `lemonlite.bluetooth.onScanResult(cb)` 接收。返回值仍是最终完整列表，
+  /// 这样「只想拿一次结果」的小程序不用关心事件。
+  Future<Map<String, dynamic>> bluetoothScan(
+    Map<String, dynamic> params,
+  ) async {
+    await _ensureCapability(MiniappPermission.bluetooth);
+    final int durationMs = _int(params['durationMs'], 5000);
+    final String mode = _string(params['mode'], 'ble').toLowerCase();
+    final List<String> serviceUuids = (params['serviceUuids'] is List)
+        ? (params['serviceUuids'] as List)
+              .map((Object? e) => _string(e).trim())
+              .where((String e) => e.isNotEmpty)
+              .toList(growable: false)
+        : const <String>[];
+    final String namePrefix = _string(params['namePrefix']).trim();
+    _bluetoothScanning = true;
+    try {
+      final List<Map<String, dynamic>> devices = await BluetoothBridge.scan(
+        durationMs: durationMs,
+        mode: mode,
+        serviceUuids: serviceUuids,
+        namePrefix: namePrefix,
+      );
+      return <String, dynamic>{
+        'count': devices.length,
+        'devices': devices,
+        'mode': mode,
+      };
+    } on BluetoothException catch (e) {
+      throw _mapBluetoothError(e);
+    } finally {
+      _bluetoothScanning = false;
+    }
+  }
+
+  /// 断开全部连接（清理动作，不设权限闸门）。
+  Future<Map<String, dynamic>> bluetoothDisconnectAll() async {
+    try {
+      await BluetoothBridge.disconnectAll();
+    } on BluetoothException catch (e) {
+      throw _mapBluetoothError(e);
+    }
+    _bluetoothAddresses.clear();
+    return <String, dynamic>{'disconnected': true};
+  }
+
+  /// 订阅 / 取消订阅特征值通知（notify / indicate）。
+  Future<Map<String, dynamic>> bluetoothSubscribe(
+    Map<String, dynamic> params, {
+    bool enable = true,
+  }) async {
+    await _ensureCapability(MiniappPermission.bluetooth);
+    final String address = _requireAddress(
+      params,
+      enable
+          ? 'bluetooth.subscribe(options)'
+          : 'bluetooth.unsubscribe(options)',
+    );
+    final String service = _requireUuid(
+      params,
+      'service',
+      'bluetooth.subscribe',
+    );
+    final String characteristic = _requireUuid(
+      params,
+      'characteristic',
+      'bluetooth.subscribe',
+    );
+    try {
+      await BluetoothBridge.subscribe(
+        address: address,
+        service: service,
+        characteristic: characteristic,
+        enable: enable,
+      );
+      if (enable) _bluetoothAddresses.add(address);
+      return <String, dynamic>{
+        'address': address,
+        'service': service,
+        'characteristic': characteristic,
+        'subscribed': enable,
+      };
+    } on BluetoothException catch (e) {
+      throw _mapBluetoothError(e);
+    }
+  }
+
+  /// 读取当前连接信号强度。
+  Future<Map<String, dynamic>> bluetoothRssi(
+    Map<String, dynamic> params,
+  ) async {
+    await _ensureCapability(MiniappPermission.bluetooth);
+    final String address = _requireAddress(params, 'bluetooth.rssi(address)');
+    try {
+      final int rssi = await BluetoothBridge.getRssi(address);
+      _bluetoothAddresses.add(address);
+      return <String, dynamic>{'address': address, 'rssi': rssi};
+    } on BluetoothException catch (e) {
+      throw _mapBluetoothError(e);
+    }
+  }
+
+  /// 请求更大的 MTU（返回实际协商值）。
+  Future<Map<String, dynamic>> bluetoothMtu(Map<String, dynamic> params) async {
+    await _ensureCapability(MiniappPermission.bluetooth);
+    final String address = _requireAddress(params, 'bluetooth.mtu(options)');
+    final int mtu = _int(params['mtu'], 512);
+    try {
+      final int negotiated = await BluetoothBridge.requestMtu(address, mtu);
+      _bluetoothAddresses.add(address);
+      return <String, dynamic>{'address': address, 'mtu': negotiated};
+    } on BluetoothException catch (e) {
+      throw _mapBluetoothError(e);
+    }
+  }
+
+  /// 发起配对（经典蓝牙 / 双模设备），结果通过 `bondState` 事件通知。
+  Future<Map<String, dynamic>> bluetoothPair(
+    Map<String, dynamic> params,
+  ) async {
+    await _ensureCapability(MiniappPermission.bluetooth);
+    final String address = _requireAddress(params, 'bluetooth.pair(address)');
+    try {
+      final Map<String, dynamic> data = await BluetoothBridge.pair(address);
+      _bluetoothAddresses.add(address);
+      return data;
+    } on BluetoothException catch (e) {
+      throw _mapBluetoothError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> bluetoothConnect(
+    Map<String, dynamic> params,
+  ) async {
+    await _ensureCapability(MiniappPermission.bluetooth);
+    final String address = _requireAddress(
+      params,
+      'bluetooth.connect(address)',
+    );
+    // 先登记地址再连接：原生在服务发现完成时会立刻推 connectionState 事件，
+    // 那时 connect() 的 Future 还没返回；后登记会把这条事件丢掉。
+    _bluetoothAddresses.add(address);
+    try {
+      return await BluetoothBridge.connect(address);
+    } on BluetoothException catch (e) {
+      _bluetoothAddresses.remove(address);
+      throw _mapBluetoothError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> bluetoothDisconnect(
+    Map<String, dynamic> params,
+  ) async {
+    // 断开连接是**清理动作**，不设权限闸门：用户中途撤权、或权限弹窗被拒时，
+    // 也仍然应该允许它把已经建立的连接关掉，而不是留一个泄漏的 GATT。
+    final String address = _requireAddress(
+      params,
+      'bluetooth.disconnect(address)',
+    );
+    try {
+      await BluetoothBridge.disconnect(address);
+      _bluetoothAddresses.remove(address);
+      return <String, dynamic>{'address': address, 'disconnected': true};
+    } on BluetoothException catch (e) {
+      throw _mapBluetoothError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> bluetoothRead(
+    Map<String, dynamic> params,
+  ) async {
+    await _ensureCapability(MiniappPermission.bluetooth);
+    final String address = _requireAddress(params, 'bluetooth.read(options)');
+    final String service = _requireUuid(params, 'service', 'bluetooth.read');
+    final String characteristic = _requireUuid(
+      params,
+      'characteristic',
+      'bluetooth.read',
+    );
+    try {
+      final String value = await BluetoothBridge.read(
+        address: address,
+        service: service,
+        characteristic: characteristic,
+      );
+      return <String, dynamic>{
+        'address': address,
+        'service': service,
+        'characteristic': characteristic,
+        'value': value,
+        'base64': true,
+      };
+    } on BluetoothException catch (e) {
+      throw _mapBluetoothError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> bluetoothWrite(
+    Map<String, dynamic> params,
+  ) async {
+    await _ensureCapability(MiniappPermission.bluetooth);
+    final String address = _requireAddress(params, 'bluetooth.write(options)');
+    final String service = _requireUuid(params, 'service', 'bluetooth.write');
+    final String characteristic = _requireUuid(
+      params,
+      'characteristic',
+      'bluetooth.write',
+    );
+    final String data = _requireBase64Data(params);
+    final bool withResponse = _bool(params['withResponse'], fallback: true);
+    try {
+      await BluetoothBridge.write(
+        address: address,
+        service: service,
+        characteristic: characteristic,
+        data: data,
+        withResponse: withResponse,
+      );
+      return <String, dynamic>{
+        'address': address,
+        'service': service,
+        'characteristic': characteristic,
+        'written': true,
+        'bytes': base64Decode(data).length,
+      };
+    } on BluetoothException catch (e) {
+      throw _mapBluetoothError(e);
+    }
+  }
+
+  // ------------------------------------------------------------ NFC
+
+  Future<Map<String, dynamic>> nfcStatus() async {
+    if (!NfcBridge.isSupported) {
+      return <String, dynamic>{'supported': false, 'enabled': false};
+    }
+    try {
+      return await NfcBridge.status();
+    } on NfcException catch (e) {
+      throw _mapNfcError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> nfcRead(Map<String, dynamic> params) async {
+    await _ensureCapability(MiniappPermission.nfc);
+    final int timeoutMs = _int(params['timeoutMs'], 15000);
+    try {
+      return await NfcBridge.read(timeoutMs: timeoutMs);
+    } on NfcException catch (e) {
+      throw _mapNfcError(e);
+    }
+  }
+
+  Future<Map<String, dynamic>> nfcCancel() async {
+    await NfcBridge.cancel();
+    return <String, dynamic>{'cancelled': true};
+  }
+
+  Future<Map<String, dynamic>> nfcWriteText(Map<String, dynamic> params) async {
+    await _ensureCapability(MiniappPermission.nfc);
+    final String text = _string(params['text']).trim();
+    if (text.isEmpty) {
+      throw const LemonBridgeException(
+        BridgeErrorCode.invalidArgument,
+        'nfc.writeText(text)：text 不能为空',
+      );
+    }
+    if (text.length > 4096) {
+      throw const LemonBridgeException(
+        BridgeErrorCode.invalidArgument,
+        'nfc.writeText(text)：内容过长（上限 4096 字符）',
+      );
+    }
+    final int timeoutMs = _int(params['timeoutMs'], 15000);
+    final bool formatIfNeeded = _bool(params['formatIfNeeded'], fallback: true);
+    try {
+      return await NfcBridge.writeText(
+        text: text,
+        timeoutMs: timeoutMs,
+        formatIfNeeded: formatIfNeeded,
+      );
+    } on NfcException catch (e) {
+      throw _mapNfcError(e);
+    }
+  }
+
+  /// 原生能力调用前的统一闸门：应用内弹窗 → Android 运行时权限。
+  ///
+  /// 顺序与摄像头一致：**先问用户，再申请系统权限**。反过来的话，
+  /// 用户会先看到一个系统授权框，还不知道是哪个小程序在要权限。
+  Future<void> _ensureCapability(MiniappPermission permission) async {
+    final PermissionPrompter? prompter = permissionPrompter;
+    if (prompter != null) {
+      final PermissionAnswer answer = await prompter(
+        appId,
+        permission,
+        appName: appName.isEmpty ? null : appName,
+      );
+      if (!answer.allowed) {
+        throw LemonBridgeException(
+          BridgeErrorCode.permissionDenied,
+          '用户拒绝了${permission.label}权限（可在「应用管理 → 权限」里修改）',
+        );
+      }
+    } else {
+      // 没有弹窗实现（测试 / 非页面上下文）：只认已经保存的「允许」，
+      // 未决定与拒绝都 fail closed。
+      final PermissionDecision decision = PermissionService.instance.decisionOf(
+        appId,
+        permission,
+      );
+      if (decision != PermissionDecision.granted) {
+        throw LemonBridgeException(
+          BridgeErrorCode.permissionDenied,
+          '${permission.label}权限未授予（当前上下文无法弹出确认框）',
+        );
+      }
+    }
+
+    if (permission.needsRuntimePermission) {
+      final bool ok = await NativeBridge.requestRuntimePermissions(
+        permission.runtimePermissions,
+      );
+      if (!ok) {
+        throw LemonBridgeException(
+          BridgeErrorCode.permissionDenied,
+          'Android 系统未授予${permission.label}权限，请到系统设置里允许',
+        );
+      }
+    }
+  }
+
+  String _requireAddress(Map<String, dynamic> params, String api) {
+    final String address = _string(params['address']).trim();
+    if (address.isEmpty) {
+      throw LemonBridgeException(
+        BridgeErrorCode.invalidArgument,
+        '$api：缺少 address（设备 MAC / 蓝牙地址）',
+      );
+    }
+    return address;
+  }
+
+  String _requireUuid(Map<String, dynamic> params, String key, String api) {
+    final String value = _string(params[key]).trim();
+    if (value.isEmpty) {
+      throw LemonBridgeException(
+        BridgeErrorCode.invalidArgument,
+        '$api：缺少 $key（服务 / 特征值 UUID）',
+      );
+    }
+    return value;
+  }
+
+  /// 写特征值的数据：接受 base64 字符串，也接受 0~255 的字节数组。
+  String _requireBase64Data(Map<String, dynamic> params) {
+    final Object? raw = params['data'] ?? params['value'] ?? params['base64'];
+    if (raw is List) {
+      final List<int> bytes = <int>[];
+      for (final Object? item in raw) {
+        final int? b = _doubleOrNull(item)?.toInt();
+        if (b == null || b < 0 || b > 255) {
+          throw const LemonBridgeException(
+            BridgeErrorCode.invalidArgument,
+            'bluetooth.write：data 数组只能包含 0~255 的整数',
+          );
+        }
+        bytes.add(b);
+      }
+      if (bytes.isEmpty) {
+        throw const LemonBridgeException(
+          BridgeErrorCode.invalidArgument,
+          'bluetooth.write：data 不能为空',
+        );
+      }
+      if (bytes.length > 4096) {
+        throw const LemonBridgeException(
+          BridgeErrorCode.invalidArgument,
+          'bluetooth.write：单次写入不能超过 4096 字节',
+        );
+      }
+      return base64Encode(bytes);
+    }
+    final String text = _string(raw).trim();
+    if (text.isEmpty) {
+      throw const LemonBridgeException(
+        BridgeErrorCode.invalidArgument,
+        'bluetooth.write：缺少 data（base64 或 0~255 字节数组）',
+      );
+    }
+    final List<int> decoded;
+    try {
+      decoded = base64Decode(text);
+    } on FormatException {
+      throw const LemonBridgeException(
+        BridgeErrorCode.invalidArgument,
+        'bluetooth.write：data 不是合法的 base64',
+      );
+    }
+    if (decoded.length > 4096) {
+      throw const LemonBridgeException(
+        BridgeErrorCode.invalidArgument,
+        'bluetooth.write：单次写入不能超过 4096 字节',
+      );
+    }
+    return text;
+  }
+
+  LemonBridgeException _mapBluetoothError(BluetoothException e) {
+    if (e.code == 'permission_denied') {
+      return LemonBridgeException(BridgeErrorCode.permissionDenied, e.message);
+    }
+    if (e.code == 'unsupported') {
+      return LemonBridgeException(BridgeErrorCode.notSupported, e.message);
+    }
+    if (e.code == 'disabled') {
+      return LemonBridgeException(BridgeErrorCode.deviceUnavailable, e.message);
+    }
+    if (e.code == 'timeout') {
+      return LemonBridgeException(BridgeErrorCode.timeout, e.message);
+    }
+    return LemonBridgeException(BridgeErrorCode.internal, e.message);
+  }
+
+  LemonBridgeException _mapNfcError(NfcException e) {
+    if (e.code == 'permission_denied') {
+      return LemonBridgeException(BridgeErrorCode.permissionDenied, e.message);
+    }
+    if (e.code == 'unsupported') {
+      return LemonBridgeException(BridgeErrorCode.notSupported, e.message);
+    }
+    if (e.code == 'disabled') {
+      return LemonBridgeException(BridgeErrorCode.deviceUnavailable, e.message);
+    }
+    if (e.code == 'timeout') {
+      return LemonBridgeException(BridgeErrorCode.timeout, e.message);
+    }
+    return LemonBridgeException(BridgeErrorCode.internal, e.message);
+  }
 
   // ------------------------------------------------------ 音量 / 亮度
 
@@ -589,7 +1239,8 @@ class BridgeApi {
 
   /// 设置媒体音量。[percent] 是 0~1 的比例，宿主侧再换算成档位。
   Future<Map<String, dynamic>> setVolume(Map<String, dynamic> params) async {
-    final Object? raw = params['percent'] ?? params['value'] ?? params['volume'];
+    final Object? raw =
+        params['percent'] ?? params['value'] ?? params['volume'];
     final double? percent = _doubleOrNull(raw);
     if (percent == null) {
       throw const LemonBridgeException(
@@ -597,7 +1248,9 @@ class BridgeApi {
         'setVolume(percent)：percent 必须是 0~1 的数字',
       );
     }
-    final VolumeInfo? info = await NativeBridge.setVolume(percent.clamp(0.0, 1.0));
+    final VolumeInfo? info = await NativeBridge.setVolume(
+      percent.clamp(0.0, 1.0),
+    );
     if (info == null) {
       throw const LemonBridgeException(
         BridgeErrorCode.notSupported,
@@ -634,8 +1287,11 @@ class BridgeApi {
   }
 
   /// 设置窗口亮度：0~1；传 -1 恢复「跟随系统」。
-  Future<Map<String, dynamic>> setBrightness(Map<String, dynamic> params) async {
-    final Object? raw = params['value'] ?? params['brightness'] ?? params['percent'];
+  Future<Map<String, dynamic>> setBrightness(
+    Map<String, dynamic> params,
+  ) async {
+    final Object? raw =
+        params['value'] ?? params['brightness'] ?? params['percent'];
     final double? value = _doubleOrNull(raw);
     if (value == null) {
       throw const LemonBridgeException(
@@ -759,7 +1415,9 @@ class BridgeApi {
   /// 对外只暴露这两个目录，其它路径一律拒绝（见 MiniappStorageService 的路径校验）。
   /// 不传 scope 时返回共享目录，并在返回体里带上两个作用域的可读路径，
   /// 方便小程序一次性了解自己有哪些可写的地方。
-  Future<Map<String, dynamic>> getAppFileDir(Map<String, dynamic> params) async {
+  Future<Map<String, dynamic>> getAppFileDir(
+    Map<String, dynamic> params,
+  ) async {
     final FileScope scope = FileScope.parse(params['scope']);
     final String path = await _files.appFilesPath(appId, scope: scope);
     return <String, dynamic>{
@@ -818,13 +1476,18 @@ class BridgeApi {
   Future<Map<String, dynamic>> listFiles(Map<String, dynamic> params) async {
     final String path = _string(params['path'], '.');
     final FileScope scope = FileScope.parse(params['scope']);
-    final List<MiniappFileEntry> entries =
-        await _files.listFiles(appId, path, scope: scope);
+    final List<MiniappFileEntry> entries = await _files.listFiles(
+      appId,
+      path,
+      scope: scope,
+    );
     return <String, dynamic>{
       'path': _files.normalizeRelativePath(path),
       'scope': scope.id,
       'count': entries.length,
-      'entries': entries.map((MiniappFileEntry e) => e.toJson()).toList(growable: false),
+      'entries': entries
+          .map((MiniappFileEntry e) => e.toJson())
+          .toList(growable: false),
     };
   }
 
@@ -894,8 +1557,10 @@ class BridgeApi {
         'download.save(url)：缺少 url',
       );
     }
-    final String fileName =
-        _string(params['fileName'], _string(params['filename'])).trim();
+    final String fileName = _string(
+      params['fileName'],
+      _string(params['filename']),
+    ).trim();
     try {
       final DownloadTask task = await DownloadService.instance.enqueue(
         url: url,
@@ -984,7 +1649,8 @@ class BridgeApi {
   /// base64 是唯一在所有 WebView 版本上都稳的编码。JS SDK 侧会解码成 Uint8Array
   /// 再交给 `WebAssembly.instantiate`，小程序不用自己处理编码。
   Future<Map<String, dynamic>> wasmRead(Map<String, dynamic> params) async {
-    final List<PluginWasmEntry> entries = await PluginService.instance.wasmEntries();
+    final List<PluginWasmEntry> entries = await PluginService.instance
+        .wasmEntries();
     if (entries.isEmpty) {
       throw const LemonBridgeException(
         BridgeErrorCode.notSupported,
@@ -993,10 +1659,16 @@ class BridgeApi {
     }
     final String requested = _string(params['name']).trim();
     // 不传名字 = 第一个模块（与旧版本行为一致，方便 "就看一眼" 的调用）
-    final String name = requested.isEmpty ? entries.first.module.name : requested;
-    final bool known = entries.any((PluginWasmEntry e) => e.module.name == name);
+    final String name = requested.isEmpty
+        ? entries.first.module.name
+        : requested;
+    final bool known = entries.any(
+      (PluginWasmEntry e) => e.module.name == name,
+    );
     if (!known) {
-      final String available = entries.map((PluginWasmEntry e) => e.module.name).join(', ');
+      final String available = entries
+          .map((PluginWasmEntry e) => e.module.name)
+          .join(', ');
       throw LemonBridgeException(
         BridgeErrorCode.invalidArgument,
         'wasmRead(name)：没有名为「$name」的 wasm 模块（可用：$available）',
@@ -1005,7 +1677,10 @@ class BridgeApi {
     try {
       return await PluginService.instance.wasmReadPayload(name);
     } on PluginUnavailableException catch (e) {
-      throw LemonBridgeException(BridgeErrorCode.internal, 'wasmRead：${e.message}');
+      throw LemonBridgeException(
+        BridgeErrorCode.internal,
+        'wasmRead：${e.message}',
+      );
     }
   }
 
@@ -1029,7 +1704,10 @@ class BridgeApi {
     Map<String, dynamic> params,
   ) async {
     // manifest 里写死的参数在前，小程序调用时传的同名参数覆盖它
-    final Map<String, dynamic> merged = <String, dynamic>{...method.params, ...params};
+    final Map<String, dynamic> merged = <String, dynamic>{
+      ...method.params,
+      ...params,
+    };
 
     switch (method.action) {
       case 'const':
@@ -1045,7 +1723,9 @@ class BridgeApi {
             '模块方法 ${method.name}：manifest.params.url 必填',
           );
         }
-        final String defaultMethod = method.action == 'http.post' ? 'POST' : 'GET';
+        final String defaultMethod = method.action == 'http.post'
+            ? 'POST'
+            : 'GET';
         return request(<String, dynamic>{
           ...merged,
           'url': url,
@@ -1091,7 +1771,10 @@ class BridgeApi {
   String _requireKey(Map<String, dynamic> params, String api) {
     final String key = _string(params['key']);
     if (key.isEmpty) {
-      throw LemonBridgeException(BridgeErrorCode.invalidArgument, '$api：key 必须是非空字符串');
+      throw LemonBridgeException(
+        BridgeErrorCode.invalidArgument,
+        '$api：key 必须是非空字符串',
+      );
     }
     return key;
   }
@@ -1099,11 +1782,17 @@ class BridgeApi {
   /// 文件类 API 的 path 参数。空串视为「小程序根目录」，交给 service 去规范化。
   String _requirePath(Map<String, dynamic> params, String api) {
     if (!params.containsKey('path')) {
-      throw LemonBridgeException(BridgeErrorCode.invalidArgument, '$api：缺少 path');
+      throw LemonBridgeException(
+        BridgeErrorCode.invalidArgument,
+        '$api：缺少 path',
+      );
     }
     final String path = _string(params['path']);
     if (path.length > 512) {
-      throw LemonBridgeException(BridgeErrorCode.invalidArgument, '$api：path 过长（上限 512 字符）');
+      throw LemonBridgeException(
+        BridgeErrorCode.invalidArgument,
+        '$api：path 过长（上限 512 字符）',
+      );
     }
     return path;
   }
@@ -1124,8 +1813,12 @@ class BridgeApi {
     if (value is bool) return value;
     if (value is num) return value != 0;
     final String text = value.toString().trim().toLowerCase();
-    if (text == 'true' || text == '1' || text == 'yes' || text == 'on') return true;
-    if (text == 'false' || text == '0' || text == 'no' || text == 'off') return false;
+    if (text == 'true' || text == '1' || text == 'yes' || text == 'on') {
+      return true;
+    }
+    if (text == 'false' || text == '0' || text == 'no' || text == 'off') {
+      return false;
+    }
     return fallback;
   }
 

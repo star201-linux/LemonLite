@@ -18,6 +18,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/globals.dart';
 import '../../data/models/app_item.dart';
+import '../../data/services/icon_cache_service.dart';
 import '../../data/services/miniapp_package_service.dart';
 import '../../theme/app_theme.dart';
 
@@ -107,6 +108,10 @@ class MiniappInstaller {
         }
       }
 
+      // 图标缓存：装好之后这个小程序就是「本机已安装」了，应用管理里要能
+      // 不联网也显示它。缓存失败不影响安装结果（ensure 内部已吞异常）。
+      await IconCacheService.instance.ensure(appId: app.id, url: app.icon);
+
       _closeDialog(dialogNavigator);
       // AppTheme.showToast 走全局 ScaffoldMessenger key，**不用**这个 context。
       // 所以这里不存在「跨 async gap 用 context」的问题 —— 直接弹。
@@ -142,6 +147,7 @@ class MiniappInstaller {
     required String packageUrl,
     required String sha256,
     required String entry,
+    String? iconUrl,
     void Function(PackageProgress)? onProgress,
   }) async {
     final MiniappPackageService service = MiniappPackageService.instance;
@@ -155,6 +161,7 @@ class MiniappInstaller {
         onProgress: onProgress,
       );
       await service.pruneOldVersions(appId);
+      await IconCacheService.instance.ensure(appId: appId, url: iconUrl);
       return true;
     } on PackageException catch (e) {
       if (context.mounted) {
@@ -212,13 +219,10 @@ class _InstallDialog extends StatelessWidget {
           Text(appName, style: Theme.of(context).textTheme.titleSmall),
           const SizedBox(height: 4),
           Text(
-            upgrading
-                ? '$fromVersion → $toVersion'
-                : '版本 $toVersion',
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: scheme.onSurfaceVariant),
+            upgrading ? '$fromVersion → $toVersion' : '版本 $toVersion',
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
           ),
           const SizedBox(height: 16),
           ValueListenableBuilder<PackageProgress?>(

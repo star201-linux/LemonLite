@@ -6,7 +6,7 @@
 //
 //   _webViewWidget ??= _buildWebViewWidget(payload);   // 只执行一次
 //
-// 内置示例的 HTML 是**异步**从 asset 读的。第一次 build 时 _localHtml 还是
+// 内置资源（自检页）的 HTML 是**异步**从 asset 读的。第一次 build 时 _localHtml 还是
 // null，WebView 就以 initialData: null 建好了；之后 setState 也不会重建它。
 // 结果：页面上只剩那颗悬浮「更多」按钮，WebView 区域永远空白。
 //
@@ -20,6 +20,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lemonlite/core/autotest.dart';
 import 'package:lemonlite/data/models/miniapp_session.dart';
 import 'package:lemonlite/data/services/miniapp_package_service.dart';
 import 'package:lemonlite/data/services/settings_service.dart';
@@ -37,12 +38,13 @@ void main() {
   });
 
   group('内置 asset 模式', () {
-    testWidgets('HTML 未就绪时停在 Loading（回归：曾直接建 WebView 导致白屏）',
-        (WidgetTester tester) async {
+    testWidgets('HTML 未就绪时停在 Loading（回归：曾直接建 WebView 导致白屏）', (
+      WidgetTester tester,
+    ) async {
       final MiniappSession session = MiniappSession(
         appId: 'demo.test',
-        title: '示例',
-        localAsset: kDemoMiniappAsset,
+        title: '自检',
+        localAsset: kAutotestAsset,
         isTransient: true,
       );
       addTearDown(session.dispose);
@@ -54,7 +56,7 @@ void main() {
       // 如果这一帧就往下去建 WebView，_localHtml 还是 null，
       // 而 WebView 只会构建一次 —— 之后就永远空白。
       expect(
-        find.textContaining('正在准备示例小程序'),
+        find.textContaining('正在准备小程序'),
         findsOneWidget,
         reason: 'HTML 没读到就往下走 → WebView 会以 null data 建好且永不重建',
       );
@@ -89,8 +91,7 @@ void main() {
   });
 
   group('没有入口', () {
-    testWidgets('既无包也无 asset 时给错误页，不是白屏',
-        (WidgetTester tester) async {
+    testWidgets('既无包也无 asset 时给错误页，不是白屏', (WidgetTester tester) async {
       final MiniappSession session = MiniappSession(
         appId: 'empty.test',
         title: '空',

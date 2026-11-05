@@ -15,13 +15,13 @@
 //
 // 所以这里断言：打开会话之后，层必须真的把会话视图挂进 widget 树。
 
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lemonlite/data/services/application_registry.dart';
 import 'package:lemonlite/data/services/permission_service.dart';
 import 'package:lemonlite/data/services/settings_service.dart';
 import 'package:lemonlite/pages/miniapp/miniapp_host.dart';
+import 'package:lemonlite/core/autotest.dart';
 import 'package:lemonlite/pages/miniapp/miniapp_page.dart';
 import 'package:lemonlite/theme/theme_controller.dart';
 import 'package:provider/provider.dart';
@@ -40,9 +40,7 @@ Widget _host() => MultiProvider(
   ],
   child: MaterialApp(
     home: Scaffold(
-      body: Stack(
-        children: <Widget>[MiniappHost.instance.buildLayer()],
-      ),
+      body: Stack(children: <Widget>[MiniappHost.instance.buildLayer()]),
     ),
   ),
 );
@@ -77,16 +75,17 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('打开会话后，会话视图必须出现在 widget 树里（回归：曾永远不出现）',
-      (WidgetTester tester) async {
+  testWidgets('打开会话后，会话视图必须出现在 widget 树里（回归：曾永远不出现）', (
+    WidgetTester tester,
+  ) async {
     await tester.pumpWidget(_host());
     expect(find.byType(MiniappSessionView), findsNothing);
 
-    // 模拟点「示例小程序」：这一步在真机上以前什么都不发生
+    // 模拟打开一个内置资源的小程序：这一步在真机上以前什么都不发生
     await MiniappHost.instance.open(
-      appId: 'lemonlite.demo',
-      title: '示例小程序',
-      localAsset: kDemoMiniappAsset,
+      appId: 'lemonlite.selftest',
+      title: 'SDK 自检',
+      localAsset: kAutotestAsset,
       isTransient: true,
     );
     await tester.pump();
@@ -99,14 +98,13 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('没有会话后，层回到空状态（不能留下一个空壳盖住界面）',
-      (WidgetTester tester) async {
+  testWidgets('没有会话后，层回到空状态（不能留下一个空壳盖住界面）', (WidgetTester tester) async {
     await tester.pumpWidget(_host());
 
     await MiniappHost.instance.open(
-      appId: 'lemonlite.demo',
-      title: '示例小程序',
-      localAsset: kDemoMiniappAsset,
+      appId: 'lemonlite.selftest',
+      title: 'SDK 自检',
+      localAsset: kAutotestAsset,
       isTransient: true,
     );
     await tester.pump();
@@ -124,14 +122,15 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('右上/右下只有一颗「更多」按钮，且菜单只有 4 项（回归：曾有多余菜单项）',
-      (WidgetTester tester) async {
+  testWidgets('右上/右下只有一颗「更多」按钮，且菜单只有 4 项（回归：曾有多余菜单项）', (
+    WidgetTester tester,
+  ) async {
     await tester.pumpWidget(_host());
 
     await MiniappHost.instance.open(
-      appId: 'lemonlite.demo',
-      title: '示例小程序',
-      localAsset: kDemoMiniappAsset,
+      appId: 'lemonlite.selftest',
+      title: 'SDK 自检',
+      localAsset: kAutotestAsset,
       isTransient: true,
     );
     await tester.pump();
@@ -166,16 +165,16 @@ void main() {
     expect(MiniappHost.instance.runningCount, 0);
 
     await MiniappHost.instance.open(
-      appId: 'lemonlite.demo',
-      title: '示例小程序',
-      localAsset: kDemoMiniappAsset,
+      appId: 'lemonlite.selftest',
+      title: 'SDK 自检',
+      localAsset: kAutotestAsset,
       isTransient: true,
     );
     await tester.pump();
 
     expect(MiniappHost.instance.hasAny, isTrue);
     expect(MiniappHost.instance.runningCount, 1);
-    expect(MiniappHost.instance.isRunning('lemonlite.demo'), isTrue);
+    expect(MiniappHost.instance.isRunning('lemonlite.selftest'), isTrue);
 
     // 注意：这里刻意**不测**「重复 open 同一个 appId」。
     // 那条路径会走 foreground() → _popToShell() → navigator.popUntil，

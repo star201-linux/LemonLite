@@ -209,7 +209,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   : null,
               onTap: () => _onVersionTap(settings),
             ),
-            // 示例小程序的测试入口收进了「开发者选项 → 小程序测试」二级菜单，
+            // 小程序测试入口收进了「开发者选项 → 小程序测试」二级菜单，
             // 设置页不再直接放会启动 WebView 的入口。
             if (settings.developerMode) ...<Widget>[
               const Divider(height: 1, indent: 16, endIndent: 16),

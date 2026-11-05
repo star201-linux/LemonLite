@@ -411,7 +411,11 @@ export function renderAdminPage({ version }) {
     </div>
     <div class="row">
       <div class="field"><label for="a_sort">排序权重（越大越靠前）</label><input id="a_sort" type="number" /></div>
-      <div class="field"><label for="a_icon">图标 URL</label><input id="a_icon" type="text" /></div>
+      <div class="field"><label for="a_icon">图标 URL（也可以直接上传，见下）</label><input id="a_icon" type="text" /></div>
+    </div>
+    <div id="iconBlock" hidden>
+      <div class="field"><label for="icon_file">上传图标（PNG / JPEG / WebP / GIF，≤2MB）</label><input id="icon_file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" /></div>
+      <button class="ghost" type="button" id="iconUploadBtn">上传图标</button>
     </div>
     <div class="field"><label for="a_home">主页 URL</label><input id="a_home" type="text" /></div>
     <div class="field"><label for="a_shots">截图 URL（每行一个）</label><textarea id="a_shots"></textarea></div>
@@ -859,6 +863,8 @@ export function renderAdminPage({ version }) {
       });
 
       $('pkgBlock').hidden = creating;
+      // 图标上传需要一个已存在的 appId（文件名是 <appId>.<ext>）
+      $('iconBlock').hidden = creating;
       if (!creating) loadPkgInfo(app);
       $('appModal').hidden = false;
     }).catch(function (err) { toast(err.message, true); });
@@ -969,6 +975,29 @@ export function renderAdminPage({ version }) {
       .then(loadStatus)
       .catch(function (err) { toast(err.message, true); })
       .finally(function () { $('pkgUploadBtn').disabled = false; });
+  });
+
+  // ---------------- 图标
+  $('iconUploadBtn').addEventListener('click', function () {
+    var file = $('icon_file').files[0];
+    if (!file) { toast('先选一张图片', true); return; }
+    var id = $('a_id').value.trim();
+    if (!id) { toast('先保存应用再上传图标', true); return; }
+    var form = new FormData();
+    form.append('file', file);
+    $('iconUploadBtn').disabled = true;
+    postForm('/apps/' + encodeURIComponent(id) + '/icon', form)
+      .then(function (data) {
+        // 直接回填相对地址：保存时原样写回 apps.icon（客户端按服务器地址解析）
+        $('a_icon').value = data.icon;
+        $('icon_file').value = '';
+        var app = appCache.find(function (a) { return a.id === id; });
+        if (app) app.icon = data.icon;
+        toast('图标已上传（' + Math.max(1, Math.round(data.bytes / 1024)) + ' KB）');
+        return loadApps();
+      })
+      .catch(function (err) { toast(err.message, true); })
+      .finally(function () { $('iconUploadBtn').disabled = false; });
   });
 
   // ================================================================ 用户

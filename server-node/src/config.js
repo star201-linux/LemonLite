@@ -199,6 +199,13 @@ export const config = {
     maxBytes: envInt('PACKAGE_MAX_BYTES', 20 * 1024 * 1024),
   },
 
+  icons: {
+    // 小程序图标根目录：icons/<appId>.png（管理员在面板里上传）
+    dir: env('ICONS_DIR', 'icons'),
+    // 图标大小上限（字节）。2MB 对一张 512×512 的图标绰绰有余。
+    maxBytes: envInt('ICON_MAX_BYTES', 2 * 1024 * 1024),
+  },
+
   userdata: {
     // 用户数据根目录：userdata/<id>/data.json 与 userdata/<id>/avatar.png
     dir: env('USERDATA_DIR', 'userdata'),
@@ -231,6 +238,7 @@ export function describeConfig() {
       `（头像上限 ${Math.round(config.userdata.maxAvatarBytes / 1024 / 1024)}MB）`,
   );
   lines.push(`小程序包 ${config.packages.dir}/<appId>/<version>.zip`);
+  lines.push(`小程序图标 ${config.icons.dir}/<appId>.<png|jpg|webp|gif>`);
   // 邮件通道是「部署后最容易配漏」的一项，启动时就把它摊开说清楚
   lines.push(
     `邮件   ${config.mail.driver}` +

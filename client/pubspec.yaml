@@ -23,7 +23,7 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # 图标字体（示例小程序与空状态图标用不到网络资源）
+  # 图标字体（空状态与图标用不到网络资源）
   cupertino_icons: ^1.0.8
 
   # 状态管理：选 provider。
@@ -113,8 +113,6 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    # 内置示例小程序（开发者选项里可直接打开，不依赖网络）
-    - assets/miniapp-demo/
     # 端到端自检页（只在传了 --dart-define=LEMONLITE_AUTOTEST 的包里会被打开；
     # 它把 0.2 的每个受控能力真调一遍并把报告写进自己的文件沙箱，见 lib/core/autotest.dart）
     - assets/miniapp-selftest/

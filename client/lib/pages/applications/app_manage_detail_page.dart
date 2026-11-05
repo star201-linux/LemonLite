@@ -12,8 +12,10 @@
 import 'package:flutter/material.dart';
 
 import '../../data/services/application_registry.dart';
+import '../../data/services/icon_cache_service.dart';
 import '../../data/services/miniapp_package_service.dart';
 import '../../data/services/miniapp_storage_service.dart';
+import '../../data/services/update_service.dart';
 import '../../theme/app_theme.dart';
 import '../home/widgets/app_icon.dart';
 import '../miniapp/miniapp_host.dart';
@@ -43,6 +45,9 @@ class AppManageDetailPage extends StatefulWidget {
 class _AppManageDetailPageState extends State<AppManageDetailPage> {
   late Future<MiniappStorageUsage> _usageFuture;
 
+  /// 本地缓存的图标（有就优先显示，断网也有图）
+  String? _localIcon;
+
   @override
   void initState() {
     super.initState();
@@ -50,6 +55,17 @@ class _AppManageDetailPageState extends State<AppManageDetailPage> {
       widget.appId,
       name: widget.appName,
     );
+    _loadIcon();
+  }
+
+  Future<void> _loadIcon() async {
+    final RegisteredApp? app = ApplicationRegistry.instance.byId(widget.appId);
+    final String? icon = await IconCacheService.instance.ensure(
+      appId: widget.appId,
+      url: app?.icon,
+    );
+    if (!mounted) return;
+    setState(() => _localIcon = icon);
   }
 
   @override
@@ -134,7 +150,12 @@ class _AppManageDetailPageState extends State<AppManageDetailPage> {
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
       child: Row(
         children: <Widget>[
-          AppIcon(name: name, iconUrl: app?.icon, size: 64),
+          AppIcon(
+            name: name,
+            iconUrl: app?.icon,
+            localPath: _localIcon,
+            size: 64,
+          ),
           const SizedBox(width: 16),
           Expanded(
             child: Column(
@@ -151,20 +172,20 @@ class _AppManageDetailPageState extends State<AppManageDetailPage> {
                 const SizedBox(height: 8),
                 FutureBuilder<MiniappStorageUsage>(
                   future: _usageFuture,
-                  builder: (
-                    BuildContext context,
-                    AsyncSnapshot<MiniappStorageUsage> snapshot,
-                  ) {
-                    final MiniappStorageUsage? usage = snapshot.data;
-                    return Text(
-                      usage == null
-                          ? '统计中…'
-                          : '占用 ${usage.totalLabel} · ${usage.summaryLabel}',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    );
-                  },
+                  builder:
+                      (
+                        BuildContext context,
+                        AsyncSnapshot<MiniappStorageUsage> snapshot,
+                      ) {
+                        final MiniappStorageUsage? usage = snapshot.data;
+                        return Text(
+                          usage == null
+                              ? '统计中…'
+                              : '占用 ${usage.totalLabel} · ${usage.summaryLabel}',
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: scheme.onSurfaceVariant),
+                        );
+                      },
                 ),
               ],
             ),
@@ -231,6 +252,9 @@ class _AppManageDetailPageState extends State<AppManageDetailPage> {
       await MiniappStorageService.instance.clearAllData(widget.appId);
     }
     await ApplicationRegistry.instance.remove(widget.appId);
+    // 本机缓存的图标与待更新状态也一起清掉（否则列表里会留一个孤儿图标）
+    await IconCacheService.instance.remove(widget.appId);
+    UpdateService.instance.forget(widget.appId);
     if (!mounted) return;
     AppTheme.showToast('已移除「${widget.appName}」，本机文件已删除');
     Navigator.of(context).pop();

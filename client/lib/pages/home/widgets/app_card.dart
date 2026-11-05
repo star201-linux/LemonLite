@@ -1,21 +1,16 @@
 // lib/pages/home/widgets/app_card.dart
 //
-// 应用卡片。
+// 应用卡片（MD3 Expressive）。
 //
-// 为什么用「列表卡片」而不是网格：市场条目要展示 简介 + 作者 + 标签，
-// 网格在大字体 / 长中文名称下极易溢出（要么截断得很难看，要么直接溢出报错）。
-// 列表卡片在手机上一屏也能放 4~5 个，信息密度与可读性都更好。
-// 用 Card.outlined（描边卡片）而不是填充色卡片，视觉层级更轻，
-// 也更符合 M3 里「列表容器」的用法。
+// 视觉语言：
+//   * 28dp 大圆角填充卡片（surfaceContainerLow），不再用描边卡片；
+//   * 标题用 titleLarge + 600 字重，简介保持两行；
+//   * 版本号 / 标签都是药丸形 tonal chip；
+//   * 右侧一枚圆形箭头，明确「可点进去」；
+//   * 按压缩放 + Hero 图标，保留原来两处便宜但有效的反馈。
 //
-// 动效上有两处刻意的加法：
-//   * 按压缩放（0.975）：手指按下去时卡片有「被压下」的反馈，
-//     由 InkWell 的高亮回调驱动，所以它和水波纹是同一个时机。
-//   * 图标的 Hero：与详情页共享 tag，点进详情时图标飞过去。
-// 性能上的两处减法：
-//   * 每张卡片包一层 RepaintBoundary —— 水波纹 / 按压动画只重画这一张，
-//     不会带着整条列表一起重画。
-//   * 图标按显示尺寸解码（见 app_icon.dart 里的 cacheWidth）。
+// 为什么仍是列表卡片而不是网格：中文长名称 + 简介 + 标签在网格里极易溢出，
+// 列表在手机一屏也能放 4~5 个，信息密度与可读性更好。
 
 import 'package:flutter/material.dart';
 
@@ -34,8 +29,8 @@ class AppCard extends StatefulWidget {
 }
 
 class _AppCardState extends State<AppCard> {
-  /// 按压动画的状态句柄：由 InkWell 的高亮回调驱动
-  final GlobalKey<PressableScaleState> _pressKey = GlobalKey<PressableScaleState>();
+  final GlobalKey<PressableScaleState> _pressKey =
+      GlobalKey<PressableScaleState>();
 
   @override
   Widget build(BuildContext context) {
@@ -47,37 +42,44 @@ class _AppCardState extends State<AppCard> {
       child: PressableScale(
         key: _pressKey,
         scale: 0.975,
-        child: Card.outlined(
+        child: Card.filled(
           margin: EdgeInsets.zero,
-          clipBehavior: Clip.antiAlias, // 让水波纹被卡片圆角裁掉
+          color: scheme.surfaceContainerLow,
+          clipBehavior: Clip.antiAlias,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(28),
+          ),
           child: InkWell(
             onTap: widget.onTap,
             onHighlightChanged: (bool pressed) =>
                 _pressKey.currentState?.setPressed(pressed),
             child: Padding(
-              padding: const EdgeInsets.all(14),
+              padding: const EdgeInsets.fromLTRB(16, 16, 12, 16),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
                   AppIcon(
                     name: app.name,
                     iconUrl: app.icon,
+                    size: 60,
                     heroTag: 'app-icon:${app.id}',
                   ),
-                  const SizedBox(width: 14),
+                  const SizedBox(width: 16),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: <Widget>[
                         Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
                           children: <Widget>[
                             Expanded(
                               child: Text(
                                 app.name,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: textTheme.titleMedium?.copyWith(
+                                style: textTheme.titleLarge?.copyWith(
                                   fontWeight: FontWeight.w600,
+                                  letterSpacing: -0.2,
                                 ),
                               ),
                             ),
@@ -90,21 +92,22 @@ class _AppCardState extends State<AppCard> {
                           app.author,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: textTheme.bodySmall?.copyWith(
+                          style: textTheme.labelMedium?.copyWith(
                             color: scheme.onSurfaceVariant,
                           ),
                         ),
-                        const SizedBox(height: 6),
+                        const SizedBox(height: 8),
                         Text(
                           app.description,
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: textTheme.bodyMedium?.copyWith(
                             color: scheme.onSurfaceVariant,
+                            height: 1.45,
                           ),
                         ),
                         if (app.tags.isNotEmpty) ...<Widget>[
-                          const SizedBox(height: 8),
+                          const SizedBox(height: 10),
                           Wrap(
                             spacing: 6,
                             runSpacing: 6,
@@ -117,6 +120,8 @@ class _AppCardState extends State<AppCard> {
                       ],
                     ),
                   ),
+                  const SizedBox(width: 8),
+                  _ArrowBubble(onTap: widget.onTap),
                 ],
               ),
             ),
@@ -137,23 +142,23 @@ class _VersionPill extends StatelessWidget {
   Widget build(BuildContext context) {
     final ColorScheme scheme = Theme.of(context).colorScheme;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest,
+        color: scheme.primaryContainer,
         borderRadius: BorderRadius.circular(999),
       ),
       child: Text(
         'v$version',
-        style: Theme.of(context)
-            .textTheme
-            .labelSmall
-            ?.copyWith(color: scheme.onSurfaceVariant),
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+          color: scheme.onPrimaryContainer,
+          fontWeight: FontWeight.w600,
+        ),
       ),
     );
   }
 }
 
-/// 标签小徽标
+/// 标签小徽标（tonal，药丸形）
 class _TagPill extends StatelessWidget {
   const _TagPill({required this.text});
 
@@ -163,17 +168,48 @@ class _TagPill extends StatelessWidget {
   Widget build(BuildContext context) {
     final ColorScheme scheme = Theme.of(context).colorScheme;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
       decoration: BoxDecoration(
-        color: scheme.secondaryContainer,
-        borderRadius: BorderRadius.circular(8),
+        color: scheme.tertiaryContainer,
+        borderRadius: BorderRadius.circular(999),
       ),
       child: Text(
         text,
-        style: Theme.of(context)
-            .textTheme
-            .labelSmall
-            ?.copyWith(color: scheme.onSecondaryContainer),
+        style: Theme.of(
+          context,
+        ).textTheme.labelSmall?.copyWith(color: scheme.onTertiaryContainer),
+      ),
+    );
+  }
+}
+
+/// 右侧圆形箭头：把「可点」从水波纹里再明确一次。
+class _ArrowBubble extends StatelessWidget {
+  const _ArrowBubble({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 14),
+      child: Material(
+        color: scheme.surfaceContainerHighest,
+        shape: const CircleBorder(),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: SizedBox(
+            width: 32,
+            height: 32,
+            child: Icon(
+              Icons.arrow_forward_rounded,
+              size: 18,
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ),
       ),
     );
   }

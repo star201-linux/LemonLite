@@ -8,13 +8,13 @@
 cd server
 cp .env.example .env        # 改掉 DB_PASSWORD
 npm install
-npm run init -- --seed      # 建库建表 + 灌演示应用
-npm run seed:packages       # 把 docs/ 里的示例打成 zip 包并回填哈希
+npm run init -- --seed      # 建库建表 + 基础分类/标签（**不含任何小程序**）
 npm start
 ```
 
-`seed:packages` 是必须的：0.6 起客户端只认「下载 zip 再打开」，
-没有包的应用在 App 里会显示「暂不可用」。
+默认市场是**空的**：没有任何预置小程序。打开管理面板 `/admin`
+（第一次访问时创建管理员账号），在「应用」页新建应用、上传 zip 包与图标，
+客户端主页才会出现它。没有包的应用在 App 里会显示「暂不可用」。
 
 跑起来之后：
 
@@ -30,7 +30,8 @@ npm start
 ```bash
 curl http://127.0.0.1:3000/api/health
 curl 'http://127.0.0.1:3000/api/market/feed?limit=3'
-npm test                    # 44 个路由层测试（不需要 MySQL，用内存替身）
+npm test                    # 邮件 / SMTP / 验证码等单元测试，不需要 MySQL
+node --test tests/api.test.mjs   # 路由层端到端测试（内存数据库替身）
 ```
 
 ## init 脚本做什么
@@ -39,11 +40,12 @@ npm test                    # 44 个路由层测试（不需要 MySQL，用内�
 
 1. 建库 `lemonlite`（不存在时）
 2. 执行 `sql/schema.sql` 建表（`CREATE TABLE IF NOT EXISTS`）
-3. 可选 `--seed` 灌演示数据（`INSERT ... ON DUPLICATE KEY UPDATE`）
+3. 可选 `--seed` 灌基础分类与标签（`INSERT ... ON DUPLICATE KEY UPDATE`）。
+   **不会插入任何小程序** —— 默认市场是空的，应用由管理员在 `/admin` 里添加。
 
 ```bash
 npm run init              # 只建库建表
-npm run init -- --seed    # 顺便灌 8 个演示应用 + 分类 + 标签
+npm run init -- --seed    # 顺便灌基础分类 + 标签（没有小程序）
 npm run init -- --reset   # ⚠ 删库重建（要输入 DELETE 确认）
 ```
 
@@ -109,8 +111,10 @@ userdata/<id>/avatar.png    头像（固定文件名，覆盖式更新）
 | GET | `/api/market/app/:id` | 单个应用 |
 | GET | `/api/market/tags` | 全量标签 + 计数 |
 | GET | `/api/market/:appId/package/meta` | 当前上架版本、大小、哈希 |
+| GET | `/api/market/:appId/version` | 单个应用的最新版本（**每次打开小程序前查它**） |
 | GET | `/api/market/:appId/package?version=` | 下载包（带 ETag） |
 | POST | `/api/market/updates` | 批量检查升级（传已装版本列表） |
+| GET | `/icons/:appId.(png\|jpg\|webp\|gif)` | 小程序图标（管理员上传，客户端本地缓存） |
 | POST | `/api/market/:appId/package` | **上传**包（需登录，multipart） |
 
 `feed` 排序：`sort_weight DESC, updated_at DESC, id ASC`（默认就是按更新时间）。

@@ -18,6 +18,8 @@ import 'package:dio/dio.dart';
 
 import '../../core/globals.dart';
 
+import '../models/app_item.dart';
+import '../models/app_version.dart';
 import '../models/json_utils.dart';
 import '../models/market_feed.dart';
 import '../services/miniapp_package_service.dart';
@@ -32,26 +34,32 @@ class MarketException implements Exception {
   final String? detail;
 
   @override
-  String toString() => 'MarketException($code): $message${detail == null ? '' : ' | $detail'}';
+  String toString() =>
+      'MarketException($code): $message${detail == null ? '' : ' | $detail'}';
 }
 
 class MarketRepository {
   MarketRepository({Dio? dio, SettingsService? settings})
-      : _settings = settings ?? SettingsService.instance,
-        _dio = dio ??
-            Dio(
-              BaseOptions(
-                connectTimeout: _defaultTimeout,
-                receiveTimeout: _defaultTimeout,
-                sendTimeout: _defaultTimeout,
-                headers: <String, String>{'Accept': 'application/json'},
-                // 自己控制状态码，便于把 404 / 500 翻译成不同提示
-                validateStatus: (int? status) =>
-                    status != null && status >= 200 && status < 400,
-              ),
-            );
+    : _settings = settings ?? SettingsService.instance,
+      _dio =
+          dio ??
+          Dio(
+            BaseOptions(
+              connectTimeout: _defaultTimeout,
+              receiveTimeout: _defaultTimeout,
+              sendTimeout: _defaultTimeout,
+              headers: <String, String>{'Accept': 'application/json'},
+              // 自己控制状态码，便于把 404 / 500 翻译成不同提示
+              validateStatus: (int? status) =>
+                  status != null && status >= 200 && status < 400,
+            ),
+          );
 
   static const Duration _defaultTimeout = Duration(seconds: 12);
+
+  /// 「打开小程序前查版本」这类**会挡住用户操作**的请求用更短的超时：
+  /// 服务端没响应时宁可让用户先打开本机已装的版本，也不要干等 12 秒。
+  static const Duration _quickTimeout = Duration(seconds: 8);
 
   final Dio _dio;
   final SettingsService _settings;
@@ -85,12 +93,13 @@ class MarketRepository {
       lemonLogError(
         'Market',
         '响应不是 JSON 对象：$path · HTTP ${res.statusCode}'
-        ' · Content-Type: $contentType · 内容：$snippet',
+            ' · Content-Type: $contentType · 内容：$snippet',
       );
       throw MarketException(
         'bad_response',
         '服务器返回了无法识别的内容',
-        detail: '$path 返回 HTTP ${res.statusCode}'
+        detail:
+            '$path 返回 HTTP ${res.statusCode}'
             '（Content-Type: $contentType），内容片段：$snippet',
       );
     }
@@ -199,26 +208,35 @@ class MarketRepository {
   ///
   /// 用 POST 而不是 GET：要带一组已装版本，放查询串会很长，
   /// 也更容易被日志记下来。
+  ///
+  /// 失败时**抛异常**（不再返回空列表）：调用方需要区分「检查了，没有更新」
+  /// 与「检查失败」—— 后者不能把界面上已有的小红点清掉。
+  /// 是否打扰用户由调用方决定（启动检查会静默吞掉）。
   Future<List<PackageUpdate>> checkUpdates(
     List<({String id, String version})> installed,
   ) async {
     if (installed.isEmpty) return const <PackageUpdate>[];
     final String base = _settings.serverUrl;
+    final String url = '$base/api/market/updates';
 
     try {
       final Response<dynamic> res = await _dio.post<dynamic>(
-        '$base/api/market/updates',
+        url,
         data: <String, dynamic>{
           'installed': installed
-              .map((({String id, String version}) e) =>
-                  <String, dynamic>{'id': e.id, 'version': e.version})
+              .map(
+                (({String id, String version}) e) => <String, dynamic>{
+                  'id': e.id,
+                  'version': e.version,
+                },
+              )
               .toList(growable: false),
         },
         options: Options(validateStatus: (int? s) => s != null),
       );
-      if (res.statusCode != 200) return const <PackageUpdate>[];
+      if (res.statusCode != 200) throw _httpError(res.statusCode, url);
 
-      final Map<String, dynamic> json = _unwrap(res, '$base/api/market/updates');
+      final Map<String, dynamic> json = _unwrap(res, url);
       final Object? data = json['data'];
       if (data is! Map) return const <PackageUpdate>[];
       final Object? list = data['updates'];
@@ -235,11 +253,104 @@ class MarketRepository {
             ),
           )
           .whereType<PackageUpdate>()
+          // 服务端现在返回绝对地址，但旧服务端可能返回相对路径 ——
+          // 这里统一补一次，避免 icon 在界面上加载失败。
+          .map((PackageUpdate u) {
+            final String icon = u.icon;
+            if (icon.isEmpty || icon.startsWith('http')) return u;
+            return u.copyWith(icon: AppItem.resolveUrl(base, icon));
+          })
           .toList(growable: false);
-    } catch (e) {
-      // 升级检查失败不该打扰用户（它只是「顺便看一眼」）
-      lemonLog('Market', '检查更新失败：$e');
-      return const <PackageUpdate>[];
+    } on DioException catch (e) {
+      throw _mapDioException(e, base);
+    }
+  }
+
+  /// 单个应用的最新版本（每次打开小程序前调用）。
+  ///
+  /// 与 [checkUpdates] 的区别：这是**单发**，不需要本地先装过 ——
+  /// 没装的应用也能问「现在最新是哪一版、包在哪」。
+  /// 失败会抛 [MarketException]（404 = 这个应用已经不在市场里）。
+  Future<AppVersionInfo> fetchVersion(String appId) async {
+    final String id = appId.trim();
+    if (id.isEmpty) {
+      throw const MarketException('bad_request', '应用 id 不能为空');
+    }
+    final String base = _settings.serverUrl;
+    final String url = '$base/api/market/${Uri.encodeComponent(id)}/version';
+
+    try {
+      final Response<dynamic> res = await _dio.get<dynamic>(
+        url,
+        options: Options(
+          validateStatus: (int? s) => s != null,
+          sendTimeout: _quickTimeout,
+          receiveTimeout: _quickTimeout,
+        ),
+      );
+      if (res.statusCode != 200) throw _httpError(res.statusCode, url);
+      final Map<String, dynamic> json = _unwrap(res, url);
+      final Map<String, dynamic>? data = asMap(json['data']);
+      final AppVersionInfo? info = data == null
+          ? null
+          : AppVersionInfo.fromJson(data);
+      if (info == null) {
+        throw MarketException('bad_response', '服务器返回的版本信息无法识别', detail: url);
+      }
+      // 服务端给的是绝对地址；旧服务端给相对地址时这里兜一下。
+      if (info.icon.isNotEmpty && !info.icon.startsWith('http')) {
+        return _copyVersionWithIcon(info, AppItem.resolveUrl(base, info.icon));
+      }
+      return info;
+    } on DioException catch (e) {
+      throw _mapDioException(e, base);
+    }
+  }
+
+  static AppVersionInfo _copyVersionWithIcon(AppVersionInfo v, String icon) =>
+      AppVersionInfo(
+        appId: v.appId,
+        name: v.name,
+        version: v.version,
+        icon: icon,
+        hasPackage: v.hasPackage,
+        packageUrl: v.packageUrl,
+        entry: v.entry,
+        sha256: v.sha256,
+        bytes: v.bytes,
+        updatedAt: v.updatedAt,
+      );
+
+  /// 单个应用详情（应用管理点进去要展示完整的市场信息）。
+  ///
+  /// 市场数据可能已经下架（404）—— 调用方据此退回「本机信息」的详情页。
+  Future<AppItem> fetchApp(String appId) async {
+    final String id = appId.trim();
+    if (id.isEmpty) {
+      throw const MarketException('bad_request', '应用 id 不能为空');
+    }
+    final String base = _settings.serverUrl;
+    final String url = '$base/api/market/app/${Uri.encodeComponent(id)}';
+
+    try {
+      final Response<dynamic> res = await _dio.get<dynamic>(
+        url,
+        options: Options(
+          validateStatus: (int? s) => s != null,
+          sendTimeout: _quickTimeout,
+          receiveTimeout: _quickTimeout,
+        ),
+      );
+      if (res.statusCode != 200) throw _httpError(res.statusCode, url);
+      final Map<String, dynamic> json = _unwrap(res, url);
+      final Map<String, dynamic>? data = asMap(json['data']);
+      final AppItem? item = data == null ? null : AppItem.fromJson(data);
+      if (item == null) {
+        throw MarketException('bad_response', '服务器返回的应用数据无法识别', detail: url);
+      }
+      return item.resolveAgainst(base);
+    } on DioException catch (e) {
+      throw _mapDioException(e, base);
     }
   }
 
@@ -274,17 +385,9 @@ class MarketRepository {
 
   MarketException _httpError(int? status, String url) {
     if (status == 404) {
-      return MarketException(
-        'http_404',
-        '服务器上没有找到这个接口（404）',
-        detail: url,
-      );
+      return MarketException('http_404', '服务器上没有找到这个接口（404）', detail: url);
     }
-    return MarketException(
-      'http_$status',
-      '服务器返回异常状态码 $status',
-      detail: url,
-    );
+    return MarketException('http_$status', '服务器返回异常状态码 $status', detail: url);
   }
 
   /// DioException → 用户能看懂的 [MarketException]
@@ -311,9 +414,17 @@ class MarketRepository {
       case DioExceptionType.receiveTimeout:
       // dio 5.9 起新增：响应体转换阶段超时
       case DioExceptionType.transformTimeout:
-        return MarketException('timeout', '连接超时，请检查网络或服务器地址', detail: e.message);
+        return MarketException(
+          'timeout',
+          '连接超时，请检查网络或服务器地址',
+          detail: e.message,
+        );
       case DioExceptionType.badCertificate:
-        return MarketException('bad_certificate', '服务器证书校验失败', detail: e.message);
+        return MarketException(
+          'bad_certificate',
+          '服务器证书校验失败',
+          detail: e.message,
+        );
       case DioExceptionType.cancel:
         return const MarketException('canceled', '请求已被取消');
       case DioExceptionType.connectionError:

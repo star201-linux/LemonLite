@@ -48,6 +48,7 @@ import '../../core/globals.dart';
 import '../../core/native_bridge.dart';
 import '../../data/models/miniapp_permission.dart';
 import '../../data/models/miniapp_session.dart';
+import '../../data/services/icon_cache_service.dart';
 import '../../data/services/miniapp_package_service.dart';
 import '../../data/services/application_registry.dart';
 import '../../theme/app_theme.dart';
@@ -63,7 +64,8 @@ class MiniappHost extends ChangeNotifier {
   String? _foregroundId;
 
   /// 当前全部会话（顺序 = 打开顺序）
-  List<MiniappSession> get sessions => List<MiniappSession>.unmodifiable(_sessions);
+  List<MiniappSession> get sessions =>
+      List<MiniappSession>.unmodifiable(_sessions);
 
   bool get hasAny => _sessions.isNotEmpty;
 
@@ -149,6 +151,8 @@ class MiniappHost extends ChangeNotifier {
         opened: true,
       ),
     );
+    // 图标顺手缓存到本机：应用管理列表不该为了显示图标再发一次网络请求
+    unawaited(IconCacheService.instance.ensure(appId: appId, url: iconUrl));
     lemonLog('Host', '打开小程序 $appId（当前运行 ${_sessions.length} 个）');
     notifyListeners();
     return session;
@@ -217,7 +221,9 @@ class MiniappHost extends ChangeNotifier {
 
   /// 关闭会话（真正销毁 WebView）
   Future<void> close(String appId) async {
-    final int index = _sessions.indexWhere((MiniappSession s) => s.appId == appId);
+    final int index = _sessions.indexWhere(
+      (MiniappSession s) => s.appId == appId,
+    );
     if (index < 0) return;
     final MiniappSession session = _sessions.removeAt(index);
     final bool wasForeground = session.appId == _foregroundId;
@@ -254,7 +260,8 @@ class MiniappHost extends ChangeNotifier {
   }
 
   Future<void> closeAll() async {
-    for (final String id in _sessions.map((MiniappSession s) => s.appId).toList()) {
+    for (final String id
+        in _sessions.map((MiniappSession s) => s.appId).toList()) {
       await close(id);
     }
   }
@@ -331,7 +338,10 @@ class MiniappHost extends ChangeNotifier {
         sizing: StackFit.expand,
         children: <Widget>[
           for (final MiniappSession session in _sessions)
-            MiniappSessionView(key: ValueKey<String>(session.appId), session: session),
+            MiniappSessionView(
+              key: ValueKey<String>(session.appId),
+              session: session,
+            ),
           // 全部在后台时的占位：IndexedStack 仍然会布局上面的 WebView（状态保住），
           // 但只绘制这个空的 —— 屏幕上什么都看不到，点击也穿过去。
           const SizedBox.expand(),

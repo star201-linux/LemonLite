@@ -88,6 +88,12 @@ class MiniappSession {
   /// 由会话视图注入：重新加载页面
   Future<void> Function()? onReload;
 
+  /// 由会话视图注入：把宿主事件转发给页面里的 JS SDK。
+  ///
+  /// 这是蓝牙 notify / 连接状态 / 扫描结果这类「原生主动事件」的出口；
+  /// 小程序侧通过 `lemonlite.bluetooth.onNotification(cb)` 等订阅。
+  void Function(String type, Map<String, dynamic> data)? onEvent;
+
   void Function()? _titleListener;
 
   String get title => titleNotifier.value;
@@ -144,6 +150,7 @@ class MiniappSession {
     onResumeTimers = null;
     onPauseTimers = null;
     onReload = null;
+    onEvent = null;
   }
 }
 

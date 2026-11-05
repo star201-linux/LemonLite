@@ -30,6 +30,26 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
     <!--
+        蓝牙 / NFC：宿主原生能力（lemonlite.bluetooth.* / lemonlite.nfc.*）。
+
+        蓝牙在 Android 12+ 拆成了 SCAN / CONNECT 两个运行时权限；
+        Android 11 及以下仍然用安装期的 BLUETOOTH / BLUETOOTH_ADMIN，
+        并且 BLE 扫描还需要定位权限（这就是为什么下面的 FINE_LOCATION
+        没有 maxSdkVersion —— 定位能力本来也要它）。
+        SCAN 标 neverForLocation：我们只用它发现设备，不做位置推断。
+
+        NFC 是 normal 权限（安装即授予），但应用内仍然会弹一次确认弹窗
+        （见 MiniappPermission.nfc 的说明）。
+    -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    <uses-permission android:name="android.permission.NFC"/>
+
+    <!--
         下载管理：目标目录是公共「下载」目录（Download/）。
 
         Android 10（API 29）起，往公共下载目录写文件由系统 DownloadManager 负责，
@@ -48,6 +68,9 @@
     <uses-feature android:name="android.hardware.location" android:required="false"/>
     <uses-feature android:name="android.hardware.location.gps" android:required="false"/>
     <uses-feature android:name="android.hardware.location.network" android:required="false"/>
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false"/>
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false"/>
+    <uses-feature android:name="android.hardware.nfc" android:required="false"/>
 
     <application
         android:label="轻柠"

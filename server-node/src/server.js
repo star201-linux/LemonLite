@@ -16,6 +16,7 @@ import { packageRouter } from './routes/packages.js';
 import { adminRouter } from './routes/admin.js';
 import { adminCount, ensureAdminSecret } from './admin/auth.js';
 import { ensureSchema } from './lib/schema_guard.js';
+import { iconsRoot } from './lib/icon_store.js';
 import { describeMail, mailStatus } from './lib/mailer.js';
 
 readEnvFile();
@@ -66,6 +67,24 @@ app.use((req, res, next) => {
 const userdataDir = join(config.root, config.userdata.dir);
 if (!existsSync(userdataDir)) mkdirSync(userdataDir, { recursive: true });
 
+// ---------------------------------------------------------------- 小程序图标
+//
+// 图标是公开内容（列表里人人都要看），所以静态托管。
+// 目录由管理员上传接口写入；文件名是 <appId>.<ext>，没有目录穿越的空间。
+// 这里**不**做「目录不存在就跳过」：先建出来，之后第一次上传不用再建。
+const iconsDir = iconsRoot();
+if (!existsSync(iconsDir)) mkdirSync(iconsDir, { recursive: true });
+app.use(
+  '/icons',
+  express.static(iconsDir, {
+    // 换图标时文件名不变（<appId>.png），所以不能设 immutable；
+    // 一天的缓存 + 客户端本地缓存已经够了。
+    maxAge: '1d',
+    index: false,
+    dotfiles: 'deny',
+  }),
+);
+
 // ---------------------------------------------------------------- 路由
 
 /** 健康检查：部署后第一件事就是 curl 它 */
@@ -106,6 +125,10 @@ app.get('/', (_req, res) => {
       '  GET  /api/market/feed?limit=20&cursor=',
       '  GET  /api/market/search?q=&tag=&limit=20&offset=0',
       '  GET  /api/market/app/:id',
+      '  GET  /api/market/:appId/version    （打开小程序前检查版本）',
+      '  POST /api/market/updates           （批量检查已装小程序）',
+      '  GET  /api/market/:appId/package    （下载小程序包）',
+      '  GET  /icons/:appId.(png|jpg|webp|gif) （小程序图标）',
       '  GET  /api/market/tags',
       '  GET  /api/auth/config        （客户端据此决定要不要验证码输入框）',
       '  POST /api/auth/email-code    （发注册验证码）',

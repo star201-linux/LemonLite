@@ -1,11 +1,14 @@
 // server/src/init.js
 //
-// 一键初始化：建库 → 建表 → 灌种子数据。
+// 一键初始化：建库 → 建表 → 灌基础数据（分类 / 标签）。
 //
 // 用法：
 //   npm run init            # 只在库/表不存在时创建，不会清空已有数据
-//   npm run init -- --seed  # 额外灌入演示应用（已存在则跳过）
+//   npm run init -- --seed  # 额外灌入基础分类与标签（**不含任何小程序**）
 //   npm run init -- --reset # **危险**：DROP 整个库再重建（会二次确认）
+//
+// 现在种子数据里没有任何小程序：默认市场是空的，应用只能由管理员
+// 在 /admin 面板里添加。这样部署完不用先删一堆演示应用。
 //
 // 为什么把「建库」和「建表」放同一个脚本：
 //   MySQL 的 `CREATE TABLE` 必须在 USE 之后，而 USE 需要库已存在。
@@ -140,7 +143,7 @@ async function main() {
 
   // ---------------------------------------------------------------- 种子
   if (wantSeed) {
-    step('灌入演示数据（seed.sql，按主键去重）');
+    step('灌入基础数据（分类 / 标签；不会有任何小程序）');
     const seed = readFileSync(SEED_PATH, 'utf8');
     for (const stmt of splitStatements(seed)) {
       try {
@@ -176,7 +179,7 @@ async function main() {
   }
   console.log('');
   if (!wantSeed) {
-    console.log('  想灌演示应用数据：npm run init -- --seed');
+    console.log('  想灌基础分类与标签：npm run init -- --seed');
   }
   console.log('  启动服务：npm start');
   console.log('');

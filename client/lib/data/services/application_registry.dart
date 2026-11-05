@@ -290,6 +290,8 @@ class ApplicationRegistry extends ChangeNotifier {
     'camera',
     'microphone',
     'sdcard',
+    'bluetooth',
+    'nfc',
     // 历史 id（sdcard 的旧名字）：升级前写下的决定要能一起清掉
     'allFiles',
     // 历史版本（已不再是权限，但记录可能还在盘上）

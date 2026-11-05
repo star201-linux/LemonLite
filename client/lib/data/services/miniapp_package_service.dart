@@ -64,18 +64,14 @@ class InstalledPackage {
 
 /// 下载进度
 class PackageProgress {
-  const PackageProgress({
-    required this.received,
-    required this.total,
-  });
+  const PackageProgress({required this.received, required this.total});
 
   final int received;
 
   /// 总字节；0 表示服务端没给 Content-Length
   final int total;
 
-  double? get fraction =>
-      total > 0 ? (received / total).clamp(0.0, 1.0) : null;
+  double? get fraction => total > 0 ? (received / total).clamp(0.0, 1.0) : null;
 
   String get label => total > 0
       ? '${(received / 1024).toStringAsFixed(0)} / ${(total / 1024).toStringAsFixed(0)} KB'
@@ -103,6 +99,8 @@ class PackageUpdate {
     required this.entry,
     required this.sha256,
     required this.bytes,
+    this.icon = '',
+    this.updatedAt,
   });
 
   final String appId;
@@ -114,10 +112,46 @@ class PackageUpdate {
   final String sha256;
   final int bytes;
 
+  /// 最新版本的图标地址（服务端返回绝对地址；可能为空）。
+  /// 更新检查顺带把它缓存到本机，应用管理里才有图标可显示。
+  final String icon;
+
+  final DateTime? updatedAt;
+
   /// 「1.0.0 → 1.1.0」
   String get versionLabel => installedVersion.isEmpty
       ? '新版本 $latestVersion'
       : '$installedVersion → $latestVersion';
+
+  /// 上次检查后服务端又发了一版？只要版本字符串不同就算（不比较大小）。
+  bool get isInstalledOlder => installedVersion != latestVersion;
+
+  PackageUpdate copyWith({String? icon, String? name, String? packageUrl}) =>
+      PackageUpdate(
+        appId: appId,
+        name: name ?? this.name,
+        installedVersion: installedVersion,
+        latestVersion: latestVersion,
+        packageUrl: packageUrl ?? this.packageUrl,
+        entry: entry,
+        sha256: sha256,
+        bytes: bytes,
+        icon: icon ?? this.icon,
+        updatedAt: updatedAt,
+      );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'id': appId,
+    'name': name,
+    'installedVersion': installedVersion,
+    'latestVersion': latestVersion,
+    'packageUrl': packageUrl,
+    'packageEntry': entry,
+    'packageSha256': sha256,
+    'packageBytes': bytes,
+    if (icon.isNotEmpty) 'icon': icon,
+    if (updatedAt != null) 'updatedAt': updatedAt!.toIso8601String(),
+  };
 
   static PackageUpdate? fromJson(Map<String, dynamic> json) {
     final String id = (json['id'] ?? '').toString();
@@ -132,6 +166,8 @@ class PackageUpdate {
       entry: (json['packageEntry'] ?? 'index.html').toString(),
       sha256: (json['packageSha256'] ?? '').toString(),
       bytes: (json['packageBytes'] as num?)?.toInt() ?? 0,
+      icon: (json['icon'] ?? '').toString(),
+      updatedAt: DateTime.tryParse((json['updatedAt'] ?? '').toString()),
     );
   }
 }
@@ -212,7 +248,9 @@ class MiniappPackageService {
       return null;
     }
 
-    final Directory versionDir = Directory(p.join(dir.path, _safeSegment(version)));
+    final Directory versionDir = Directory(
+      p.join(dir.path, _safeSegment(version)),
+    );
     if (!File(p.join(versionDir.path, _kCompleteMarker)).existsSync()) {
       // 目录在但没有完成标记：解压到一半被杀过。当作没装。
       lemonLog('Package', '$appId v$version 缺少完成标记，视为未安装');
@@ -269,7 +307,12 @@ class MiniappPackageService {
     // 为什么不整块读进内存：包上限 20MB，读进内存再校验也能跑，
     // 但下载失败时内存里那坨东西没有任何价值；落盘能让断点续传
     // （将来）与「校验前先确认大小」都更容易。
-    final File tmp = File(p.join(dir.path, '.download-${DateTime.now().millisecondsSinceEpoch}.zip'));
+    final File tmp = File(
+      p.join(
+        dir.path,
+        '.download-${DateTime.now().millisecondsSinceEpoch}.zip',
+      ),
+    );
     try {
       final Response<ResponseBody> res = await _dio.get<ResponseBody>(
         packageUrl,
@@ -292,10 +335,9 @@ class MiniappPackageService {
         await for (final List<int> chunk in body.stream) {
           sink.add(chunk);
           received += chunk.length;
-          onProgress?.call(PackageProgress(
-            received: received,
-            total: totalBytes,
-          ));
+          onProgress?.call(
+            PackageProgress(received: received, total: totalBytes),
+          );
         }
       } finally {
         await sink.flush();
@@ -309,13 +351,11 @@ class MiniappPackageService {
       // 能调所有 JSBridge 能力。
       final String expected = sha256.trim().toLowerCase();
       if (expected.isNotEmpty) {
-        final String actual =
-            crypto.sha256.convert(await tmp.readAsBytes()).toString();
+        final String actual = crypto.sha256
+            .convert(await tmp.readAsBytes())
+            .toString();
         if (actual != expected) {
-          throw PackageException(
-            'checksum_mismatch',
-            '包校验失败（下载可能被中断或被篡改），已丢弃',
-          );
+          throw PackageException('checksum_mismatch', '包校验失败（下载可能被中断或被篡改），已丢弃');
         }
       } else {
         lemonLog('Package', '$appId 的服务端没给 sha256，跳过完整性校验');
@@ -345,8 +385,9 @@ class MiniappPackageService {
       // 顺序很重要：先写 .complete，再更新 current 指针。
       // 反过来的话，如果两步之间被杀，current 会指向一个没标记的目录 ——
       // installed() 会把它当作「没装」，用户看到的是「白下了一次」。
-      File(p.join(target.path, _kCompleteMarker))
-          .writeAsStringSync(DateTime.now().toIso8601String());
+      File(
+        p.join(target.path, _kCompleteMarker),
+      ).writeAsStringSync(DateTime.now().toIso8601String());
 
       File(p.join(dir.path, 'current')).writeAsStringSync(
         jsonEncode(<String, dynamic>{'version': safeVersion, 'entry': entry}),
@@ -412,10 +453,7 @@ class MiniappPackageService {
       if (content == null) continue;
       total += content.length;
       if (total > maxExtractedBytes) {
-        throw const PackageException(
-          'too_large',
-          '解压后体积超过上限（疑似异常包）',
-        );
+        throw const PackageException('too_large', '解压后体积超过上限（疑似异常包）');
       }
 
       final File outFile = File(outPath);

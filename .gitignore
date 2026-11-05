@@ -38,8 +38,9 @@ npm-debug.log*
 yarn-error.log*
 server-node/node_modules/
 server-node/coverage/
-# 运行时产物：seed:packages 生成的 zip 与用户数据，都是「跑出来的」，不入库
+# 运行时产物：上传的小程序包 / 管理员上传的图标 / 用户数据，都是「跑出来的」，不入库
 server-node/packages/
+server-node/icons/
 server-node/userdata/
 
 # ---- 编辑器 / 系统 ----

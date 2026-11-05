@@ -42,7 +42,9 @@ late PermissionService permissions;
 late ApplicationRegistry registry;
 
 /// 重置到一个干净的持久化环境
-Future<void> freshPrefs([Map<String, Object> values = const <String, Object>{}]) async {
+Future<void> freshPrefs([
+  Map<String, Object> values = const <String, Object>{},
+]) async {
   SharedPreferences.setMockInitialValues(values);
   settings = await SettingsService.init();
   permissions = PermissionService.init();
@@ -58,7 +60,9 @@ BridgeApi apiFor(String appId, {MiniappSession? session}) => BridgeApi(
   session: session,
 );
 
-Future<LemonBridgeException> captureBridgeError(Future<void> Function() action) async {
+Future<LemonBridgeException> captureBridgeError(
+  Future<void> Function() action,
+) async {
   try {
     await action();
   } on LemonBridgeException catch (e) {
@@ -77,7 +81,7 @@ void main() {
   // ================================================================ 权限模型
 
   group('权限模型', () {
-    test('受控资源清单：媒体采集 + 定位 + 剪贴板/通知 + 文件访问', () {
+    test('受控能力清单：媒体采集 + 定位 + 剪贴板/通知 + 蓝牙/NFC + 文件访问', () {
       expect(
         MiniappPermission.values.map((MiniappPermission p) => p.id).toList(),
         <String>[
@@ -87,6 +91,8 @@ void main() {
           'geolocationCoarse',
           'clipboard',
           'notifications',
+          'bluetooth',
+          'nfc',
           'sdcard',
         ],
       );
@@ -104,14 +110,12 @@ void main() {
       // 非定位项没有配对
       expect(MiniappPermission.camera.pairedWith, isNull);
       // 精细只申请 FINE，粗略只申请 COARSE —— 不能反过来
-      expect(
-        MiniappPermission.geolocationFine.runtimePermissions,
-        <String>['android.permission.ACCESS_FINE_LOCATION'],
-      );
-      expect(
-        MiniappPermission.geolocationCoarse.runtimePermissions,
-        <String>['android.permission.ACCESS_COARSE_LOCATION'],
-      );
+      expect(MiniappPermission.geolocationFine.runtimePermissions, <String>[
+        'android.permission.ACCESS_FINE_LOCATION',
+      ]);
+      expect(MiniappPermission.geolocationCoarse.runtimePermissions, <String>[
+        'android.permission.ACCESS_COARSE_LOCATION',
+      ]);
     });
 
     test('每个权限的 id 唯一、非空，且都有中文名与说明', () {
@@ -135,28 +139,29 @@ void main() {
     });
 
     test('摄像头/麦克风需要系统运行时权限，手机存储不需要', () {
-      expect(
-        MiniappPermission.camera.runtimePermissions,
-        <String>['android.permission.CAMERA'],
-      );
-      expect(
-        MiniappPermission.microphone.runtimePermissions,
-        <String>['android.permission.RECORD_AUDIO'],
-      );
+      expect(MiniappPermission.camera.runtimePermissions, <String>[
+        'android.permission.CAMERA',
+      ]);
+      expect(MiniappPermission.microphone.runtimePermissions, <String>[
+        'android.permission.RECORD_AUDIO',
+      ]);
       // 手机存储由系统文件选择器逐次确认，不需要额外的运行时权限
       expect(MiniappPermission.sdcard.runtimePermissions, isEmpty);
       expect(MiniappPermission.camera.needsRuntimePermission, isTrue);
       expect(MiniappPermission.sdcard.needsRuntimePermission, isFalse);
       // 定位两档都需要系统权限
       expect(MiniappPermission.geolocationFine.needsRuntimePermission, isTrue);
-      expect(MiniappPermission.geolocationCoarse.needsRuntimePermission, isTrue);
+      expect(
+        MiniappPermission.geolocationCoarse.needsRuntimePermission,
+        isTrue,
+      );
       // 剪贴板不需要 Android 运行时权限
       expect(MiniappPermission.clipboard.needsRuntimePermission, isFalse);
     });
 
     test('敏感权限覆盖会碰隐私数据/设备的那些，通知除外', () {
-      final Set<MiniappPermission> sensitive =
-          MiniappPermission.sensitiveList.toSet();
+      final Set<MiniappPermission> sensitive = MiniappPermission.sensitiveList
+          .toSet();
       expect(sensitive, contains(MiniappPermission.camera));
       expect(sensitive, contains(MiniappPermission.microphone));
       expect(sensitive, contains(MiniappPermission.geolocationFine));
@@ -169,10 +174,7 @@ void main() {
     });
 
     test('定位归在「位置」分组，不与媒体采集混在一起', () {
-      expect(
-        MiniappPermission.geolocationFine.group,
-        PermissionGroup.location,
-      );
+      expect(MiniappPermission.geolocationFine.group, PermissionGroup.location);
       expect(
         MiniappPermission.geolocationCoarse.group,
         PermissionGroup.location,
@@ -214,10 +216,9 @@ void main() {
       final String js = File('lib/bridge/injected_js.dart').readAsStringSync();
       final String dart = File('lib/bridge/bridge_api.dart').readAsStringSync();
 
-      final Set<String> jsMethods = RegExp(r"invoke\('([A-Za-z0-9_]+)'")
-          .allMatches(js)
-          .map((RegExpMatch m) => m.group(1)!)
-          .toSet();
+      final Set<String> jsMethods = RegExp(
+        r"invoke\('([A-Za-z0-9_]+)'",
+      ).allMatches(js).map((RegExpMatch m) => m.group(1)!).toSet();
       // dispatch 的 case 减去模块 action 的 case，剩下的就是内置 API
       final Set<String> moduleActions = <String>{
         'const',
@@ -239,8 +240,16 @@ void main() {
           .toSet();
 
       expect(jsMethods, isNotEmpty);
-      expect(jsMethods.difference(dartMethods), isEmpty, reason: 'JS 调了但 Dart 没实现');
-      expect(dartMethods.difference(jsMethods), isEmpty, reason: 'Dart 实现了但 JS SDK 没暴露');
+      expect(
+        jsMethods.difference(dartMethods),
+        isEmpty,
+        reason: 'JS 调了但 Dart 没实现',
+      );
+      expect(
+        dartMethods.difference(jsMethods),
+        isEmpty,
+        reason: 'Dart 实现了但 JS SDK 没暴露',
+      );
     });
   });
 
@@ -260,10 +269,14 @@ void main() {
       final WebPermissionAsk mic = WebPermissionAsk.from(
         PermissionRequest(
           origin: WebUri('https://example.com'),
-          resources: <PermissionResourceType>[PermissionResourceType.MICROPHONE],
+          resources: <PermissionResourceType>[
+            PermissionResourceType.MICROPHONE,
+          ],
         ),
       );
-      expect(mic.permissions, <MiniappPermission>[MiniappPermission.microphone]);
+      expect(mic.permissions, <MiniappPermission>[
+        MiniappPermission.microphone,
+      ]);
     });
 
     test('CAMERA_AND_MICROPHONE 一次要问两项，且顺序按枚举固定', () {
@@ -275,17 +288,19 @@ void main() {
           ],
         ),
       );
-      expect(
-        ask.permissions,
-        <MiniappPermission>[MiniappPermission.camera, MiniappPermission.microphone],
-      );
+      expect(ask.permissions, <MiniappPermission>[
+        MiniappPermission.camera,
+        MiniappPermission.microphone,
+      ]);
     });
 
     test('FILE_READ_WRITE → sdcard（手机存储）', () {
       final WebPermissionAsk ask = WebPermissionAsk.from(
         PermissionRequest(
           origin: WebUri('https://example.com'),
-          resources: <PermissionResourceType>[PermissionResourceType.FILE_READ_WRITE],
+          resources: <PermissionResourceType>[
+            PermissionResourceType.FILE_READ_WRITE,
+          ],
         ),
       );
       expect(ask.permissions, <MiniappPermission>[MiniappPermission.sdcard]);
@@ -347,7 +362,9 @@ void main() {
         granted: <MiniappPermission>{MiniappPermission.camera},
       );
       expect(response.action, PermissionResponseAction.GRANT);
-      expect(response.resources, <PermissionResourceType>[PermissionResourceType.CAMERA]);
+      expect(response.resources, <PermissionResourceType>[
+        PermissionResourceType.CAMERA,
+      ]);
     });
 
     test('复合资源只同意一半时整体拒绝（不能偷偷放行另一半）', () {
@@ -385,14 +402,26 @@ void main() {
     test('五种标记的 id 与中文名齐全', () {
       expect(MiniappOrientationX.allIds, hasLength(5));
       expect(MiniappOrientationX.labelOf(MiniappOrientation.landscape), '横屏');
-      expect(MiniappOrientationX.labelOf(MiniappOrientation.portraitReverse), '反向竖屏');
-      expect(MiniappOrientationX.labelOf(MiniappOrientation.landscapeReverse), '反向横屏');
+      expect(
+        MiniappOrientationX.labelOf(MiniappOrientation.portraitReverse),
+        '反向竖屏',
+      );
+      expect(
+        MiniappOrientationX.labelOf(MiniappOrientation.landscapeReverse),
+        '反向横屏',
+      );
       expect(MiniappOrientationX.labelOf(MiniappOrientation.auto), '自动');
     });
 
     test('宽松解析：大小写、横线、反写都能认', () {
-      expect(MiniappOrientationX.parse('landscape'), MiniappOrientation.landscape);
-      expect(MiniappOrientationX.parse('LANDSCAPE'), MiniappOrientation.landscape);
+      expect(
+        MiniappOrientationX.parse('landscape'),
+        MiniappOrientation.landscape,
+      );
+      expect(
+        MiniappOrientationX.parse('LANDSCAPE'),
+        MiniappOrientation.landscape,
+      );
       expect(
         MiniappOrientationX.parse('landscape-reverse'),
         MiniappOrientation.landscapeReverse,
@@ -527,10 +556,10 @@ void main() {
     });
 
     test('setSensitiveDecisionForAll 批量收紧', () async {
-      await permissions.setSensitiveDecisionForAll(
-        <String>['a', 'b'],
-        PermissionDecision.denied,
-      );
+      await permissions.setSensitiveDecisionForAll(<String>[
+        'a',
+        'b',
+      ], PermissionDecision.denied);
       expect(
         permissions.decisionOf('a', MiniappPermission.camera),
         PermissionDecision.denied,
@@ -558,7 +587,10 @@ void main() {
       await permissions.recordUse(app, MiniappPermission.camera);
       await permissions.recordUse(app, MiniappPermission.camera, denied: true);
 
-      final MiniappUsage usage = permissions.usageOf(app, MiniappPermission.camera);
+      final MiniappUsage usage = permissions.usageOf(
+        app,
+        MiniappPermission.camera,
+      );
       expect(usage.count, 2);
       expect(usage.deniedCount, 1);
       expect(usage.totalCalls, 3);
@@ -568,7 +600,10 @@ void main() {
     });
 
     test('没有任何记录时是 empty 且 used=false', () {
-      final MiniappUsage usage = permissions.usageOf(app, MiniappPermission.camera);
+      final MiniappUsage usage = permissions.usageOf(
+        app,
+        MiniappPermission.camera,
+      );
       expect(usage.count, 0);
       expect(usage.deniedCount, 0);
       expect(usage.used, isFalse);
@@ -800,9 +835,10 @@ void main() {
         MiniappPermission.microphone,
       ];
       expect(
-        PermissionPromptService.pendingDeclared(appId: app, declared: declared)
-            .map((MiniappPermission p) => p.id)
-            .toList(),
+        PermissionPromptService.pendingDeclared(
+          appId: app,
+          declared: declared,
+        ).map((MiniappPermission p) => p.id).toList(),
         <String>['camera', 'microphone', 'sdcard'],
       );
 
@@ -818,9 +854,10 @@ void main() {
       );
       // 允许过和拒绝过的都不再出现在待询问清单里
       expect(
-        PermissionPromptService.pendingDeclared(appId: app, declared: declared)
-            .map((MiniappPermission p) => p.id)
-            .toList(),
+        PermissionPromptService.pendingDeclared(
+          appId: app,
+          declared: declared,
+        ).map((MiniappPermission p) => p.id).toList(),
         <String>['sdcard'],
       );
     });
@@ -848,10 +885,8 @@ void main() {
         MiniappPermission.camera,
         PermissionDecision.granted,
       );
-      final PermissionAnswer answer = await PermissionPromptService.instance.ensure(
-        app,
-        MiniappPermission.camera,
-      );
+      final PermissionAnswer answer = await PermissionPromptService.instance
+          .ensure(app, MiniappPermission.camera);
       expect(answer.allowed, isTrue);
     });
 
@@ -861,19 +896,15 @@ void main() {
         MiniappPermission.camera,
         PermissionDecision.denied,
       );
-      final PermissionAnswer answer = await PermissionPromptService.instance.ensure(
-        app,
-        MiniappPermission.camera,
-      );
+      final PermissionAnswer answer = await PermissionPromptService.instance
+          .ensure(app, MiniappPermission.camera);
       expect(answer.allowed, isFalse);
     });
 
     test('ensure：没问过又弹不出弹窗 → 本次拒绝，但绝不写决定', () async {
       // 测试环境里没有 Navigator 覆盖层，走的就是 fail closed 分支
-      final PermissionAnswer answer = await PermissionPromptService.instance.ensure(
-        app,
-        MiniappPermission.camera,
-      );
+      final PermissionAnswer answer = await PermissionPromptService.instance
+          .ensure(app, MiniappPermission.camera);
       expect(answer.allowed, isFalse);
       expect(
         permissions.decisionOf(app, MiniappPermission.camera),
@@ -912,14 +943,12 @@ void main() {
         MiniappPermission.microphone,
         PermissionDecision.denied,
       );
-      final Set<MiniappPermission> granted =
-          await PermissionPromptService.instance.ensureAll(
-        app,
-        <MiniappPermission>[
-          MiniappPermission.camera,
-          MiniappPermission.microphone,
-        ],
-      );
+      final Set<MiniappPermission> granted = await PermissionPromptService
+          .instance
+          .ensureAll(app, <MiniappPermission>[
+            MiniappPermission.camera,
+            MiniappPermission.microphone,
+          ]);
       expect(granted, <MiniappPermission>{MiniappPermission.camera});
     });
   });
@@ -941,7 +970,9 @@ void main() {
     test('桥接层源码里没有任何权限闸门（这一版刻意去掉的）', () async {
       // 这条断言防的是「把旧版的闸门又搬回来」：
       // 一旦有人重新引入按方法查权限再拦截的逻辑，这里会立刻失败。
-      final String source = File('lib/bridge/bridge_api.dart').readAsStringSync();
+      final String source = File(
+        'lib/bridge/bridge_api.dart',
+      ).readAsStringSync();
       expect(source.contains('requestPermission'), isFalse);
       expect(source.contains('permissionService'), isFalse);
       expect(source.contains('_guard('), isFalse);
@@ -965,7 +996,10 @@ void main() {
       expect((result! as Map<String, dynamic>)['orientation'], 'landscape');
       expect(session.orientation, MiniappOrientation.landscape);
 
-      final Object? read = await api.dispatch('getPageOrientation', <String, dynamic>{});
+      final Object? read = await api.dispatch(
+        'getPageOrientation',
+        <String, dynamic>{},
+      );
       expect((read! as Map<String, dynamic>)['orientation'], 'landscape');
       expect((read as Map<String, dynamic>)['label'], '横屏');
     });
@@ -973,7 +1007,9 @@ void main() {
     test('方向标记：非法值报 10001', () async {
       final BridgeApi api = apiFor('a');
       final LemonBridgeException e = await captureBridgeError(
-        () => api.dispatch('setPageOrientation', <String, dynamic>{'orientation': 'sideways'}),
+        () => api.dispatch('setPageOrientation', <String, dynamic>{
+          'orientation': 'sideways',
+        }),
       );
       expect(e.code, BridgeErrorCode.invalidArgument);
     });
@@ -982,14 +1018,20 @@ void main() {
       final MiniappSession session = MiniappSession(appId: 'a', title: 'A');
       final BridgeApi api = apiFor('a', session: session);
 
-      Object? r = await api.dispatch('setKeepScreenOn', <String, dynamic>{'enabled': true});
+      Object? r = await api.dispatch('setKeepScreenOn', <String, dynamic>{
+        'enabled': true,
+      });
       expect((r! as Map<String, dynamic>)['keepScreenOn'], isTrue);
       expect(session.keepScreenOn, isTrue);
 
-      r = await api.dispatch('setKeepScreenOn', <String, dynamic>{'allowScreenOff': false});
+      r = await api.dispatch('setKeepScreenOn', <String, dynamic>{
+        'allowScreenOff': false,
+      });
       expect((r! as Map<String, dynamic>)['keepScreenOn'], isTrue);
 
-      r = await api.dispatch('setKeepScreenOn', <String, dynamic>{'allowScreenOff': true});
+      r = await api.dispatch('setKeepScreenOn', <String, dynamic>{
+        'allowScreenOff': true,
+      });
       expect((r! as Map<String, dynamic>)['keepScreenOn'], isFalse);
       expect(session.keepScreenOn, isFalse);
     });
@@ -1019,7 +1061,9 @@ void main() {
         BridgeErrorCode.notSupported,
       );
       expect(
-        (await captureBridgeError(() => api.dispatch('close', <String, dynamic>{}))).code,
+        (await captureBridgeError(
+          () => api.dispatch('close', <String, dynamic>{}),
+        )).code,
         BridgeErrorCode.notSupported,
       );
     });
@@ -1033,7 +1077,10 @@ void main() {
         onNavigateBack: (int d) async => true,
         onRunInBackground: () async => called = true,
       );
-      final Object? result = await api.dispatch('runInBackground', <String, dynamic>{});
+      final Object? result = await api.dispatch(
+        'runInBackground',
+        <String, dynamic>{},
+      );
       expect(called, isTrue);
       expect((result! as Map<String, dynamic>)['background'], isTrue);
     });
@@ -1086,7 +1133,10 @@ void main() {
       List<String> platforms = const <String>['android', 'ios'],
       List<String> capabilities = const <String>['wasm'],
       List<Map<String, dynamic>> modules = const <Map<String, dynamic>>[
-        <String, dynamic>{'name': 'lemonlite', 'file': 'modules/lemonlite.wasm'},
+        <String, dynamic>{
+          'name': 'lemonlite',
+          'file': 'modules/lemonlite.wasm',
+        },
       ],
     }) => <String, dynamic>{
       'type': 'plugin',
@@ -1131,7 +1181,9 @@ void main() {
 
     test('声明了 wasm 能力却没有模块 → 拒绝', () {
       expect(
-        () => BundleManifest.parse(pluginJson(modules: const <Map<String, dynamic>>[])),
+        () => BundleManifest.parse(
+          pluginJson(modules: const <Map<String, dynamic>>[]),
+        ),
         throwsA(isA<BundleManifestException>()),
       );
     });
@@ -1139,9 +1191,11 @@ void main() {
     test('wasm 模块缺 name / file → 拒绝', () {
       expect(
         () => BundleManifest.parse(
-          pluginJson(modules: <Map<String, dynamic>>[
-            <String, dynamic>{'name': 'x'},
-          ]),
+          pluginJson(
+            modules: <Map<String, dynamic>>[
+              <String, dynamic>{'name': 'x'},
+            ],
+          ),
         ),
         throwsA(isA<BundleManifestException>()),
       );
@@ -1150,7 +1204,8 @@ void main() {
 
   group('随包附带的 wasm 插件载荷', () {
     /// 插件包里的 wasm 路径（不再放在 assets/wasm 下 —— 它已经不是宿主的一部分了）
-    const String wasmPath = 'assets/plugins/lemonlite-wasm/modules/lemonlite.wasm';
+    const String wasmPath =
+        'assets/plugins/lemonlite-wasm/modules/lemonlite.wasm';
     const String manifestPath = 'assets/plugins/lemonlite-wasm/lemonlite.json';
 
     test('插件包文件存在，且 pubspec 声明了它们', () {

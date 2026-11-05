@@ -19,14 +19,24 @@ import multer from 'multer';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
-import { join, resolve, sep } from 'node:path';
-import { config } from '../config.js';
-import { isZipBuffer, packagePath, packagesRoot } from '../lib/package_store.js';
-import { execute, queryOne } from '../db.js';
+import {
+  absoluteAssetUrl,
+  isZipBuffer,
+  packageDownloadUrl,
+  packagePath,
+} from '../lib/package_store.js';
+import { execute, query, queryOne } from '../db.js';
 import { ApiError, sendOk, wrap } from '../lib/http.js';
-import { currentUserId, requireAuth } from '../lib/auth.js';
+import { requireAuth } from '../lib/auth.js';
 
 export const packageRouter = Router();
+
+/** 请求的服务根地址（把相对路径补成绝对地址用） */
+function originOf(req) {
+  const proto = req.get('x-forwarded-proto') || req.protocol || 'http';
+  const host = req.get('x-forwarded-host') || req.get('host');
+  return host ? `${proto}://${host}` : '';
+}
 
 /** 包上限。小程序是 HTML/JS/CSS，20MB 已经很宽松。 */
 const MAX_PACKAGE_BYTES = 20 * 1024 * 1024;
@@ -205,9 +215,8 @@ packageRouter.post(
     if (ids.length === 0) return sendOk(res, { updates: [] });
 
     const placeholders = ids.map(() => '?').join(',');
-    const { query } = await import('../db.js');
     const rows = await query(
-      `SELECT id, name, version, package_url, package_entry,
+      `SELECT id, name, version, icon, package_url, package_entry,
               package_sha256, package_bytes, updated_at
          FROM apps
         WHERE id IN (${placeholders}) AND deleted_at IS NULL
@@ -217,6 +226,7 @@ packageRouter.post(
 
     const latest = new Map(rows.map((r) => [r.id, r]));
     const updates = [];
+    const origin = originOf(req);
 
     for (const item of installed) {
       const id = String(item?.id ?? '').trim();
@@ -231,15 +241,64 @@ packageRouter.post(
         name: row.name,
         installedVersion: have,
         latestVersion: row.version,
-        packageUrl: `${req.protocol}://${req.get('host')}/${row.package_url}`,
+        // 与 feed / detail 用同一个函数：地址算错的表现是「能提示更新、点了 404」
+        packageUrl: packageDownloadUrl(row, origin),
         packageEntry: row.package_entry || 'index.html',
         packageSha256: row.package_sha256 || '',
         packageBytes: Number(row.package_bytes) || 0,
+        icon: absoluteAssetUrl(row.icon, origin),
         updatedAt: row.updated_at,
       });
     }
 
     sendOk(res, { updates, checked: ids.length });
+  }),
+);
+
+// ================================================================ 单个版本
+
+/**
+ * GET /api/market/:appId/version
+ *
+ * 「每次打开一个小程序都问一次有没有新版本」用的接口。
+ * 只回版本与包信息（附带图标与名字），不下载 —— 客户端拿它跟本地已装版本
+ * 比一下就能决定是直接打开还是先提示更新。
+ *
+ * 为什么单独开一个接口而不是复用 /updates：
+ *   /updates 是批量（一次问全部已装应用），这一条是单发（打开某个应用时问）。
+ *   单发不带请求体、可以被 HTTP 缓存，语义也更清楚。
+ *
+ * 返回里的 packageUrl 一定走下载接口（见 packageDownloadUrl）；
+ * 没有上架包时 hasPackage=false、packageUrl 为空。
+ */
+packageRouter.get(
+  '/:appId/version',
+  wrap(async (req, res) => {
+    const appId = String(req.params.appId || '').trim();
+    if (!appId) throw ApiError.badRequest('bad_request', '缺少应用 id');
+
+    const row = await queryOne(
+      `SELECT id, name, version, icon, package_url, package_entry,
+              package_sha256, package_bytes, updated_at
+         FROM apps WHERE id = ? AND deleted_at IS NULL`,
+      [appId],
+    );
+    if (!row) throw ApiError.notFound('没有这个应用');
+
+    const origin = originOf(req);
+    const hasPackage = Boolean(row.package_url);
+    sendOk(res, {
+      id: row.id,
+      name: row.name,
+      version: row.version,
+      icon: absoluteAssetUrl(row.icon, origin),
+      hasPackage,
+      packageUrl: hasPackage ? packageDownloadUrl(row, origin) : '',
+      packageEntry: row.package_entry || 'index.html',
+      packageSha256: row.package_sha256 || '',
+      packageBytes: Number(row.package_bytes) || 0,
+      updatedAt: row.updated_at,
+    });
   }),
 );
 
@@ -256,7 +315,7 @@ packageRouter.get(
   wrap(async (req, res) => {
     const appId = String(req.params.appId || '').trim();
     const row = await queryOne(
-      `SELECT id, name, version, package_url, package_entry,
+      `SELECT id, name, version, icon, package_url, package_entry,
               package_sha256, package_bytes, updated_at
          FROM apps WHERE id = ? AND deleted_at IS NULL`,
       [appId],
@@ -266,6 +325,7 @@ packageRouter.get(
       return sendOk(res, {
         id: row.id,
         version: row.version,
+        icon: absoluteAssetUrl(row.icon, originOf(req)),
         hasPackage: false,
       });
     }
@@ -273,8 +333,10 @@ packageRouter.get(
       id: row.id,
       name: row.name,
       version: row.version,
+      icon: absoluteAssetUrl(row.icon, originOf(req)),
       hasPackage: true,
-      packageUrl: `${req.protocol}://${req.get('host')}/${row.package_url}`,
+      // 与 feed / updates / version 用同一个函数，避免「meta 给的地址下载不了」
+      packageUrl: packageDownloadUrl(row, originOf(req)),
       packageEntry: row.package_entry || 'index.html',
       packageSha256: row.package_sha256 || '',
       packageBytes: Number(row.package_bytes) || 0,

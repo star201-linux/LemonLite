@@ -8,10 +8,10 @@
 //   把这类入口收进二级菜单，一是避免在主调试页误触，
 //   二是后面要加更多测试用例（本地 HTML、指定 appId、注入自定义主题…）时有地方放。
 //
-// 三个入口：
-//   1. 内置示例小程序 —— 读 assets，离线可用，用来验证 JSBridge 与主题 CSS 变量注入
-//   2. SDK 自检 —— 把每个受控能力真调一遍
-//   3. 本地包目录 —— 直接指定一个**已解压**的小程序目录（file:// 打开）
+// 两个入口（这一版不再内置示例小程序：默认市场是空的，
+// 小程序只能由管理员在服务端添加，调试时用本地包目录）：
+//   1. SDK 自检 —— 把每个受控能力真调一遍
+//   2. 本地包目录 —— 直接指定一个**已解压**的小程序目录（file:// 打开）
 //
 // 0.6 起不再支持「自定义 URL」：小程序只能从本地包打开，
 // 远程网页那条路已经删了（见 data/services/miniapp_package_service.dart）。
@@ -25,14 +25,13 @@ import 'package:path/path.dart' as p;
 import '../../core/autotest.dart';
 import '../../data/services/miniapp_package_service.dart';
 import '../miniapp/miniapp_host.dart';
-import '../miniapp/miniapp_page.dart';
 
 class MiniappTestPage extends StatefulWidget {
   const MiniappTestPage({super.key});
 
   static Route<void> route() => MaterialPageRoute<void>(
-        builder: (BuildContext context) => const MiniappTestPage(),
-      );
+    builder: (BuildContext context) => const MiniappTestPage(),
+  );
 
   @override
   State<MiniappTestPage> createState() => _MiniappTestPageState();
@@ -79,17 +78,6 @@ class _MiniappTestPageState extends State<MiniappTestPage> {
 
   // ------------------------------------------------------------ 动作
 
-  void _openDemo() {
-    // 走 MiniappHost 而不是 push 路由：这样它能进「后台应用」，
-    // 也能用悬浮菜单里的权限管理（开发者调试时这两件事都要能试）。
-    MiniappHost.instance.open(
-      appId: 'lemonlite.demo',
-      title: '示例小程序',
-      localAsset: kDemoMiniappAsset,
-      isTransient: true,
-    );
-  }
-
   /// SDK 自检：把每个受控能力真调一遍，并把报告写进它自己的文件沙箱。
   /// 排障时比"一个个手点"快得多，也能一眼看出是权限被拒还是能力本身坏了。
   void _openSelftest() {
@@ -111,7 +99,8 @@ class _MiniappTestPageState extends State<MiniappTestPage> {
 
     setState(() => _urlError = null);
     // appId 用目录名：不同目录的调试小程序共用 storage 会串数据
-    final String appId = 'dev.local.${p.basename(value).replaceAll(RegExp(r'[^\w.\-]'), '_')}';
+    final String appId =
+        'dev.local.${p.basename(value).replaceAll(RegExp(r'[^\w.\-]'), '_')}';
     MiniappHost.instance.open(
       appId: appId,
       title: _titleOf(value),
@@ -150,15 +139,19 @@ class _MiniappTestPageState extends State<MiniappTestPage> {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  Icon(Icons.science_outlined,
-                      size: 20, color: scheme.onTertiaryContainer),
+                  Icon(
+                    Icons.science_outlined,
+                    size: 20,
+                    color: scheme.onTertiaryContainer,
+                  ),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
                       '调试用入口。这里打开的页面同样走完整的 WebView 承载 + JSBridge，'
                       '可以调 window.lemonlite 下的全部 API。',
-                      style: textTheme.bodySmall
-                          ?.copyWith(color: scheme.onTertiaryContainer),
+                      style: textTheme.bodySmall?.copyWith(
+                        color: scheme.onTertiaryContainer,
+                      ),
                     ),
                   ),
                 ],
@@ -166,99 +159,76 @@ class _MiniappTestPageState extends State<MiniappTestPage> {
             ),
           ),
 
-          // ---------------- 内置示例 ----------------
-          _section(
-            context,
-            '内置示例',
-            <Widget>[
-              ListTile(
-                leading: const Icon(Icons.widgets_outlined),
-                title: const Text('打开内置示例小程序'),
-                subtitle: const Text(
-                  '读 assets 里的 HTML，不联网也能跑；用来验证 JSBridge 与主题注入',
-                ),
-                isThreeLine: false,
-                trailing: const Icon(Icons.chevron_right),
-                onTap: _openDemo,
-              ),
-            ],
-          ),
-
           // ---------------- SDK 自检 ----------------
-          _section(
-            context,
-            'SDK 自检',
-            <Widget>[
-              ListTile(
-                leading: const Icon(Icons.fact_check_outlined),
-                title: const Text('运行 SDK 自检'),
-                subtitle: const Text(
-                  '把音量/亮度/方向/熄屏/文件/WASM/后台运行逐个真调一遍，'
-                  '结果写进该小程序的文件沙箱',
-                ),
-                isThreeLine: true,
-                trailing: const Icon(Icons.chevron_right),
-                onTap: _openSelftest,
+          _section(context, 'SDK 自检', <Widget>[
+            ListTile(
+              leading: const Icon(Icons.fact_check_outlined),
+              title: const Text('运行 SDK 自检'),
+              subtitle: const Text(
+                '把音量/亮度/方向/熄屏/文件/WASM/后台运行逐个真调一遍，'
+                '结果写进该小程序的文件沙箱',
               ),
-            ],
-          ),
+              isThreeLine: true,
+              trailing: const Icon(Icons.chevron_right),
+              onTap: _openSelftest,
+            ),
+          ]),
 
           // ---------------- 本地包目录 ----------------
           //
           // 0.6 起小程序只能从本地包打开，所以这里填的是**目录**而不是 URL。
           // 典型用法：把 zip 解压到某个目录，或者直接指向
           //   <应用私有目录>/miniapps/<appId>/<version>/
-          _section(
-            context,
-            '本地包目录',
-            <Widget>[
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                child: TextField(
-                  controller: _urlController,
-                  autocorrect: false,
-                  maxLines: 1,
-                  decoration: InputDecoration(
-                    labelText: '小程序目录（绝对路径）',
-                    hintText: '/data/user/0/xyz.star201.lemonlite/files/miniapps/xxx/1.0.0',
-                    errorText: _urlError,
-                    helperText: '目录里必须有 index.html；用 file:// 打开，不需要联网',
-                    helperMaxLines: 2,
-                    border: const OutlineInputBorder(),
-                    prefixIcon: const Icon(Icons.folder_open),
-                    suffixIcon: IconButton(
-                      tooltip: '清空',
-                      icon: const Icon(Icons.close),
-                      onPressed: () => setState(() {
-                        _urlController.clear();
-                        _urlError = null;
-                      }),
-                    ),
-                  ),
-                  onChanged: (_) => setState(() => _urlError = null),
-                  onSubmitted: (_) => _openCustom(),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: _openCustom,
-                    icon: const Icon(Icons.open_in_new),
-                    label: const Text('打开'),
+          _section(context, '本地包目录', <Widget>[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: TextField(
+                controller: _urlController,
+                autocorrect: false,
+                maxLines: 1,
+                decoration: InputDecoration(
+                  labelText: '小程序目录（绝对路径）',
+                  hintText:
+                      '/data/user/0/xyz.star201.lemonlite/files/miniapps/xxx/1.0.0',
+                  errorText: _urlError,
+                  helperText: '目录里必须有 index.html；用 file:// 打开，不需要联网',
+                  helperMaxLines: 2,
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.folder_open),
+                  suffixIcon: IconButton(
+                    tooltip: '清空',
+                    icon: const Icon(Icons.close),
+                    onPressed: () => setState(() {
+                      _urlController.clear();
+                      _urlError = null;
+                    }),
                   ),
                 ),
+                onChanged: (_) => setState(() => _urlError = null),
+                onSubmitted: (_) => _openCustom(),
               ),
-            ],
-          ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: _openCustom,
+                  icon: const Icon(Icons.open_in_new),
+                  label: const Text('打开'),
+                ),
+              ),
+            ),
+          ]),
 
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
             child: Text(
               '注意：Android 9+ 默认禁止明文 HTTP。release 包只能开 https 地址；'
               '要连局域网里的 http 服务，请用 debug 包（生成脚本已为 debug 放开明文）。',
-              style: textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+              style: textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
             ),
           ),
         ],
@@ -277,8 +247,8 @@ class _MiniappTestPageState extends State<MiniappTestPage> {
             child: Text(
               title,
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
+                color: Theme.of(context).colorScheme.primary,
+              ),
             ),
           ),
           Card.outlined(

@@ -53,7 +53,10 @@ enum DownloadStatus {
 
   /// 宽松解析：认不出来就回落到 failed —— 一个不认识的系统状态
   /// 更可能是出错，而不是"完成了"。
-  static DownloadStatus parse(Object? raw, {DownloadStatus fallback = DownloadStatus.failed}) {
+  static DownloadStatus parse(
+    Object? raw, {
+    DownloadStatus fallback = DownloadStatus.failed,
+  }) {
     final String value = raw?.toString().trim().toLowerCase() ?? '';
     for (final DownloadStatus status in values) {
       if (status.id == value) return status;
@@ -111,7 +114,8 @@ class DownloadTask {
   }
 
   String get sizeLabel {
-    if (bytesTotal > 0) return '${formatBytes(bytesReceived)} / ${formatBytes(bytesTotal)}';
+    if (bytesTotal > 0)
+      return '${formatBytes(bytesReceived)} / ${formatBytes(bytesTotal)}';
     if (bytesReceived > 0) return formatBytes(bytesReceived);
     return '未知大小';
   }
@@ -169,7 +173,10 @@ class DownloadTask {
       createdAt: createdAtMillis > 0
           ? DateTime.fromMillisecondsSinceEpoch(createdAtMillis)
           : DateTime.now(),
-      status: DownloadStatus.parse(json['status'], fallback: DownloadStatus.failed),
+      status: DownloadStatus.parse(
+        json['status'],
+        fallback: DownloadStatus.failed,
+      ),
       bytesReceived: (json['bytesReceived'] as num?)?.toInt() ?? 0,
       bytesTotal: (json['bytesTotal'] as num?)?.toInt() ?? 0,
       reason: asString(json['reason']),
@@ -211,7 +218,8 @@ class DownloadService extends ChangeNotifier {
   /// 在 main()、SettingsService.init() 之后调用。
   ///
   /// 刻意同步：初始化只读 SharedPreferences，没有网络/文件扫描。
-  static DownloadService init() => _instance = DownloadService._(SettingsService.instance);
+  static DownloadService init() =>
+      _instance = DownloadService._(SettingsService.instance);
 
   /// 与 Kotlin 侧 DownloadBridge.CHANNEL_NAME 逐字一致。
   static const MethodChannel channel = MethodChannel('lemonlite/downloads');
@@ -226,20 +234,23 @@ class DownloadService extends ChangeNotifier {
   /// 查得太密没意义，1 秒足够让进度条看起来是连续的。
   static const Duration pollInterval = Duration(seconds: 1);
 
-  static const String _legacyWritePermission = 'android.permission.WRITE_EXTERNAL_STORAGE';
+  static const String _legacyWritePermission =
+      'android.permission.WRITE_EXTERNAL_STORAGE';
 
   List<DownloadTask> _tasks = <DownloadTask>[];
   Timer? _pollTimer;
   int? _sdkInt;
 
   /// 是否支持（只有 Android 有下载通道）
-  bool get isSupported => !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+  bool get isSupported =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
   /// 全部记录，最新的在前
   List<DownloadTask> get tasks => List<DownloadTask>.unmodifiable(_tasks);
 
-  List<DownloadTask> get activeTasks =>
-      _tasks.where((DownloadTask t) => t.status.isActive).toList(growable: false);
+  List<DownloadTask> get activeTasks => _tasks
+      .where((DownloadTask t) => t.status.isActive)
+      .toList(growable: false);
 
   bool get hasActive => activeTasks.isNotEmpty;
 
@@ -267,8 +278,7 @@ class DownloadService extends ChangeNotifier {
   }
 
   /// 完整的下载目录展示（`Download/` 或 `Download/LemonLite/`）
-  String get directoryLabel =>
-      subDir.isEmpty ? 'Download' : 'Download/$subDir';
+  String get directoryLabel => subDir.isEmpty ? 'Download' : 'Download/$subDir';
 
   // ------------------------------------------------------------ 初始化
 
@@ -293,7 +303,8 @@ class DownloadService extends ChangeNotifier {
         if (item is! Map) continue;
         final DownloadTask? task = DownloadTask.fromJson(
           item.map<String, dynamic>(
-            (Object? k, Object? v) => MapEntry<String, dynamic>(k.toString(), v),
+            (Object? k, Object? v) =>
+                MapEntry<String, dynamic>(k.toString(), v),
           ),
         );
         if (task != null) loaded.add(task);
@@ -374,14 +385,14 @@ class DownloadService extends ChangeNotifier {
     final String trimmed = url.trim();
     final Uri? uri = Uri.tryParse(trimmed);
     if (uri == null || !(uri.scheme == 'http' || uri.scheme == 'https')) {
-      throw const DownloadException('只能下载 http(s) 链接；blob: / data: 这类地址请让页面改成直接给出文件地址');
+      throw const DownloadException(
+        '只能下载 http(s) 链接；blob: / data: 这类地址请让页面改成直接给出文件地址',
+      );
     }
 
     final bool allowed = await ensureLegacyPermission();
     if (!allowed) {
-      throw const DownloadException(
-        '没有存储权限，无法写入下载目录。请到系统设置里允许「存储」权限后重试。',
-      );
+      throw const DownloadException('没有存储权限，无法写入下载目录。请到系统设置里允许「存储」权限后重试。');
     }
 
     final String name = deriveFileName(
@@ -391,13 +402,14 @@ class DownloadService extends ChangeNotifier {
     );
 
     try {
-      final Object? raw = await channel.invokeMethod<Object?>('enqueue', <String, Object?>{
-        'url': trimmed,
-        'fileName': name,
-        'subDir': subDir,
-        'mimeType': mimeType ?? '',
-        if (headers != null && headers.isNotEmpty) 'headers': headers,
-      });
+      final Object? raw = await channel
+          .invokeMethod<Object?>('enqueue', <String, Object?>{
+            'url': trimmed,
+            'fileName': name,
+            'subDir': subDir,
+            'mimeType': mimeType ?? '',
+            if (headers != null && headers.isNotEmpty) 'headers': headers,
+          });
       if (raw is! Map) {
         throw const DownloadException('系统下载器返回了无法识别的结果');
       }
@@ -436,12 +448,14 @@ class DownloadService extends ChangeNotifier {
     final List<DownloadTask> next = List<DownloadTask>.of(_tasks);
     for (int i = 0; i < next.length; i++) {
       final DownloadTask task = next[i];
-      if (!task.status.isActive && task.status != DownloadStatus.canceled) continue;
+      if (!task.status.isActive && task.status != DownloadStatus.canceled)
+        continue;
       if (task.status == DownloadStatus.canceled) continue;
       try {
-        final Object? raw = await channel.invokeMethod<Object?>('query', <String, Object?>{
-          'id': task.id,
-        });
+        final Object? raw = await channel.invokeMethod<Object?>(
+          'query',
+          <String, Object?>{'id': task.id},
+        );
         if (raw is! Map) continue;
         if (raw['found'] != true) {
           // 系统里已经没有这个任务（清了下载器数据/重装）：标记失败并留痕
@@ -452,9 +466,14 @@ class DownloadService extends ChangeNotifier {
           changed = true;
           continue;
         }
-        final DownloadStatus status = DownloadStatus.parse(raw['status'], fallback: task.status);
-        final int received = (raw['bytesReceived'] as num?)?.toInt() ?? task.bytesReceived;
-        final int totalRaw = (raw['bytesTotal'] as num?)?.toInt() ?? task.bytesTotal;
+        final DownloadStatus status = DownloadStatus.parse(
+          raw['status'],
+          fallback: task.status,
+        );
+        final int received =
+            (raw['bytesReceived'] as num?)?.toInt() ?? task.bytesReceived;
+        final int totalRaw =
+            (raw['bytesTotal'] as num?)?.toInt() ?? task.bytesTotal;
         final int total = totalRaw < 0 ? 0 : totalRaw;
         final String reason = asString(raw['reasonText']);
         final String localUri = asString(raw['localUri']);
@@ -527,7 +546,10 @@ class DownloadService extends ChangeNotifier {
   Future<bool> _nativeRemove(int id) async {
     if (!isSupported) return false;
     try {
-      final bool? ok = await channel.invokeMethod<bool>('remove', <String, Object?>{'id': id});
+      final bool? ok = await channel.invokeMethod<bool>(
+        'remove',
+        <String, Object?>{'id': id},
+      );
       return ok ?? false;
     } on PlatformException catch (e) {
       lemonLog('Download', '删除 #$id 失败：${e.message}');
@@ -541,7 +563,10 @@ class DownloadService extends ChangeNotifier {
   Future<bool> open(int id) async {
     if (!isSupported) return false;
     try {
-      final bool? ok = await channel.invokeMethod<bool>('open', <String, Object?>{'id': id});
+      final bool? ok = await channel.invokeMethod<bool>(
+        'open',
+        <String, Object?>{'id': id},
+      );
       return ok ?? false;
     } on PlatformException catch (e) {
       lemonLog('Download', '打开 #$id 失败：${e.message}');
@@ -645,7 +670,13 @@ class DownloadService extends ChangeNotifier {
       _fromUrl(url),
     ];
     for (final String? candidate in candidates) {
-      final String cleaned = sanitizeFileName(candidate ?? '');
+      // 先只取「路径最后一段」再清洗：suggested 里可能带 `../../etc/passwd`
+      // 这种路径，直接清洗会得到 `_.._etc_passwd`（安全但不像个文件名）。
+      // 注意 sanitizeFileName 本身仍然负责「把分隔符换成 _」，两者职责不同。
+      final String raw = (candidate ?? '').replaceAll('\\', '/');
+      final int slash = raw.lastIndexOf('/');
+      final String leaf = slash >= 0 ? raw.substring(slash + 1) : raw;
+      final String cleaned = sanitizeFileName(leaf);
       if (cleaned.isNotEmpty) return _withExtension(cleaned, mimeType);
     }
     final int stamp = (now ?? DateTime.now()).millisecondsSinceEpoch;
@@ -665,7 +696,9 @@ class DownloadService extends ChangeNotifier {
     if (name == '_' || name == '-') return '';
     if (name.length > 200) {
       final int dot = name.lastIndexOf('.');
-      final String ext = dot > 0 && name.length - dot <= 10 ? name.substring(dot) : '';
+      final String ext = dot > 0 && name.length - dot <= 10
+          ? name.substring(dot)
+          : '';
       name = name.substring(0, 200 - ext.length) + ext;
     }
     return name;
@@ -687,7 +720,10 @@ class DownloadService extends ChangeNotifier {
         // 编码坏了就退回普通 filename
       }
     }
-    final RegExp plain = RegExp(r'filename\s*=\s*"([^"]*)"', caseSensitive: false);
+    final RegExp plain = RegExp(
+      r'filename\s*=\s*"([^"]*)"',
+      caseSensitive: false,
+    );
     final RegExpMatch? quoted = plain.firstMatch(raw);
     if (quoted != null) return quoted.group(1);
     final RegExp bare = RegExp(r'filename\s*=\s*([^;]+)', caseSensitive: false);
@@ -703,10 +739,10 @@ class DownloadService extends ChangeNotifier {
           .where((String s) => s.isNotEmpty)
           .toList(growable: false);
       if (segments.isEmpty) return null;
-      final String last = Uri.decodeComponent(segments.last);
-      // 以 / 结尾的地址最后一个 segment 是文件名的情况很少，但没有扩展名时
-      // 也接受 —— 后续会按 MIME 补一个。
-      return last;
+      // pathSegments **已经做过百分号解码**，这里不能再 decodeComponent 一次：
+      // 二次解码遇到中文会直接抛 Illegal percent encoding（旧实现的 bug），
+      // 结果所有带中文文件名的 URL 都会退化成时间戳文件名。
+      return segments.last;
     } catch (_) {
       return null;
     }

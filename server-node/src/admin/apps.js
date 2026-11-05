@@ -10,8 +10,10 @@
 
 import { Router } from 'express';
 import multer from 'multer';
+import { config } from '../config.js';
 import { execute, query, queryOne } from '../db.js';
 import { ApiError, sendOk, wrap } from '../lib/http.js';
+import { storeIcon } from '../lib/icon_store.js';
 import { listPackages, removePackage, storePackage } from '../lib/package_store.js';
 import { APP_ID_RE, VERSION_RE, intIn, parseCategoryPairs, parseJsonArray } from './shared.js';
 
@@ -24,6 +26,23 @@ const uploadZip = multer({
   fileFilter: (_req, file, cb) => {
     if (!/\.zip$/i.test(file.originalname)) {
       return cb(ApiError.badRequest('bad_package', '小程序包必须是 .zip'));
+    }
+    return cb(null, true);
+  },
+});
+
+/**
+ * 图标上传。真正是不是图片由 lib/icon_store.js 按**文件头**判断，
+ * 这里只挡明显不对的扩展名（省一次内存拷贝）。
+ */
+const uploadIcon = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: config.icons.maxBytes, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (!/\.(png|jpe?g|webp|gif)$/i.test(file.originalname)) {
+      return cb(
+        ApiError.badRequest('bad_image', '图标只支持 PNG / JPEG / WebP / GIF'),
+      );
     }
     return cb(null, true);
   },
@@ -371,5 +390,43 @@ appsRouter.delete(
       );
     }
     sendOk(res, { removed });
+  }),
+);
+
+// ================================================================ 图标
+
+/**
+ * POST /api/apps/:id/icon
+ * multipart：file（png / jpg / webp / gif，≤2MB）
+ *
+ * 存到 icons/<appId>.<ext> 并把 apps.icon 写成相对路径。
+ * 客户端拿到的是「相对地址」，按服务端地址解析 —— 换域名时不用改数据。
+ *
+ * 与「图标 URL」输入框并存：管理员也可以填一个外部 https 地址，
+ * 这时这里不参与，客户端会直接下载那个地址（并缓存在本机）。
+ */
+appsRouter.post(
+  '/api/apps/:id/icon',
+  uploadIcon.single('file'),
+  wrap(async (req, res) => {
+    const id = String(req.params.id ?? '').trim();
+    const app = await queryOne('SELECT id FROM apps WHERE id = ?', [id]);
+    if (!app) throw ApiError.notFound('没有这个应用');
+    if (!req.file?.buffer?.length) {
+      throw ApiError.badRequest('no_file', '没有收到图片文件（字段名应为 file）');
+    }
+
+    const stored = await storeIcon({ appId: id, buffer: req.file.buffer });
+    await execute('UPDATE apps SET icon = ? WHERE id = ?', [stored.relUrl, id]);
+
+    sendOk(res, {
+      appId: id,
+      icon: stored.relUrl,
+      // 面板里直接能看到可访问的地址（相对路径在 <img> 里也能用，
+      // 但完整地址更不容易让人困惑）
+      url: `${req.protocol}://${req.get('host')}/${stored.relUrl}`,
+      bytes: stored.bytes,
+      mime: stored.mime,
+    });
   }),
 );

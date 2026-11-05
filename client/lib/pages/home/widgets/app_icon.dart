@@ -5,6 +5,12 @@
 //   2. 加载中 → 转圈占位（避免布局跳动）
 //   3. 没有图标 / 加载失败 → 用名称首字 + 主题色生成占位图标
 // M3 的 App 图标习惯是「圆角方形」，所以统一用 28% 圆角裁切。
+//
+// 优先用**本地缓存的图标**（IconCacheService 落盘的图片）：
+// 应用管理里显示的是已安装小程序，图标已经在装的时候缓存好了，
+// 这时不该再走一次网络 —— 断网时也应该有图标。没有本地缓存才退回网络。
+
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -13,12 +19,19 @@ class AppIcon extends StatelessWidget {
     super.key,
     required this.name,
     this.iconUrl,
+    this.localPath,
     this.size = 56,
     this.heroTag,
   });
 
   final String name;
+
+  /// 远程图标地址（没有本地缓存时用）
   final String? iconUrl;
+
+  /// 本地缓存的图标文件路径。存在就优先用它。
+  final String? localPath;
+
   final double size;
 
   /// 共享元素转场的标签（列表 → 详情）。null 表示不参与转场。
@@ -28,6 +41,7 @@ class AppIcon extends StatelessWidget {
   Widget build(BuildContext context) {
     final ColorScheme scheme = Theme.of(context).colorScheme;
     final String? url = iconUrl;
+    final String? local = localPath;
     final String? tag = heroTag;
 
     // 图标在界面上只有几十 dp，但市场里的原图往往是 512/1024 的。
@@ -37,33 +51,47 @@ class AppIcon extends StatelessWidget {
     final double dpr = MediaQuery.devicePixelRatioOf(context);
     final int decodeSize = (size * dpr).clamp(1.0, 4096.0).round();
 
+    final Widget image =
+        (local != null && local.isNotEmpty && File(local).existsSync())
+        ? Image.file(
+            File(local),
+            // 本地文件读取失败（被清理 / 写到一半）时退回网络，再退回占位图
+            errorBuilder: (BuildContext c, Object e, StackTrace? s) =>
+                _networkOrFallback(url, scheme, decodeSize),
+            cacheWidth: decodeSize,
+            cacheHeight: decodeSize,
+            fit: BoxFit.cover,
+            gaplessPlayback: true,
+          )
+        : _networkOrFallback(url, scheme, decodeSize);
+
     final Widget icon = ClipRRect(
       borderRadius: BorderRadius.circular(size * 0.28),
-      child: SizedBox(
-        width: size,
-        height: size,
-        child: (url == null || url.isEmpty)
-            ? _fallback(scheme)
-            : Image.network(
-                url,
-                // 图标加载失败不应该让卡片报错，直接退回占位图标
-                errorBuilder: (BuildContext c, Object e, StackTrace? s) =>
-                    _fallback(scheme),
-                loadingBuilder:
-                    (BuildContext c, Widget child, ImageChunkEvent? progress) {
-                      if (progress == null) return child;
-                      return _fallback(scheme, loading: true);
-                    },
-                cacheWidth: decodeSize,
-                cacheHeight: decodeSize,
-                fit: BoxFit.cover,
-                gaplessPlayback: true,
-              ),
-      ),
+      child: SizedBox(width: size, height: size, child: image),
     );
 
     if (tag == null) return icon;
     return Hero(tag: tag, child: icon);
+  }
+
+  /// 有远程地址就走网络，否则占位图。
+  Widget _networkOrFallback(String? url, ColorScheme scheme, int decodeSize) {
+    if (url == null || url.isEmpty) return _fallback(scheme);
+    return Image.network(
+      url,
+      // 图标加载失败不应该让卡片报错，直接退回占位图标
+      errorBuilder: (BuildContext c, Object e, StackTrace? s) =>
+          _fallback(scheme),
+      loadingBuilder:
+          (BuildContext c, Widget child, ImageChunkEvent? progress) {
+            if (progress == null) return child;
+            return _fallback(scheme, loading: true);
+          },
+      cacheWidth: decodeSize,
+      cacheHeight: decodeSize,
+      fit: BoxFit.cover,
+      gaplessPlayback: true,
+    );
   }
 
   Widget _fallback(ColorScheme scheme, {bool loading = false}) {

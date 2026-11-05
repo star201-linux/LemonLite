@@ -2,14 +2,20 @@
 //
 // 框架级「权限」定义。
 //
-// 这一版把「权限」收窄成**浏览器的受控资源**：摄像头、麦克风、文件系统访问。
+// 权限分两类：
 //
-// 为什么是这三个而不是别的：小程序就是 WebView 里的网页，它能拿到的受控资源
-// 由 Chromium 决定，网页请求它们的唯一途径是标准 Web API
-// （`getUserMedia()`、File System Access API…）。宿主该做的是在 Chromium
-// 弹出默认授权框之前把它拦下来，换成自己的权限模型 —— 拦截点见
-// bridge/web_permission.dart，采集本身完全交给 Chromium，
-// 宿主不写任何原生采集代码。
+//   1) **浏览器的受控资源**：摄像头、麦克风、定位、剪贴板、手机存储。
+//      小程序就是 WebView 里的网页，网页请求它们的途径是标准 Web API
+//      （`getUserMedia()`、`navigator.geolocation`、File System Access API…）。
+//      宿主在 Chromium 弹出默认授权框之前把它拦下来，换成自己的权限模型 ——
+//      拦截点见 bridge/web_permission.dart。
+//
+//   2) **宿主原生能力**：蓝牙、NFC。这些不是浏览器标准 API（Android WebView
+//      没有 Web Bluetooth / Web NFC），小程序只能通过 JSBridge 的
+//      `lemonlite.bluetooth.*` / `lemonlite.nfc.*` 调用。桥接层在真正调用
+//      原生通道之前同样会过这一道权限确认 —— **小程序一请求就先弹框**，
+//      不需要等系统层，也不会因为「Android 没要求运行时权限」就静默放行
+//      （NFC 就是这种情况：系统不需要授权，但宿主仍然要问用户）。
 //
 // 之前那份清单把音量、亮度、屏幕方向、后台运行也当成权限来管，那是不对的：
 // Android 本来就不禁止应用调整音量与亮度，把它们摆在权限管理器里只会让用户
@@ -42,6 +48,7 @@ enum PermissionRisk {
 enum PermissionGroup {
   media('媒体采集'),
   location('位置'),
+  connectivity('连接与近场'),
   storage('文件访问');
 
   const PermissionGroup(this.label);
@@ -104,20 +111,28 @@ class PermissionAnswer {
   final bool remember;
 
   /// 只允许这一次
-  static const PermissionAnswer allowOnce =
-      PermissionAnswer(allowed: true, remember: false);
+  static const PermissionAnswer allowOnce = PermissionAnswer(
+    allowed: true,
+    remember: false,
+  );
 
   /// 只拒绝这一次
-  static const PermissionAnswer denyOnce =
-      PermissionAnswer(allowed: false, remember: false);
+  static const PermissionAnswer denyOnce = PermissionAnswer(
+    allowed: false,
+    remember: false,
+  );
 
   /// 允许并记住
-  static const PermissionAnswer allowAlways =
-      PermissionAnswer(allowed: true, remember: true);
+  static const PermissionAnswer allowAlways = PermissionAnswer(
+    allowed: true,
+    remember: true,
+  );
 
   /// 拒绝并记住
-  static const PermissionAnswer denyAlways =
-      PermissionAnswer(allowed: false, remember: true);
+  static const PermissionAnswer denyAlways = PermissionAnswer(
+    allowed: false,
+    remember: true,
+  );
 
   @override
   bool operator ==(Object other) =>
@@ -139,18 +154,20 @@ class PermissionAnswer {
 /// 放在模型层是有意的：桥接层只依赖这个签名，不认识 `showDialog` 也不 import
 /// 任何页面，于是弹窗实现可以换（真实弹窗 / 自检模式下的自动回答 / 测试里的假实现），
 /// 桥接层一行都不用改。
-typedef PermissionPrompter = Future<PermissionAnswer> Function(
-  String appId,
-  MiniappPermission permission, {
-  String? appName,
-});
+typedef PermissionPrompter =
+    Future<PermissionAnswer> Function(
+      String appId,
+      MiniappPermission permission, {
+      String? appName,
+    });
 
 /// 一个受控权限。命名与 Android 的运行时权限一一对应（注释里标了对应的系统权限）。
 enum MiniappPermission {
   camera(
     id: 'camera',
     label: '摄像头',
-    description: '网页通过 navigator.mediaDevices.getUserMedia() 请求摄像头画面。'
+    description:
+        '网页通过 navigator.mediaDevices.getUserMedia() 请求摄像头画面。'
         '同意后浏览器才会打开设备；底层还需要 Android 的 CAMERA 权限。',
     group: PermissionGroup.media,
     risk: PermissionRisk.sensitive,
@@ -159,12 +176,14 @@ enum MiniappPermission {
   microphone(
     id: 'microphone',
     label: '麦克风',
-    description: '网页通过 navigator.mediaDevices.getUserMedia() 请求麦克风录音。'
+    description:
+        '网页通过 navigator.mediaDevices.getUserMedia() 请求麦克风录音。'
         '同意后浏览器才会打开设备；底层还需要 Android 的 RECORD_AUDIO 权限。',
     group: PermissionGroup.media,
     risk: PermissionRisk.sensitive,
     runtimePermissions: <String>['android.permission.RECORD_AUDIO'],
   ),
+
   /// 精确位置（细粒度）—— 对应 W3C Geolocation 的「精确」档。
   ///
   /// 为什么和模糊定位拆成两项而不是一个开关：
@@ -176,7 +195,8 @@ enum MiniappPermission {
   geolocationFine(
     id: 'geolocationFine',
     label: '精确位置',
-    description: '网页通过 navigator.geolocation 获取你的精确坐标（米级）。'
+    description:
+        '网页通过 navigator.geolocation 获取你的精确坐标（米级）。'
         '只在需要导航、附近搜索这类场景才该给；底层需要 ACCESS_FINE_LOCATION。',
     group: PermissionGroup.location,
     risk: PermissionRisk.sensitive,
@@ -191,7 +211,8 @@ enum MiniappPermission {
   geolocationCoarse(
     id: 'geolocationCoarse',
     label: '大致位置',
-    description: '网页通过 navigator.geolocation 获取你的大致位置（城市/街区级）。'
+    description:
+        '网页通过 navigator.geolocation 获取你的大致位置（城市/街区级）。'
         '不需要精确坐标的场景选这个就够；底层只需 ACCESS_COARSE_LOCATION。',
     group: PermissionGroup.location,
     risk: PermissionRisk.sensitive,
@@ -201,7 +222,8 @@ enum MiniappPermission {
   clipboard(
     id: 'clipboard',
     label: '剪贴板',
-    description: '网页通过 navigator.clipboard 读写剪贴板。'
+    description:
+        '网页通过 navigator.clipboard 读写剪贴板。'
         '读剪贴板可能拿到你刚复制的密码、验证码，所以列为敏感项。',
     group: PermissionGroup.storage,
     risk: PermissionRisk.sensitive,
@@ -214,11 +236,53 @@ enum MiniappPermission {
   notifications(
     id: 'notifications',
     label: '通知',
-    description: '网页通过 Notification.requestPermission() 请求发送通知。'
+    description:
+        '网页通过 Notification.requestPermission() 请求发送通知。'
         'Android 13+ 还需要 POST_NOTIFICATIONS 运行时权限。',
     group: PermissionGroup.media,
     risk: PermissionRisk.normal,
     runtimePermissions: <String>['android.permission.POST_NOTIFICATIONS'],
+  ),
+
+  /// 蓝牙（BLE 扫描 / 连接 / 读写特征值）。
+  ///
+  /// 为什么仍然要应用内授权：蓝牙能拿到附近设备的名称、地址与广播数据，
+  /// 连接后还能读写设备特征值 —— 这是一条真实的旁路通道（附近的信标、
+  /// 可穿戴设备、共享单车锁……）。Android 12+ 把扫描/连接拆成了运行时权限，
+  /// 但「应用内先问一次」仍然是必要的：系统权限只说「App 能不能用蓝牙」，
+  /// 没说「这个小程序现在为什么要用」。
+  ///
+  /// Android 11 及以下的扫描还需要定位权限，由 MainActivity 在申请时
+  /// 按系统版本自动映射（Dart 侧只写 Android 12+ 的权限名）。
+  bluetooth(
+    id: 'bluetooth',
+    label: '蓝牙',
+    description:
+        '小程序通过 lemonlite.bluetooth 扫描附近的蓝牙设备，'
+        '并连接 BLE 设备读写特征值。同意后系统还会再确认一次蓝牙权限。',
+    group: PermissionGroup.connectivity,
+    risk: PermissionRisk.sensitive,
+    runtimePermissions: <String>[
+      'android.permission.BLUETOOTH_SCAN',
+      'android.permission.BLUETOOTH_CONNECT',
+    ],
+  ),
+
+  /// NFC（读取 / 写入标签）。
+  ///
+  /// Android 的 NFC 是一个**安装期权限**（normal），不需要运行时弹框；
+  /// 但这不代表用户已经同意某个小程序去读他刚贴过来的门禁卡/公交卡。
+  /// 所以这一项没有 runtimePermissions，却仍然走权限弹窗：
+  /// 应用内授权是唯一的用户确认点。
+  nfc(
+    id: 'nfc',
+    label: 'NFC',
+    description:
+        '小程序通过 lemonlite.nfc 读取或写入 NFC 标签（NDEF）。'
+        'NFC 不需要 Android 运行时权限，但宿主仍会先问你是否允许。',
+    group: PermissionGroup.connectivity,
+    risk: PermissionRisk.sensitive,
+    runtimePermissions: <String>[],
   ),
 
   /// 手机存储（sdcard）读写。
@@ -238,7 +302,8 @@ enum MiniappPermission {
   sdcard(
     id: 'sdcard',
     label: '读取手机存储',
-    description: '网页请求读写手机存储（sdcard）里的文件或目录，例如 Download、Pictures。'
+    description:
+        '网页请求读写手机存储（sdcard）里的文件或目录，例如 Download、Pictures。'
         '同意后由系统文件选择器逐个确认，页面只能拿到你选中的那些。'
         '（读写小程序自己的两个沙箱目录不需要这个权限。）',
     group: PermissionGroup.storage,
@@ -305,6 +370,8 @@ enum MiniappPermission {
     MiniappPermission.geolocationCoarse => Icons.location_searching,
     MiniappPermission.clipboard => Icons.content_paste,
     MiniappPermission.notifications => Icons.notifications_outlined,
+    MiniappPermission.bluetooth => Icons.bluetooth_searching,
+    MiniappPermission.nfc => Icons.nfc,
     MiniappPermission.sdcard => Icons.folder_shared_outlined,
   };
 
@@ -333,8 +400,9 @@ enum MiniappPermission {
   }
 
   /// 全部敏感权限
-  static List<MiniappPermission> get sensitiveList =>
-      values.where((MiniappPermission p) => p.isSensitive).toList(growable: false);
+  static List<MiniappPermission> get sensitiveList => values
+      .where((MiniappPermission p) => p.isSensitive)
+      .toList(growable: false);
 
   /// 旧 id → 当前枚举的别名。
   ///
@@ -343,9 +411,8 @@ enum MiniappPermission {
   /// 应用在声明 `allFiles`。改 id 等于让这些记录全部失效、并且让那些
   /// 应用在详情页被标成「未知权限」。别名把两件事都接住了：
   /// 声明照旧能识别，旧决定也会被当作新权限的决定读出来。
-  static const Map<String, MiniappPermission> aliases = <String, MiniappPermission>{
-    'allFiles': MiniappPermission.sdcard,
-  };
+  static const Map<String, MiniappPermission> aliases =
+      <String, MiniappPermission>{'allFiles': MiniappPermission.sdcard};
 
   /// 这一项曾经用过的 id（读旧记录时按顺序回退）。
   List<String> get legacyIds => switch (this) {

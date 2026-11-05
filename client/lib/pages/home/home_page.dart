@@ -10,11 +10,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
-import '../../core/globals.dart';
 import '../../data/models/app_item.dart';
 import '../../data/repositories/market_repository.dart';
 import '../../data/services/miniapp_package_service.dart';
 import '../../data/services/settings_service.dart';
+import '../../data/services/update_service.dart';
 import '../../theme/app_theme.dart';
 import '../../theme/motion.dart';
 import '../miniapp/miniapp_installer.dart';
@@ -37,55 +37,47 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final TextEditingController _searchController = TextEditingController();
 
-  /// 待升级的包（空 = 没有更新）
-  List<PackageUpdate> _updates = const <PackageUpdate>[];
-
   /// 是否正在批量更新
   bool _updating = false;
+
+  /// 用户点过「稍后再说」的那一批更新的指纹。
+  /// 更新列表变了（新的版本号）就让提示条重新出现。
+  String? _dismissedSignature;
 
   @override
   void initState() {
     super.initState();
+    // 更新检查放在 AppShell 启动时做（全局状态，应用管理也要用），
+    // 主页只负责展示。这里订阅结果的变化。
+    UpdateService.instance.addListener(_onUpdatesChanged);
     // 首帧之后再触发加载：在 build/initState 期间调用 notifyListeners
     // 会碰到「build 期间 markNeedsBuild」的报错。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       context.read<HomeController>().ensureLoaded();
-      // 顺带查一次升级（失败静默：它只是「顺便看一眼」）
-      _checkUpdates();
     });
   }
 
-  /// 检查已装小程序的升级。
-  ///
-  /// 为什么放在主页而不是启动时：主页是用户一定会到的地方，
-  /// 而启动阶段应该尽快把界面画出来（别让一个网络请求拖慢冷启动）。
-  Future<void> _checkUpdates() async {
-    // 先在 await 之前把 repository 取出来：await 之后再用 context
-    // 是 lint（use_build_context_synchronously）明确禁止的。
-    final MarketRepository repo = context.read<MarketRepository>();
-    try {
-      final List<InstalledPackage> installed =
-          await MiniappPackageService.instance.installedAll();
-      if (installed.isEmpty) return;
-      final List<PackageUpdate> updates = await repo.checkUpdates(
-        installed
-            .map((InstalledPackage p) => (id: p.appId, version: p.version))
-            .toList(growable: false),
-      );
-      if (!mounted) return;
-      setState(() => _updates = updates);
-    } catch (e) {
-      lemonLog('Home', '检查更新失败：$e');
-    }
+  void _onUpdatesChanged() {
+    if (!mounted) return;
+    setState(() {});
   }
+
+  /// 一批更新的指纹：appId + 新版本号。用来判断「稍后再说」还有效吗。
+  String _signature(List<PackageUpdate> updates) => updates
+      .map((PackageUpdate u) => '${u.appId}:${u.latestVersion}')
+      .join(',');
 
   /// 全部更新
   Future<void> _updateAll() async {
     if (_updating) return;
+    final List<PackageUpdate> targets = UpdateService.instance.updates;
+    if (targets.isEmpty) return;
+    final MarketRepository repository = context.read<MarketRepository>();
+
     setState(() => _updating = true);
     int ok = 0;
-    for (final PackageUpdate u in _updates) {
+    for (final PackageUpdate u in targets) {
       if (!mounted) break;
       final bool success = await MiniappInstaller.forceInstall(
         context,
@@ -95,24 +87,42 @@ class _HomePageState extends State<HomePage> {
         packageUrl: u.packageUrl,
         sha256: u.sha256,
         entry: u.entry,
+        iconUrl: u.icon,
       );
-      if (success) ok++;
+      if (!success) continue;
+      ok++;
+      // 装好了就立刻从待更新列表里拿掉，应用管理的小红点随之消失
+      UpdateService.instance.forget(u.appId);
+      // 它可能正在后台跑着旧版本：文件已经换了，旧会话继续跑只会不一致
+      if (MiniappHost.instance.isRunning(u.appId)) {
+        await MiniappHost.instance.close(u.appId);
+      }
     }
     if (!mounted) return;
     setState(() => _updating = false);
     AppTheme.showToast(
-      ok == _updates.length
+      ok == targets.length
           ? '已更新 $ok 个小程序'
-          : '更新完成 $ok / ${_updates.length} 个，其余失败',
-      isError: ok != _updates.length,
+          : '更新完成 $ok / ${targets.length} 个，其余失败',
+      isError: ok != targets.length,
     );
-    await _checkUpdates();
+    // 再向服务端核对一次（可能刚好又发了一版）
+    await UpdateService.instance.checkAll(repository: repository, force: true);
   }
 
   @override
   void dispose() {
+    UpdateService.instance.removeListener(_onUpdatesChanged);
     _searchController.dispose();
     super.dispose();
+  }
+
+  /// 下拉刷新：市场列表 + 已装小程序的更新状态一起刷。
+  Future<void> _refreshAll() async {
+    final HomeController controller = context.read<HomeController>();
+    final MarketRepository repository = context.read<MarketRepository>();
+    await controller.load();
+    await UpdateService.instance.checkAll(repository: repository, force: true);
   }
 
   @override
@@ -121,19 +131,31 @@ class _HomePageState extends State<HomePage> {
     final SettingsService settings = context.watch<SettingsService>();
     final ColorScheme scheme = Theme.of(context).colorScheme;
 
+    // 待更新列表来自全局单例；用户点过「稍后再说」的同一批不重复弹提示条，
+    // 但应用管理里的小红点仍然保留（信息不能被「关掉」）。
+    final List<PackageUpdate> allUpdates = UpdateService.instance.updates;
+    final List<PackageUpdate> updates =
+        _dismissedSignature == _signature(allUpdates)
+        ? const <PackageUpdate>[]
+        : allUpdates;
+
     return Scaffold(
       body: RefreshIndicator(
-        onRefresh: controller.load,
+        onRefresh: _refreshAll,
         child: CustomScrollView(
           // 内容不足一屏时也要能下拉，否则刷不出来
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: <Widget>[
-            SliverAppBar(
+            // MD3 Expressive 的大标题 AppBar：展开时是 display 级标题，
+            // 收起后只留一行 + 固定的搜索框。
+            SliverAppBar.large(
               pinned: true,
+              backgroundColor: scheme.surface,
+              surfaceTintColor: Colors.transparent,
+              scrolledUnderElevation: 0,
               title: const Text('应用市场'),
               actions: <Widget>[
                 // 后台应用：正在跑的小程序（含退到后台的）都在那里。
-                // 数量做成角标 —— 用户不需要点进去才知道有没有小程序还在后台吃内存。
                 ListenableBuilder(
                   listenable: MiniappHost.instance,
                   builder: (BuildContext c, Widget? child) {
@@ -146,7 +168,7 @@ class _HomePageState extends State<HomePage> {
                       icon: Badge(
                         isLabelVisible: running > 0,
                         label: Text('$running'),
-                        child: const Icon(Icons.layers_outlined),
+                        child: const Icon(Icons.layers_rounded),
                       ),
                     );
                   },
@@ -154,47 +176,53 @@ class _HomePageState extends State<HomePage> {
                 IconButton(
                   tooltip: '刷新',
                   onPressed: controller.isLoading ? null : controller.load,
-                  icon: const Icon(Icons.refresh),
+                  icon: const Icon(Icons.refresh_rounded),
                 ),
+                const SizedBox(width: 8),
               ],
               bottom: PreferredSize(
-                preferredSize: const Size.fromHeight(64),
+                preferredSize: const Size.fromHeight(72),
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 14),
                   // 只读的假搜索框：点一下进搜索页。
                   //
-                  // 为什么不在主页边输入边过滤了：服务端后端的搜索是服务端筛的
+                  // 为什么不在主页边输入边过滤：搜索是服务端筛的
                   // （不会把全部应用拉到本地），标签 chip 也要服务端返回计数。
-                  // 在主页做本地过滤会让两种后端的行为不一致 ——
-                  // 用户换服务器就得重新学一次交互。
                   child: GestureDetector(
-                    onTap: () => Navigator.of(context).push(
-                      SearchPage.route(initialQuery: controller.query),
-                    ),
+                    onTap: () => Navigator.of(
+                      context,
+                    ).push(SearchPage.route(initialQuery: controller.query)),
                     child: AbsorbPointer(
                       child: SearchBar(
                         controller: _searchController,
-                        hintText: '搜索应用名称、作者或标签',
-                        leading: const Icon(Icons.search),
-                        trailing: <Widget>[
-                          if (controller.query.isNotEmpty)
-                            IconButton(
-                              tooltip: '清除',
-                              icon: const Icon(Icons.close),
-                              onPressed: () {
-                                _searchController.clear();
-                                controller.search('');
-                              },
-                            ),
-                        ],
+                        hintText: '搜索小程序、作者或标签',
+                        leading: const Icon(Icons.search_rounded),
                         elevation: const WidgetStatePropertyAll<double>(0),
                         backgroundColor: WidgetStatePropertyAll<Color>(
                           scheme.surfaceContainerHigh,
+                        ),
+                        padding: const WidgetStatePropertyAll<EdgeInsets>(
+                          EdgeInsets.symmetric(horizontal: 18),
+                        ),
+                        constraints: const BoxConstraints(minHeight: 56),
+                        shape: WidgetStatePropertyAll<OutlinedBorder>(
+                          RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(28),
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
+              ),
+            ),
+
+            // MD3E 的「大色块 + 大字号」开场卡片。
+            SliverToBoxAdapter(
+              child: _MarketHero(
+                loadedCount: controller.loadedCount,
+                updateCount: updates.length,
+                loading: controller.isLoading,
               ),
             ),
 
@@ -205,17 +233,17 @@ class _HomePageState extends State<HomePage> {
               ),
 
             // 有包需要升级时给一条可操作提示。
-            // 放在分类 chips 之上：它是「需要你处理的事」，优先级高于浏览。
-            if (_updates.isNotEmpty)
+            if (updates.isNotEmpty)
               SliverToBoxAdapter(
                 child: StaggeredEntrance(
                   offset: 8,
                   child: _UpdateBanner(
-                    updates: _updates,
+                    updates: updates,
                     updating: _updating,
                     onUpdateAll: _updateAll,
-                    onDismiss: () =>
-                        setState(() => _updates = const <PackageUpdate>[]),
+                    onDismiss: () => setState(
+                      () => _dismissedSignature = _signature(allUpdates),
+                    ),
                   ),
                 ),
               ),
@@ -223,11 +251,14 @@ class _HomePageState extends State<HomePage> {
             // 只有一个「全部」chip 时没必要占一行
             if (controller.chipCategories.length > 1)
               SliverToBoxAdapter(
-                child: CategoryChips(
-                  categories: controller.chipCategories,
-                  selectedId: controller.categoryId,
-                  countOf: controller.countFor,
-                  onSelected: controller.selectCategory,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 4, bottom: 4),
+                  child: CategoryChips(
+                    categories: controller.chipCategories,
+                    selectedId: controller.categoryId,
+                    countOf: controller.countFor,
+                    onSelected: controller.selectCategory,
+                  ),
                 ),
               ),
 
@@ -249,10 +280,7 @@ class _HomePageState extends State<HomePage> {
       case HomeStatus.initial:
       case HomeStatus.loading:
         return <Widget>[
-          _stateSliver(
-            'loading',
-            const LoadingView(message: '正在加载应用市场…'),
-          ),
+          _stateSliver('loading', const LoadingView(message: '正在加载应用市场…')),
         ];
 
       case HomeStatus.error:
@@ -302,10 +330,16 @@ class _HomePageState extends State<HomePage> {
         }
 
         return <Widget>[
+          SliverToBoxAdapter(
+            child: _SectionHeader(
+              count: apps.length,
+              hasMore: controller.hasMore,
+            ),
+          ),
           SliverList.builder(
             itemCount: apps.length,
             itemBuilder: (BuildContext ctx, int i) => Padding(
-              padding: EdgeInsets.fromLTRB(16, i == 0 ? 4 : 0, 16, 8),
+              padding: EdgeInsets.fromLTRB(20, i == 0 ? 4 : 0, 20, 10),
               // 错峰入场：前几条依次浮现，后续的（滚出来的）直接出现。
               // index 取 `i % 8` —— 分页加载的第 20 条不该等半秒才出现。
               child: StaggeredEntrance(
@@ -335,8 +369,8 @@ class _HomePageState extends State<HomePage> {
                 child: Text(
                   _footerLabel(controller, apps.length),
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
                 ),
               ),
             ),
@@ -437,6 +471,235 @@ class _LoadMoreTriggerState extends State<_LoadMoreTrigger> {
   }
 }
 
+/// MD3E 开场卡片：大色块、大字号、装饰圆。
+///
+/// 它不是「广告位」，而是把当前市场的状态（加载了多少、有没有更新）
+/// 用 Expressive 的方式说出来；刷新仍然在 AppBar 里。
+class _MarketHero extends StatelessWidget {
+  const _MarketHero({
+    required this.loadedCount,
+    required this.updateCount,
+    required this.loading,
+  });
+
+  final int loadedCount;
+  final int updateCount;
+  final bool loading;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    final TextTheme textTheme = Theme.of(context).textTheme;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(20, 4, 20, 10),
+      padding: const EdgeInsets.fromLTRB(20, 20, 16, 20),
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: scheme.primaryContainer,
+        borderRadius: BorderRadius.circular(28),
+      ),
+      child: Stack(
+        children: <Widget>[
+          Positioned(
+            right: -34,
+            top: -52,
+            child: _DecorCircle(
+              size: 150,
+              color: scheme.primary.withValues(alpha: 0.16),
+            ),
+          ),
+          Positioned(
+            right: 36,
+            bottom: -56,
+            child: _DecorCircle(
+              size: 110,
+              color: scheme.tertiary.withValues(alpha: 0.14),
+            ),
+          ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: <Widget>[
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      '发现小程序',
+                      style: textTheme.headlineMedium?.copyWith(
+                        color: scheme.onPrimaryContainer,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -0.6,
+                        height: 1.1,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      loading ? '正在从服务端同步…' : '从服务端实时同步 · 已加载 $loadedCount 个',
+                      style: textTheme.bodyMedium?.copyWith(
+                        color: scheme.onPrimaryContainer.withValues(
+                          alpha: 0.78,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: <Widget>[
+                        const _HeroPill(
+                          icon: Icons.storefront_rounded,
+                          label: '轻柠市场',
+                        ),
+                        if (updateCount > 0)
+                          _HeroPill(
+                            icon: Icons.system_update_alt_rounded,
+                            label: '$updateCount 个可更新',
+                            highlight: true,
+                          )
+                        else if (loadedCount > 0)
+                          const _HeroPill(
+                            icon: Icons.cloud_done_rounded,
+                            label: '已是最新',
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                width: 72,
+                height: 72,
+                decoration: BoxDecoration(
+                  color: scheme.primary,
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                child: Icon(
+                  Icons.auto_awesome_rounded,
+                  size: 34,
+                  color: scheme.onPrimary,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DecorCircle extends StatelessWidget {
+  const _DecorCircle({required this.size, required this.color});
+
+  final double size;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+    );
+  }
+}
+
+class _HeroPill extends StatelessWidget {
+  const _HeroPill({
+    required this.icon,
+    required this.label,
+    this.highlight = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool highlight;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    final Color background = highlight
+        ? scheme.primary
+        : scheme.surface.withValues(alpha: 0.55);
+    final Color foreground = highlight
+        ? scheme.onPrimary
+        : scheme.onPrimaryContainer;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(icon, size: 15, color: foreground),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+              color: foreground,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 列表区标题：数量用 tonal pill 标出来，右侧说明「还有没有更多」。
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({required this.count, required this.hasMore});
+
+  final int count;
+  final bool hasMore;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    final TextTheme textTheme = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
+      child: Row(
+        children: <Widget>[
+          Text(
+            '全部应用',
+            style: textTheme.titleLarge?.copyWith(
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.3,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHigh,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              '$count${hasMore ? '+' : ''}',
+              style: textTheme.labelMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          const Spacer(),
+          Text(
+            hasMore ? '继续下滑加载' : '到底了',
+            style: textTheme.labelSmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// 「当前使用自定义服务器」提示条
 class _CustomServerBanner extends StatelessWidget {
   const _CustomServerBanner({required this.url});
@@ -456,17 +719,20 @@ class _CustomServerBanner extends StatelessWidget {
         ),
         child: Row(
           children: <Widget>[
-            Icon(Icons.dns_outlined, size: 18, color: scheme.onTertiaryContainer),
+            Icon(
+              Icons.dns_outlined,
+              size: 18,
+              color: scheme.onTertiaryContainer,
+            ),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
                 '当前使用自定义服务器：$url',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
-                    ?.copyWith(color: scheme.onTertiaryContainer),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: scheme.onTertiaryContainer,
+                ),
               ),
             ),
           ],
@@ -475,7 +741,6 @@ class _CustomServerBanner extends StatelessWidget {
     );
   }
 }
-
 
 /// 「有 N 个小程序可更新」提示条。
 ///
@@ -498,8 +763,10 @@ class _UpdateBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ColorScheme scheme = Theme.of(context).colorScheme;
-    final int totalBytes =
-        updates.fold<int>(0, (int sum, PackageUpdate u) => sum + u.bytes);
+    final int totalBytes = updates.fold<int>(
+      0,
+      (int sum, PackageUpdate u) => sum + u.bytes,
+    );
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
@@ -507,12 +774,12 @@ class _UpdateBanner extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
         decoration: BoxDecoration(
           color: scheme.primaryContainer,
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(24),
         ),
         child: Row(
           children: <Widget>[
             Icon(
-              Icons.system_update_alt,
+              Icons.system_update_alt_rounded,
               size: 20,
               color: scheme.onPrimaryContainer,
             ),
@@ -524,8 +791,8 @@ class _UpdateBanner extends StatelessWidget {
                   Text(
                     '${updates.length} 个小程序可以更新',
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          color: scheme.onPrimaryContainer,
-                        ),
+                      color: scheme.onPrimaryContainer,
+                    ),
                   ),
                   const SizedBox(height: 2),
                   Text(
@@ -533,8 +800,8 @@ class _UpdateBanner extends StatelessWidget {
                         ? '需要下载约 ${(totalBytes / 1024 / 1024).toStringAsFixed(1)} MB'
                         : updates.first.versionLabel,
                     style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: scheme.onPrimaryContainer.withValues(alpha: 0.8),
-                        ),
+                      color: scheme.onPrimaryContainer.withValues(alpha: 0.8),
+                    ),
                   ),
                 ],
               ),
@@ -549,10 +816,7 @@ class _UpdateBanner extends StatelessWidget {
                 ),
               )
             else
-              TextButton(
-                onPressed: onUpdateAll,
-                child: const Text('全部更新'),
-              ),
+              TextButton(onPressed: onUpdateAll, child: const Text('全部更新')),
             IconButton(
               tooltip: '稍后再说',
               visualDensity: VisualDensity.compact,

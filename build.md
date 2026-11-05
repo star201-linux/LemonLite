@@ -183,8 +183,7 @@ cp .env.example .env
 # （五种通道的配法见 docs/邮件通道配置.md；只想先跑通就 MAIL_DRIVER=console）
 
 npm install
-npm run init -- --seed     # 建库建表 + 灌演示数据
-npm run seed:packages      # 生成演示小程序包
+npm run init -- --seed     # 建库建表 + 灌基础分类/标签（不含任何小程序）
 npm start                  # 启动（默认 3000）
 ```
 
@@ -280,13 +279,13 @@ main/repo/client/
 │   ├── data/          模型、仓库、服务
 │   └── pages/         页面（home / miniapp / settings / account / detail）
 ├── android/           Android 工程（含签名配置）
-├── assets/            内置示例小程序
+├── assets/            自检页与插件包（不含示例小程序）
 └── test/              单元测试
 
 main/repo/server-node/
 ├── src/
 │   ├── routes/        路由
-│   ├── lib/           鉴权、HTTP、用户数据、zip
+│   ├── lib/           鉴权、HTTP、用户数据、包/图标存储
 │   └── *.js           入口与脚本
 └── sql/
 ```

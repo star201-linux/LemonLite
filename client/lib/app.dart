@@ -31,6 +31,7 @@ import 'data/models/miniapp_permission.dart';
 import 'data/repositories/market_repository.dart';
 import 'data/services/account_service.dart';
 import 'data/services/settings_service.dart';
+import 'data/services/update_service.dart';
 import 'pages/applications/applications_page.dart';
 import 'pages/home/home_controller.dart';
 import 'pages/home/home_page.dart';
@@ -66,7 +67,8 @@ class LemonLiteApp extends StatelessWidget {
         // 主页状态。放在 App 根部而不是 HomePage 内部，
         // 这样切到「设置」再切回来时列表、搜索词、分类筛选都还在。
         ChangeNotifierProvider<HomeController>(
-          create: (BuildContext ctx) => HomeController(ctx.read<MarketRepository>()),
+          create: (BuildContext ctx) =>
+              HomeController(ctx.read<MarketRepository>()),
         ),
       ],
       child: const _ThemedApp(),
@@ -144,6 +146,17 @@ class _AppShellState extends State<AppShell> {
     super.initState();
     // 小程序菜单里的「返回主页」会发这个信号（见 core/globals.dart）
     shellHomeRequested.addListener(_onHomeRequested);
+    // 更新状态是全局的：应用管理的导航角标要跟着它变
+    UpdateService.instance.addListener(_onUpdatesChanged);
+    // 先从缓存恢复（第一帧就能显示小红点），再在首帧后向服务端查一次
+    UpdateService.instance.restore();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      // **打开 App 时检查所有已装小程序有没有新版本**
+      UpdateService.instance.checkAll(
+        repository: context.read<MarketRepository>(),
+      );
+    });
     // 只在传了 --dart-define=LEMONLITE_AUTOTEST 的调试包里生效；正式包这里是死代码
     if (autotestEnabled) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _runAutotest());
@@ -153,12 +166,18 @@ class _AppShellState extends State<AppShell> {
   @override
   void dispose() {
     shellHomeRequested.removeListener(_onHomeRequested);
+    UpdateService.instance.removeListener(_onUpdatesChanged);
     super.dispose();
   }
 
   void _onHomeRequested() {
     if (!mounted) return;
     if (_tabIndex != 0) setState(() => _tabIndex = 0);
+  }
+
+  void _onUpdatesChanged() {
+    if (!mounted) return;
+    setState(() {});
   }
 
   /// 端到端自检的驱动：声明两项权限（模拟 index.json 里的 permissions）、
@@ -251,7 +270,7 @@ class _AppShellState extends State<AppShell> {
                     selectedIndex: _tabIndex,
                     onDestinationSelected: (int i) =>
                         setState(() => _tabIndex = i),
-                    destinations: _destinations,
+                    destinations: _destinations(),
                   ),
           ),
           // ---- 第二层：小程序层（盖住导航，但路由仍压在它之上）----
@@ -266,24 +285,38 @@ class _AppShellState extends State<AppShell> {
     children: const <Widget>[HomePage(), ApplicationsPage(), SettingsPage()],
   );
 
-  static const List<NavigationDestination> _destinations =
-      <NavigationDestination>[
-        NavigationDestination(
-          icon: Icon(Icons.storefront_outlined),
-          selectedIcon: Icon(Icons.storefront),
-          label: '主页',
+  /// 底部导航。应用管理上挂一个小红点：有小程序可更新时提示用户。
+  ///
+  /// Badge 不带 label 时就是一个纯圆点（Material 3 的 small badge），
+  /// 不显示数字 —— 需求里要的是「小红点」，数字会让它看起来像一个计数器。
+  List<NavigationDestination> _destinations() {
+    final bool hasUpdates = UpdateService.instance.hasUpdates;
+    return <NavigationDestination>[
+      const NavigationDestination(
+        icon: Icon(Icons.storefront_outlined),
+        selectedIcon: Icon(Icons.storefront),
+        label: '主页',
+      ),
+      NavigationDestination(
+        icon: Badge(
+          isLabelVisible: hasUpdates,
+          smallSize: 9,
+          child: const Icon(Icons.apps_outlined),
         ),
-        NavigationDestination(
-          icon: Icon(Icons.apps_outlined),
-          selectedIcon: Icon(Icons.apps),
-          label: '应用管理',
+        selectedIcon: Badge(
+          isLabelVisible: hasUpdates,
+          smallSize: 9,
+          child: const Icon(Icons.apps),
         ),
-        NavigationDestination(
-          icon: Icon(Icons.settings_outlined),
-          selectedIcon: Icon(Icons.settings),
-          label: '设置',
-        ),
-      ];
+        label: '应用管理',
+      ),
+      const NavigationDestination(
+        icon: Icon(Icons.settings_outlined),
+        selectedIcon: Icon(Icons.settings),
+        label: '设置',
+      ),
+    ];
+  }
 }
 
 /// 三个 Tab 的容器：保留 IndexedStack 的「保活」语义，额外加一段**切换动效**。
@@ -369,6 +402,7 @@ class _SideNav extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final bool hasUpdates = UpdateService.instance.hasUpdates;
     return NavigationRail(
       selectedIndex: index,
       onDestinationSelected: onSelected,
@@ -381,18 +415,26 @@ class _SideNav extends StatelessWidget {
           color: Theme.of(context).colorScheme.primary,
         ),
       ),
-      destinations: const <NavigationRailDestination>[
-        NavigationRailDestination(
+      destinations: <NavigationRailDestination>[
+        const NavigationRailDestination(
           icon: Icon(Icons.storefront_outlined),
           selectedIcon: Icon(Icons.storefront),
           label: Text('主页'),
         ),
         NavigationRailDestination(
-          icon: Icon(Icons.apps_outlined),
-          selectedIcon: Icon(Icons.apps),
-          label: Text('应用管理'),
+          icon: Badge(
+            isLabelVisible: hasUpdates,
+            smallSize: 9,
+            child: const Icon(Icons.apps_outlined),
+          ),
+          selectedIcon: Badge(
+            isLabelVisible: hasUpdates,
+            smallSize: 9,
+            child: const Icon(Icons.apps),
+          ),
+          label: const Text('应用管理'),
         ),
-        NavigationRailDestination(
+        const NavigationRailDestination(
           icon: Icon(Icons.settings_outlined),
           selectedIcon: Icon(Icons.settings),
           label: Text('设置'),
