@@ -175,7 +175,7 @@ class _HomePageState extends State<HomePage> {
                 ),
                 IconButton(
                   tooltip: '刷新',
-                  onPressed: controller.isLoading ? null : controller.load,
+                  onPressed: controller.isLoading ? null : _refreshAll,
                   icon: const Icon(Icons.refresh_rounded),
                 ),
                 const SizedBox(width: 8),
