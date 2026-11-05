@@ -596,6 +596,79 @@ class LemonJsSdk {
       },
 
       /**
+       * 分包写入（BLE 单包大小受 MTU 限制，长数据必须自己拆）。
+       *
+       * @param {Object} options {
+       *   address, service, characteristic,
+       *   data: Uint8Array | number[] | base64 字符串,
+       *   chunkSize: 每包字节数（默认 20；可先用 mtu() 协商后传 mtu-3）,
+       *   withResponse: 默认 true（有响应写入会等每包回调，天然限速）,
+       *   delayMs: 无响应写入时的包间隔（默认 15ms）
+       * }
+       * @returns {Promise<{bytes:number, chunks:number}>}
+       * 示例：
+       *   const mtu = (await lemonlite.bluetooth.mtu({address, mtu: 247})).mtu;
+       *   await lemonlite.bluetooth.writeChunked({
+       *     address, service, characteristic, data,
+       *     chunkSize: Math.max(20, mtu - 3)
+       *   });
+       */
+      writeChunked: function (options) {
+        var opts = options || {};
+        if (!opts.address || !opts.service || !opts.characteristic) {
+          return Promise.reject({
+            code: 10001,
+            message: 'bluetooth.writeChunked(options)：需要 address / service / characteristic'
+          });
+        }
+        var raw = opts.data;
+        var bytes;
+        if (typeof raw === 'string') {
+          bytes = base64ToBytes(raw);
+        } else if (raw && typeof raw.length === 'number') {
+          bytes = raw;
+        } else {
+          return Promise.reject({
+            code: 10001,
+            message: 'bluetooth.writeChunked(options)：data 必须是 base64 或字节数组'
+          });
+        }
+        if (!bytes.length) {
+          return Promise.reject({ code: 10001, message: 'bluetooth.writeChunked：data 不能为空' });
+        }
+        var chunkSize = Number(opts.chunkSize);
+        if (!isFinite(chunkSize) || chunkSize <= 0) { chunkSize = 20; }
+        chunkSize = Math.max(1, Math.min(512, Math.round(chunkSize)));
+        var withResponse = opts.withResponse !== false;
+        var delay = Number(opts.delayMs);
+        if (!isFinite(delay) || delay < 0) { delay = 15; }
+        var offset = 0;
+        var chunks = 0;
+        function next() {
+          if (offset >= bytes.length) {
+            return Promise.resolve({ bytes: bytes.length, chunks: chunks });
+          }
+          var end = Math.min(bytes.length, offset + chunkSize);
+          var piece = bytes.slice(offset, end);
+          offset = end;
+          chunks++;
+          return invoke('bluetoothWrite', {
+            address: String(opts.address),
+            service: String(opts.service),
+            characteristic: String(opts.characteristic),
+            data: bytesToBase64(piece),
+            withResponse: withResponse
+          }).then(function () {
+            if (withResponse) { return next(); }
+            return new Promise(function (resolve) {
+              setTimeout(function () { resolve(next()); }, delay);
+            });
+          });
+        }
+        return next();
+      },
+
+      /**
        * 订阅特征值通知（notify / indicate）。
        * 回调参数：{address,service,characteristic,value(base64),time}
        */
