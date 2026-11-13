@@ -13,9 +13,12 @@
 // 页面上如实写明「进程内保活」的边界：宿主不做前台 Service，
 // 系统内存紧张时仍可能回收整个进程。宁可说清楚，也不要让用户以为这是「永不掉线」。
 
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../../data/models/json_utils.dart';
+import '../../data/services/icon_cache_service.dart';
 import '../../data/models/miniapp_session.dart';
 import '../../theme/app_theme.dart';
 import '../miniapp/miniapp_host.dart';
@@ -129,19 +132,7 @@ class BackgroundAppsPage extends StatelessWidget {
             margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
             clipBehavior: Clip.antiAlias,
             child: ListTile(
-              leading: CircleAvatar(
-                backgroundColor: session.isForeground
-                    ? scheme.primaryContainer
-                    : scheme.surfaceContainerHighest,
-                child: Icon(
-                  session.isForeground
-                      ? Icons.play_arrow
-                      : Icons.pause_outlined,
-                  color: session.isForeground
-                      ? scheme.onPrimaryContainer
-                      : scheme.onSurfaceVariant,
-                ),
-              ),
+              leading: _SessionAvatar(session: session),
               title: Text(session.title),
               subtitle: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -257,4 +248,94 @@ class _EmptyState extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 会话图标。
+///
+/// 语义与系统「最近任务」里的那张卡片一致：有图标就显示小程序自己的图标，
+/// 没有才退回「前台 / 后台」的圆形指示 —— 一排顿号式的圆形按钮看不出
+/// 是哪个应用，而这里本来就是让用户找「刚才那个小程序」的地方。
+///
+/// 图标路径是异步读的（[IconCacheService.pathOf] 读磁盘），但只在 initState
+/// 里取一次：FutureBuilder 里现算 future 会在每次 rebuild 时重新发一次 IO。
+class _SessionAvatar extends StatefulWidget {
+  const _SessionAvatar({required this.session});
+
+  final MiniappSession session;
+
+  @override
+  State<_SessionAvatar> createState() => _SessionAvatarState();
+}
+
+class _SessionAvatarState extends State<_SessionAvatar> {
+  late final Future<String?> _iconPath = IconCacheService.instance.pathOf(
+    widget.session.appId,
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    return FutureBuilder<String?>(
+      future: _iconPath,
+      builder: (BuildContext context, AsyncSnapshot<String?> snapshot) {
+        final String? path = snapshot.data;
+        final Widget fallback = _badge(scheme);
+        if (path == null) return fallback;
+        // 文件可能已经被清掉（清理缓存 / 移除应用）：Image.file 的
+        // errorBuilder 负责退回圆形指示，不留一个报错方块。
+        return SizedBox(
+          width: 40,
+          height: 40,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: <Widget>[
+              ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.file(
+                  File(path),
+                  width: 40,
+                  height: 40,
+                  fit: BoxFit.cover,
+                  errorBuilder: (BuildContext c, Object e, StackTrace? s) =>
+                      _badge(scheme),
+                ),
+              ),
+              Positioned(
+                right: -2,
+                bottom: -2,
+                child: _dot(scheme),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// 没有图标时的占位：沿用原来的「前台播放 / 后台暂停」语义
+  Widget _badge(ColorScheme scheme) => CircleAvatar(
+    radius: 20,
+    backgroundColor: widget.session.isForeground
+        ? scheme.primaryContainer
+        : scheme.surfaceContainerHighest,
+    child: Icon(
+      widget.session.isForeground ? Icons.play_arrow : Icons.pause_outlined,
+      color: widget.session.isForeground
+          ? scheme.onPrimaryContainer
+          : scheme.onSurfaceVariant,
+      size: 20,
+    ),
+  );
+
+  /// 图标右下角的小圆点：前台=主色实心，后台=描边色空心。
+  /// 有图标之后就没法靠底色区分前后台了，这个点补上那层信息。
+  Widget _dot(ColorScheme scheme) => Container(
+    width: 12,
+    height: 12,
+    decoration: BoxDecoration(
+      color: widget.session.isForeground ? scheme.primary : scheme.surface,
+      shape: BoxShape.circle,
+      border: Border.all(color: scheme.surface, width: 2),
+    ),
+  );
 }
