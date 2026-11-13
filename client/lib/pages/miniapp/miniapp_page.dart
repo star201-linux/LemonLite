@@ -45,6 +45,7 @@ import '../../data/models/miniapp_session.dart';
 import '../../data/repositories/bundle_repository.dart';
 import '../../data/services/download_service.dart';
 import '../../theme/app_theme.dart';
+import '../../theme/md3e_interceptor.dart';
 import '../../theme/md3e_styles.dart';
 import '../../theme/theme_controller.dart';
 import '../../theme/theme_injector.dart';
@@ -78,6 +79,10 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
     verticalScrollBarEnabled: true,
     // 自己实现链接拦截（tel: / mailto: 等转交系统）
     useShouldOverrideUrlLoading: true,
+    // 开启资源拦截：主文档在进入解析器之前取出，把 MD3E 样式与 DOM 拦截脚本
+    // 写进 <head>（见 theme/md3e_interceptor.dart）。不开这个开关，
+    // shouldInterceptRequest 回调根本不会被调用。
+    useShouldInterceptRequest: true,
     // 本地包（file://）必须允许文件访问，否则 WebView 直接拒绝加载。
     // 注意这三个开关的**区别**，别只开错的那个：
     //   allowFileAccess               → 允许 WebView 加载 file:// 的**页面本身**
@@ -208,8 +213,9 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
     _bridge = null;
     _session.onEvent = null;
     if (_session.onSystemBack == _handleBack) _session.onSystemBack = null;
-    if (_session.onResumeTimers == _resumeTimers)
+    if (_session.onResumeTimers == _resumeTimers) {
       _session.onResumeTimers = null;
+    }
     if (_session.onPauseTimers == _pauseTimers) _session.onPauseTimers = null;
     if (_session.onReload == _reload) _session.onReload = null;
     super.dispose();
@@ -277,6 +283,13 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
       ),
       UserScript(
         source: Md3eStyles.buildInjectScript(),
+        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+      ),
+      // DOM 拦截：给「作者没管过」的原生控件打 MD3E 标记。
+      // 拦截路径已经在文档里写过一次，这里靠 __LEMONLITE_MD3E_DOM__ 幂等；
+      // 走 initialData 的内置页面（没有文件可拦截）则完全依赖这一条。
+      UserScript(
+        source: Md3eStyles.buildDomScript(),
         injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
       ),
       UserScript(
@@ -480,6 +493,21 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
       initialUserScripts: UnmodifiableListView<UserScript>(
         _buildUserScripts(payload, _payloads),
       ),
+      // ------------------------------------------------------------ 文档拦截
+      //
+      // 小程序包是本地 file:// 页面。这里在主文档被解析之前把它取出来，
+      // 把「主题变量 + MD3E 基础样式 + DOM 拦截脚本」插到 <head> 最前面，
+      // 再原样交还给 WebView（相对资源仍然按原 URL 解析）。
+      //
+      // 为什么不在 onLoadStop 里注入：那时页面已经按浏览器默认样式画完第一帧了，
+      // 用户会看到一次「旧样式 → 新样式」的跳变；标签页里的 CSP 也可能拒绝
+      // 动态插入的 <style>。改写文档没有这两个问题。
+      //
+      // 返回 null = 不接管（非主文档 / 非 file:// / 读不到文件），
+      // WebView 会按它自己的默认流程加载。
+      shouldInterceptRequest:
+          (InAppWebViewController controller, WebResourceRequest request) =>
+              Md3eInterceptor.intercept(request: request, payload: payload),
       onWebViewCreated: (InAppWebViewController controller) {
         lemonLog('Miniapp', 'WebView 已创建');
         _onWebViewCreated(controller);

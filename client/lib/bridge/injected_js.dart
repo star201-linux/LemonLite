@@ -1175,6 +1175,50 @@ class LemonJsSdk {
      *   });
      *   off();
      */
+    /**
+     * MD3 Expressive 样式拦截器的开关与手动扫描。
+     *
+     * 宿主会在页面解析前就把样式写进 <head>，并自动给「没有作者样式」的
+     * 原生控件打标记；小程序**不需要调用这里**，这些方法只用于例外情况：
+     *
+     *   lemonlite.md3e.disable();   // 某一段界面要完全自己控制（例如嵌入的画布编辑器）
+     *   lemonlite.md3e.enable();    // 恢复自动接管
+     *   lemonlite.md3e.apply(el);   // 手动接管一个动态创建、没走 DOM 观察器的子树
+     *
+     * 注意 disable() 会作用到整个页面；只想放过局部时，给那个容器加
+     * `data-md3e="off"` 属性即可（拦截器会跳过它下面的所有元素）。
+     */
+    md3e: {
+      /** 手动扫描一个子树（默认整个文档），用于绕过观察器的极端场景 */
+      apply: function (root) {
+        var api = window.__lemonliteMd3e;
+        if (!api) { return 0; }
+        var before = document.querySelectorAll('[data-md3e-role]').length;
+        api.scan(root || document);
+        return document.querySelectorAll('[data-md3e-role]').length - before;
+      },
+      /** 重新扫描整个文档 */
+      refresh: function () {
+        var api = window.__lemonliteMd3e;
+        if (api) { api.refresh(); }
+      },
+      /** 关闭自动接管（会把已经打上的标记撤掉） */
+      disable: function () {
+        var api = window.__lemonliteMd3e;
+        if (api) { api.disable(); }
+      },
+      /** 恢复自动接管 */
+      enable: function () {
+        var api = window.__lemonliteMd3e;
+        if (api) { api.enable(); }
+      },
+      /** 当前是否在自动接管 */
+      get enabled() {
+        var api = window.__lemonliteMd3e;
+        return api ? api.isEnabled() : false;
+      }
+    },
+
     onThemeChange: function (callback) {
       if (typeof callback !== 'function') { return function () {}; }
       themeListeners.push(callback);

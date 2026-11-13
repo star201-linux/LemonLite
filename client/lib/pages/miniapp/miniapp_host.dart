@@ -123,7 +123,12 @@ class MiniappHost extends ChangeNotifier {
       isTransient: isTransient,
       declaredPermissions: declaredPermissions,
     );
-    session.bindTitleListener(notifyListeners);
+    session.bindTitleListener(() {
+      notifyListeners();
+      // 小程序 setTitle 之后，最近任务卡片上的名字也要跟着变。
+      // 走的是去抖版本：标题可能被逐字改（打字机效果），不值得每改一次就跨一次 Binder。
+      _scheduleTaskDescriptionSync();
+    });
     _sessions.add(session);
 
     // 回外壳层：不这么做的话，从详情页打开小程序后，系统返回键会被详情页
@@ -135,6 +140,8 @@ class MiniappHost extends ChangeNotifier {
     _foregroundId = appId;
 
     _syncToastTarget();
+    // 最近任务里的卡片立刻换成这个小程序的名字和图标（见 _syncTaskDescription）
+    _scheduleTaskDescriptionSync(immediate: true);
     unawaited(session.applyWindowFlags());
     // 应用清单：应用管理与权限管理器都从它取数据，靠它把 appId 显示成名字。
     // 登记时一并带上图标与入口地址，这样权限弹窗顶部那个图标
@@ -169,6 +176,8 @@ class MiniappHost extends ChangeNotifier {
     session.lastActiveAt = DateTime.now();
     _foregroundId = appId;
     _syncToastTarget();
+    // 从后台切回来：最近任务卡片也要换回这个小程序
+    _scheduleTaskDescriptionSync(immediate: true);
     // 恢复这个会话的 JS 定时器（后台期间是被挂起的）
     try {
       await session.onResumeTimers?.call();
@@ -206,6 +215,8 @@ class MiniappHost extends ChangeNotifier {
     session.isForeground = false;
     _foregroundId = null;
     _syncToastTarget();
+    // 屏幕上又变回宿主了：卡片恢复成「轻柠」
+    _scheduleTaskDescriptionSync(immediate: true);
     // 挂起 JS 定时器。后台的小程序只保留页面状态（DOM、滚动位置、
     // 表单内容都在），但不该继续跑 setInterval —— 那会让前台掉帧、
     // 也会让「后台运行」变成「后台耗电」。回前台时再 resumeTimers。
@@ -230,6 +241,9 @@ class MiniappHost extends ChangeNotifier {
     if (wasForeground) _foregroundId = null;
 
     _syncToastTarget();
+    // 关掉的是前台那个 → 卡片回到宿主；关的是后台那个 → 前台不变（这里会重新套用一次，
+    // 内容相同，原生侧会直接跳过）
+    _scheduleTaskDescriptionSync(immediate: true);
     notifyListeners();
 
     // 等这一帧的卸载走完再销毁 notifier：widget 的 dispose 里还会 removeListener
@@ -250,6 +264,7 @@ class MiniappHost extends ChangeNotifier {
   /// 生产代码不该调用它（它不走正常的关闭流程，不会通知 UI）。
   @visibleForTesting
   void resetForTest() {
+    _taskDescriptionTimer?.cancel();
     for (final MiniappSession s in _sessions) {
       s.titleNotifier.removeListener(notifyListeners);
     }
@@ -347,6 +362,71 @@ class MiniappHost extends ChangeNotifier {
           const SizedBox.expand(),
         ],
       ),
+    );
+  }
+
+  // ------------------------------------------- 最近任务里的卡片（图标 / 名字）
+
+  /// 标题去抖用的定时器（见 [_scheduleTaskDescriptionSync]）
+  Timer? _taskDescriptionTimer;
+
+  /// 安排一次「最近任务卡片」同步。
+  ///
+  /// [immediate]：用户明确的前台/后台切换，要立刻看到效果；
+  /// 不带它则走 300ms 去抖 —— 小程序可能用 setTitle 逐字改标题，
+  /// 每敲一个字就跨一次 Binder 传一张 Bitmap 纯属浪费。
+  void _scheduleTaskDescriptionSync({bool immediate = false}) {
+    _taskDescriptionTimer?.cancel();
+    if (immediate) {
+      unawaited(_syncTaskDescription());
+      return;
+    }
+    _taskDescriptionTimer = Timer(const Duration(milliseconds: 300), () {
+      unawaited(_syncTaskDescription());
+    });
+  }
+
+  /// 把「最近任务」里的那张卡片刷成当前状态：前台是小程序就显示小程序，
+  /// 否则显示宿主自己。详见 NativeBridge.setTaskDescription 的注释。
+  Future<void> _syncTaskDescription() async {
+    final MiniappSession? session = foregroundSession;
+    if (session == null) {
+      await NativeBridge.resetTaskDescription();
+      return;
+    }
+
+    // 第一步：只用**本机已有**的图标立刻上卡，不等网络。
+    // 标题是卡片上最要紧的信息，为了等一张图标把名字拖后几百毫秒不划算；
+    // 没有图标时原生会退到宿主图标，观感也说得过去。
+    String? iconPath;
+    try {
+      iconPath = await IconCacheService.instance.pathOf(session.appId);
+    } catch (e) {
+      lemonLog('Host', '读小程序图标失败：$e');
+    }
+    if (_foregroundId != session.appId) return;
+    await NativeBridge.setTaskDescription(
+      label: session.title,
+      iconPath: iconPath,
+    );
+
+    // 第二步：本机没有图但服务端给了地址 → 后台补一次，拿到后再刷一遍。
+    // 下载失败会返回 null，什么都不做（卡片保持宿主图标）。
+    final String url = session.iconUrl?.trim() ?? '';
+    if (iconPath != null || url.isEmpty) return;
+    String? fresh;
+    try {
+      fresh = await IconCacheService.instance.ensure(
+        appId: session.appId,
+        url: url,
+      );
+    } catch (e) {
+      lemonLog('Host', '缓存小程序图标失败：$e');
+    }
+    if (fresh == null || _foregroundId != session.appId) return;
+    await NativeBridge.setTaskDescription(
+      label: session.title,
+      iconPath: fresh,
     );
   }
 

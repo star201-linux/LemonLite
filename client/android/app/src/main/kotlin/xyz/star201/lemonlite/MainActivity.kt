@@ -1,9 +1,13 @@
 package xyz.star201.lemonlite
 
 import android.Manifest
+import android.app.ActivityManager
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.os.Build
 import android.os.Bundle
 import android.os.Process
@@ -43,6 +47,15 @@ class MainActivity : FlutterActivity() {
 
         /** requestRuntimePermissions 的请求码，onRequestPermissionsResult 里要按它比对。 */
         const val RUNTIME_PERMISSION_REQUEST = 0x4C4D
+
+        /**
+         * 「最近任务」卡片图标的边长上限（像素）。
+         *
+         * TaskDescription 要跨 Binder 传一个 Bitmap，太大不但慢，还可能撞上
+         * 1MB 的事务上限直接抛 TransactionTooLargeException。192px 在 3x 屏幕上
+         * 也有 576 物理像素，够清楚；再大只是浪费。
+         */
+        const val TASK_ICON_MAX_PX = 192
     }
 
     /** 是否因为数据目录锁冲突而启用了独立的 WebView 数据目录（Dart 侧启动时会查询并写日志）。 */
@@ -76,6 +89,22 @@ class MainActivity : FlutterActivity() {
      * 若真的并发来了第二次请求，直接把旧的按「拒绝」结掉，避免泄漏。
      */
     private var pendingPermissionResult: MethodChannel.Result? = null
+
+    /**
+     * 「最近任务」卡片的默认样子（轻柠的图标 + 名字）。
+     *
+     * 懒计算：只有真的改过卡片（用户打开过小程序）才需要它来恢复，
+     * 冷启动路径上不该为此多画一次图标。
+     */
+    private var defaultTaskDescription: ActivityManager.TaskDescription? = null
+
+    /**
+     * 上一次真正写给系统的 `label|icon` 组合。
+     *
+     * 小程序 setTitle 可能逐字改标题（比如做打字机效果），每次都跨 Binder 传
+     * 一个 Bitmap 属于纯浪费；内容没变就直接返回。
+     */
+    private var appliedTaskKey: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // 必须放在 super.onCreate 之前：configureFlutterEngine 会触发插件初始化，
@@ -220,6 +249,17 @@ class MainActivity : FlutterActivity() {
 
             "openAppSettings" -> result.success(openAppSettings())
 
+            // 小程序切到前台：把「最近任务」里的卡片换成**它的**图标和名字，
+            // 而不是晃着一个「轻柠」让用户以为自己回到了宿主。
+            "setTaskDescription" -> {
+                val label = call.argument<String>("label") ?: ""
+                val iconPath = call.argument<String>("iconPath")
+                result.success(applyTaskDescription(label, iconPath))
+            }
+
+            // 回到宿主（小程序转后台 / 关闭 / 回主页）：卡片恢复成轻柠自己的样子。
+            "resetTaskDescription" -> result.success(resetTaskDescription())
+
             // 启动预检的结果：Dart 侧启动时会查询并写进日志，
             // 这样导出的日志里能看出「这次是走了独立数据目录启动的」。
             "getWebviewPreflight" -> result.success(webviewSuffixApplied)
@@ -349,6 +389,126 @@ class MainActivity : FlutterActivity() {
         val allGranted =
             grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
         result.success(allGranted)
+    }
+
+    /**
+     * 把「最近任务」里的卡片改成 [label] + [iconPath] 指向的图标。
+     *
+     * 为什么需要这个：整个宿主只有一个 Activity、一个任务。用户打开小程序后
+     * 按 Home 键，最近任务里原本只有一个写着「轻柠」的卡片 —— 他再点回来时
+     * 根本分不清那是宿主还是刚才那个小程序，也和「小程序像独立应用」的预期不符。
+     * TaskDescription 正好是系统给的、唯一的「这张卡叫什么、长什么样」的入口。
+     *
+     * @param iconPath 本地图片绝对路径（图标缓存里那张）；为空表示没有图标，
+     *   此时用宿主自己的图标兜底，而不是留一个空白方块。
+     */
+    @Suppress("DEPRECATION")
+    private fun applyTaskDescription(label: String, iconPath: String?): Boolean {
+        // 标题是给用户看的一行字：去掉首尾空白，并且限长。
+        // 超长标题在最近任务里会被截断成一串省略号，不如我们自己收口。
+        val title = label.trim().take(40).ifBlank { defaultLabel() }
+        val path = iconPath?.takeIf { it.isNotBlank() }
+        val key = "$title|${path ?: ""}"
+        if (key == appliedTaskKey) return true
+
+        val icon = path?.let { decodeTaskIcon(it) } ?: appIconBitmap()
+        return try {
+            setTaskDescription(ActivityManager.TaskDescription(title, icon))
+            appliedTaskKey = key
+            true
+        } catch (e: Throwable) {
+            // 卡片长什么样是锦上添花：失败也只该影响最近任务的观感，绝不能让应用崩。
+            android.util.Log.w("LemonLite", "设置最近任务卡片失败", e)
+            false
+        }
+    }
+
+    /** 恢复成宿主自己的卡片（小程序全部退到后台 / 关闭时调用）。 */
+    @Suppress("DEPRECATION")
+    private fun resetTaskDescription(): Boolean {
+        if (appliedTaskKey == null) return true
+        return try {
+            setTaskDescription(defaultTaskDescription ?: buildDefaultTaskDescription().also {
+                defaultTaskDescription = it
+            })
+            appliedTaskKey = null
+            true
+        } catch (e: Throwable) {
+            android.util.Log.w("LemonLite", "恢复最近任务卡片失败", e)
+            false
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun buildDefaultTaskDescription(): ActivityManager.TaskDescription =
+        ActivityManager.TaskDescription(defaultLabel(), appIconBitmap())
+
+    private fun defaultLabel(): String =
+        try {
+            packageManager.getApplicationLabel(applicationInfo).toString()
+        } catch (e: Throwable) {
+            "LemonLite"
+        }
+
+    /**
+     * 解码小程序图标，并按 [TASK_ICON_MAX_PX] 缩小。
+     *
+     * 只接受本应用数据目录内的文件：这个通道虽然只有我们自己会调，但
+     * 「随便传一个路径就给读」是没有理由的宽松 —— 和 makeReadable 一样，
+     * 把范围钉死在 dataDir 里。
+     */
+    private fun decodeTaskIcon(path: String): Bitmap? {
+        return try {
+            val file = File(path).canonicalFile
+            val dataDir = File(applicationInfo.dataDir).canonicalPath
+            if (file.path != dataDir && !file.path.startsWith("$dataDir/")) {
+                android.util.Log.w("LemonLite", "拒绝读取数据目录之外的图标：$path")
+                return null
+            }
+            if (!file.isFile) return null
+
+            // 先只读尺寸算出采样率，再真正解码：图标可能是 1024px 的大图，
+            // 直接整张读进内存再缩，低端机上会有一瞬间的几十 MB 峰值。
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.path, bounds)
+            var sample = 1
+            while (
+                bounds.outWidth / (sample * 2) >= TASK_ICON_MAX_PX &&
+                    bounds.outHeight / (sample * 2) >= TASK_ICON_MAX_PX
+            ) {
+                sample *= 2
+            }
+            val options = BitmapFactory.Options().apply { inSampleSize = sample }
+            BitmapFactory.decodeFile(file.path, options)?.let { scaleDown(it) }
+        } catch (e: Throwable) {
+            android.util.Log.w("LemonLite", "读取小程序图标失败：$path", e)
+            null
+        }
+    }
+
+    /** 宿主自己的图标（Bitmap 版），作为「小程序没有图标」时的兜底。 */
+    private fun appIconBitmap(): Bitmap? {
+        return try {
+            val drawable = packageManager.getApplicationIcon(packageName)
+            val width = drawable.intrinsicWidth.coerceAtLeast(1)
+            val height = drawable.intrinsicHeight.coerceAtLeast(1)
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            drawable.setBounds(0, 0, canvas.width, canvas.height)
+            drawable.draw(canvas)
+            scaleDown(bitmap)
+        } catch (e: Throwable) {
+            null
+        }
+    }
+
+    private fun scaleDown(source: Bitmap): Bitmap {
+        val longest = maxOf(source.width, source.height)
+        if (longest <= TASK_ICON_MAX_PX) return source
+        val ratio = TASK_ICON_MAX_PX.toFloat() / longest
+        val width = (source.width * ratio).toInt().coerceAtLeast(1)
+        val height = (source.height * ratio).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(source, width, height, true)
     }
 
     /**

@@ -215,6 +215,58 @@ class NativeBridge {
     }
   }
 
+  /// 把「最近任务」里的卡片改成 [label] + [iconPath]（本地图片绝对路径）。
+  ///
+  /// 为什么需要：宿主只有一个任务，用户打开小程序后按 Home，
+  /// 最近任务里原本只有一个写着「轻柠」的卡片 —— 点回来时分不清那是什么，
+  /// 也不像「小程序是一个独立应用」。改成小程序自己的名字和图标后，
+  /// 从后台切回来看到的就是刚才那个小程序，和微信小程序的做法一致。
+  ///
+  /// [iconPath] 为空时原生用宿主图标兜底；读不到文件同样兜底，不会留空白。
+  static Future<bool> setTaskDescription({
+    required String label,
+    String? iconPath,
+  }) async {
+    if (!isSupported) return false;
+    try {
+      final bool? ok = await channel.invokeMethod<bool>(
+        'setTaskDescription',
+        <String, Object?>{'label': label, 'iconPath': iconPath},
+      );
+      return ok ?? false;
+    } on PlatformException catch (e) {
+      _logFailure('setTaskDescription', e);
+      return false;
+    } on MissingPluginException catch (e) {
+      _logFailure('setTaskDescription', e);
+      return false;
+    } catch (e) {
+      _logFailure('setTaskDescription', e);
+      return false;
+    }
+  }
+
+  /// 把「最近任务」卡片恢复成宿主自己的名字和图标。
+  ///
+  /// 调用时机：小程序转后台 / 关闭 / 全部退出 —— 那一刻屏幕上确实是轻柠，
+  /// 卡片上还挂着小程序名字会让人以为小程序还在前台。
+  static Future<bool> resetTaskDescription() async {
+    if (!isSupported) return false;
+    try {
+      final bool? ok = await channel.invokeMethod<bool>('resetTaskDescription');
+      return ok ?? false;
+    } on PlatformException catch (e) {
+      _logFailure('resetTaskDescription', e);
+      return false;
+    } on MissingPluginException catch (e) {
+      _logFailure('resetTaskDescription', e);
+      return false;
+    } catch (e) {
+      _logFailure('resetTaskDescription', e);
+      return false;
+    }
+  }
+
   /// 申请 Android **运行时权限**（CAMERA / RECORD_AUDIO 等）。
   ///
   /// 为什么必须由宿主来做：WebView 的 `onPermissionRequest` 只告诉宿主
