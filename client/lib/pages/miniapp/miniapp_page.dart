@@ -1019,34 +1019,49 @@ class _FloatingMoreButton extends StatelessWidget {
         // 按钮在右上角，菜单默认往下方弹，正好在屏幕内
         offset: const Offset(0, 8),
         onSelected: onSelected,
-        itemBuilder: (BuildContext c) => <PopupMenuEntry<_HostMenuAction>>[
-          PopupMenuItem<_HostMenuAction>(
-            value: _HostMenuAction.home,
-            child: _menuRow(context, Icons.home_outlined, '返回主页'),
-          ),
-          PopupMenuItem<_HostMenuAction>(
-            value: _HostMenuAction.reload,
-            child: _menuRow(context, Icons.refresh, '刷新'),
-          ),
-          const PopupMenuDivider(),
-          PopupMenuItem<_HostMenuAction>(
-            value: _HostMenuAction.close,
-            child: _menuRow(context, Icons.close, '关闭', danger: true),
-          ),
-          PopupMenuItem<_HostMenuAction>(
-            value: _HostMenuAction.background,
-            child: _menuRow(context, Icons.play_circle_outline, '后台运行'),
-          ),
-          const PopupMenuDivider(),
-          PopupMenuItem<_HostMenuAction>(
-            value: _HostMenuAction.permissions,
-            child: _menuRow(context, Icons.verified_user_outlined, '权限管理'),
-          ),
-          PopupMenuItem<_HostMenuAction>(
-            value: _HostMenuAction.backgroundApps,
-            child: _menuRow(context, Icons.layers_outlined, '后台应用'),
-          ),
-        ],
+        itemBuilder: (BuildContext c) {
+          // 窗口模式（小程序作为独立任务打开）里没有「宿主主页」也没有
+          // 「后台应用列表」：这个窗口本身就是一个独立应用，系统切换器
+          // 就是它的后台。菜单里只留「刷新 / 关闭 / 权限」三件事，
+          // 少掉的两个选项不是藏起来，而是这个模式下真的不存在。
+          final bool window = MiniappHost.instance.windowMode;
+          return <PopupMenuEntry<_HostMenuAction>>[
+            if (!window)
+              PopupMenuItem<_HostMenuAction>(
+                value: _HostMenuAction.home,
+                child: _menuRow(context, Icons.home_outlined, '返回主页'),
+              ),
+            PopupMenuItem<_HostMenuAction>(
+              value: _HostMenuAction.reload,
+              child: _menuRow(context, Icons.refresh, '刷新'),
+            ),
+            const PopupMenuDivider(),
+            PopupMenuItem<_HostMenuAction>(
+              value: _HostMenuAction.close,
+              child: _menuRow(
+                context,
+                Icons.close,
+                window ? '关闭窗口' : '关闭',
+                danger: true,
+              ),
+            ),
+            if (!window)
+              PopupMenuItem<_HostMenuAction>(
+                value: _HostMenuAction.background,
+                child: _menuRow(context, Icons.play_circle_outline, '后台运行'),
+              ),
+            const PopupMenuDivider(),
+            PopupMenuItem<_HostMenuAction>(
+              value: _HostMenuAction.permissions,
+              child: _menuRow(context, Icons.verified_user_outlined, '权限管理'),
+            ),
+            if (!window)
+              PopupMenuItem<_HostMenuAction>(
+                value: _HostMenuAction.backgroundApps,
+                child: _menuRow(context, Icons.layers_outlined, '后台应用'),
+              ),
+          ];
+        },
         child: SizedBox(
           width: 34,
           height: 34,

@@ -267,6 +267,64 @@ class NativeBridge {
     }
   }
 
+  /// 把小程序**作为独立任务**打开（Android「最近任务」里多一张卡）。
+  ///
+  /// 与 `MiniappHost.open()` 的区别是根本性的：
+  ///   * `MiniappHost.open` 是宿主进程里的一个层，最近任务里只有宿主那张卡；
+  ///   * 这个方法是新 Activity + 新 Flutter 引擎 + 新任务卡，宿主那张卡不变，
+  ///     两张卡在切换器里并存（微信小程序就是这么做的）。
+  ///
+  /// 返回 false 表示原生侧没接这个请求（非 Android / 通道不可用），
+  /// 调用方应当退回宿主内嵌的打开方式，而不是什么都不做。
+  static Future<bool> openMiniappWindow({
+    required String appId,
+    required String title,
+    String? iconPath,
+  }) async {
+    if (!isSupported) return false;
+    try {
+      final bool? ok = await channel.invokeMethod<bool>(
+        'openMiniappWindow',
+        <String, Object?>{
+          'appId': appId,
+          'title': title,
+          'iconPath': iconPath,
+        },
+      );
+      return ok ?? false;
+    } on PlatformException catch (e) {
+      _logFailure('openMiniappWindow', e);
+      return false;
+    } on MissingPluginException catch (e) {
+      _logFailure('openMiniappWindow', e);
+      return false;
+    } catch (e) {
+      _logFailure('openMiniappWindow', e);
+      return false;
+    }
+  }
+
+  /// 结束当前这条任务（只在小程序窗口里有效）。
+  ///
+  /// 在宿主里调用会返回 false 而**不会**关掉 App —— 那条判断在原生侧，
+  /// 因为「我是不是一个窗口」只有 Activity 自己知道。
+  static Future<bool> finishTask() async {
+    if (!isSupported) return false;
+    try {
+      final bool? ok = await channel.invokeMethod<bool>('finishTask');
+      return ok ?? false;
+    } on PlatformException catch (e) {
+      _logFailure('finishTask', e);
+      return false;
+    } on MissingPluginException catch (e) {
+      _logFailure('finishTask', e);
+      return false;
+    } catch (e) {
+      _logFailure('finishTask', e);
+      return false;
+    }
+  }
+
   /// 申请 Android **运行时权限**（CAMERA / RECORD_AUDIO 等）。
   ///
   /// 为什么必须由宿主来做：WebView 的 `onPermissionRequest` 只告诉宿主

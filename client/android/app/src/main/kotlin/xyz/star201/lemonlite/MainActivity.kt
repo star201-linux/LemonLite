@@ -25,12 +25,16 @@ import kotlin.math.roundToInt
 /**
  * 宿主 Activity：承载 Flutter 引擎，并暴露 `lemonlite/native` 通道。
  *
+ * 为什么是 `open`：MiniappTaskActivity（小程序独立窗口）直接继承它，
+ * 这样 `lemonlite/native` 通道的所有能力在两个 Activity 里是同一份实现，
+ * 不会出现「宿主能用、窗口里用不了」的漂移。
+ *
  * 为什么这些能力做在 MainActivity 而不是做成一个独立 Flutter Plugin：
  * 亮度、常亮、屏幕方向都是**窗口级**状态，必须拿到当前 Activity 的 Window 才能改。
  * 做成插件就得走 ActivityAware 生命周期、再让插件反向持有 Activity，凭空多出一层
  * 「attach/detach 时序」状态；而宿主只有这一个 Activity，直接放在这里最省事、最少状态。
  */
-class MainActivity : FlutterActivity() {
+open class MainActivity : FlutterActivity() {
 
     private companion object {
         /** 与 Dart 侧 NativeBridge.channel 逐字一致，改一端必须改另一端。 */
@@ -57,6 +61,15 @@ class MainActivity : FlutterActivity() {
          */
         const val TASK_ICON_MAX_PX = 192
     }
+
+    /**
+     * 当前 Activity 是不是「小程序窗口」（独立任务）。
+     *
+     * MainActivity 是宿主本体，值为 false；MiniappTaskActivity 覆写成 true。
+     * 有些通道方法（finishTask）只对窗口有意义，靠它区分。
+     */
+    protected open val isTaskWindow: Boolean
+        get() = false
 
     /** 是否因为数据目录锁冲突而启用了独立的 WebView 数据目录（Dart 侧启动时会查询并写日志）。 */
     private var webviewSuffixApplied = false
@@ -260,6 +273,26 @@ class MainActivity : FlutterActivity() {
             // 回到宿主（小程序转后台 / 关闭 / 回主页）：卡片恢复成轻柠自己的样子。
             "resetTaskDescription" -> result.success(resetTaskDescription())
 
+            // 把一个小程序**作为独立任务**打开：新 Activity + 新引擎 + 新的任务卡，
+            // 宿主这张卡原样留在切换器里（详见 MiniappTaskActivity）。
+            "openMiniappWindow" -> {
+                val appId = call.argument<String>("appId") ?: ""
+                val title = call.argument<String>("title") ?: appId
+                val iconPath = call.argument<String>("iconPath")
+                result.success(openMiniappWindow(appId, title, iconPath))
+            }
+
+            // 只对窗口 Activity 生效：结束这张任务卡（宿主调它什么也不做，
+            // 否则一次误调就把整个 App 关了）。
+            "finishTask" -> {
+                if (!isTaskWindow) {
+                    result.success(false)
+                } else {
+                    result.success(true)
+                    finishAndRemoveTask()
+                }
+            }
+
             // 启动预检的结果：Dart 侧启动时会查询并写进日志，
             // 这样导出的日志里能看出「这次是走了独立数据目录启动的」。
             "getWebviewPreflight" -> result.success(webviewSuffixApplied)
@@ -403,7 +436,7 @@ class MainActivity : FlutterActivity() {
      *   此时用宿主自己的图标兜底，而不是留一个空白方块。
      */
     @Suppress("DEPRECATION")
-    private fun applyTaskDescription(label: String, iconPath: String?): Boolean {
+    protected fun applyTaskDescription(label: String, iconPath: String?): Boolean {
         // 标题是给用户看的一行字：去掉首尾空白，并且限长。
         // 超长标题在最近任务里会被截断成一串省略号，不如我们自己收口。
         val title = label.trim().take(40).ifBlank { defaultLabel() }
@@ -457,7 +490,7 @@ class MainActivity : FlutterActivity() {
      * 「随便传一个路径就给读」是没有理由的宽松 —— 和 makeReadable 一样，
      * 把范围钉死在 dataDir 里。
      */
-    private fun decodeTaskIcon(path: String): Bitmap? {
+    protected fun decodeTaskIcon(path: String): Bitmap? {
         return try {
             val file = File(path).canonicalFile
             val dataDir = File(applicationInfo.dataDir).canonicalPath
@@ -509,6 +542,45 @@ class MainActivity : FlutterActivity() {
         val width = (source.width * ratio).toInt().coerceAtLeast(1)
         val height = (source.height * ratio).toInt().coerceAtLeast(1)
         return Bitmap.createScaledBitmap(source, width, height, true)
+    }
+
+    /**
+     * 把小程序作为独立任务打开。
+     *
+     * 为什么不是「在宿主里再叠一层」：那样最近任务里只有一张卡，
+     * 要么写着「轻柠」（用户看不出这是哪个小程序），要么被改名成小程序
+     * （宿主那张卡就没了）。用户要的是「宿主一张卡、小程序一张卡」——
+     * 也就是微信小程序的做法：两个任务在切换器里并存，各自独立切换。
+     *
+     * 实现上只有一条路：**另一个 Activity 实例**。Flutter 的一个引擎只能
+     * 对应一个 View，所以新窗口会创建自己的引擎（独立 isolate），
+     * 从已安装包重新加载那个小程序 —— 两边的运行状态互不干扰，
+     * 这也正是「独立窗口」应有的语义。
+     *
+     * `data` 用 `lemonlite://miniapp/<appId>`，配 manifest 里的
+     * `documentLaunchMode="intoExisting"`：同一个 appId 再次打开时
+     * 系统会把**已有那张卡**提到前台，而不是越开越多。
+     */
+    private fun openMiniappWindow(appId: String, title: String, iconPath: String?): Boolean {
+        if (appId.isBlank()) return false
+        return try {
+            val intent =
+                Intent(this, MiniappTaskActivity::class.java).apply {
+                    // 文档标识：同一个小程序 = 同一份文档 = 复用同一个任务
+                    data = Uri.parse("lemonlite://miniapp/${Uri.encode(appId)}")
+                    putExtra(MiniappTaskActivity.EXTRA_APP_ID, appId)
+                    putExtra(MiniappTaskActivity.EXTRA_TITLE, title)
+                    putExtra(MiniappTaskActivity.EXTRA_ICON, iconPath)
+                    // NEW_DOCUMENT 才会新开任务；MULTIPLE_TASK 会绕过
+                    // intoExisting（每次都新开），所以这里**不能**加。
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
+                }
+            startActivity(intent)
+            true
+        } catch (e: Throwable) {
+            android.util.Log.w("LemonLite", "打开小程序窗口失败：$appId", e)
+            false
+        }
     }
 
     /**

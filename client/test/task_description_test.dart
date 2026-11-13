@@ -55,6 +55,10 @@ void main() {
           return Directory.systemTemp.path;
         });
 
+    // 卡片同步只在「独立窗口」里发生（宿主那张卡永远叫「轻柠」）。
+    // 窗口由 main() 的窗口分支置位，测试里手动摆成同一个状态。
+    MiniappHost.instance.windowMode = true;
+
     SharedPreferences.setMockInitialValues(<String, Object>{});
     await SettingsService.init();
     PermissionService.init();
@@ -145,6 +149,20 @@ void main() {
     final Map<Object?, Object?> args =
         task.last.arguments as Map<Object?, Object?>;
     expect(args['label'], '月度报表');
+  });
+
+  testWidgets('宿主模式不动系统卡片（主程序永远叫「轻柠」）', (WidgetTester tester) async {
+    MiniappHost.instance.windowMode = false;
+    await MiniappHost.instance.open(
+      appId: 'com.example.ledger',
+      title: '记账本',
+      isTransient: true,
+    );
+    await settle(tester);
+    await MiniappHost.instance.sendToBackground('com.example.ledger');
+    await settle(tester);
+
+    expect(taskCalls(), isEmpty, reason: '宿主内嵌模式没有独立任务卡，不该改系统卡片');
   });
 
   testWidgets('没有前台会话时的重复重置是幂等的（不产生多余调用）', (WidgetTester tester) async {

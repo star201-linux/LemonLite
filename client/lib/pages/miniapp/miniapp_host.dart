@@ -63,6 +63,16 @@ class MiniappHost extends ChangeNotifier {
 
   String? _foregroundId;
 
+  /// 当前进程是不是「小程序独立窗口」（而不是宿主本体）。
+  ///
+  /// 由 `miniapp_window.dart` 在启动时置位。同一个 App 的第二个任务会跑一个
+  /// **独立引擎**，所以这个标记在两边各自为政 —— 正好符合语义：
+  /// 窗口里的 `MiniappHost` 只服务这一个窗口。
+  ///
+  /// 它影响三处「退出」语义（见 handleSystemBack / goHome / close）：
+  /// 宿主里是「转后台 / 回主页」，窗口里是「关掉这张任务卡」。
+  bool windowMode = false;
+
   /// 当前全部会话（顺序 = 打开顺序）
   List<MiniappSession> get sessions =>
       List<MiniappSession>.unmodifiable(_sessions);
@@ -198,6 +208,12 @@ class MiniappHost extends ChangeNotifier {
   ///
   /// 会话**不销毁**：用户能从主页的后台应用角标或「后台应用」里回来。
   Future<void> goHome() async {
+    // 窗口里没有「主页」可回：这张卡本身就代表那个小程序。
+    if (windowMode) {
+      final MiniappSession? current = foregroundSession;
+      if (current != null) await close(current.appId);
+      return;
+    }
     final MiniappSession? session = foregroundSession;
     if (session != null) {
       await sendToBackground(session.appId);
@@ -253,6 +269,10 @@ class MiniappHost extends ChangeNotifier {
       await NativeBridge.setKeepScreenOn(false);
     }
     lemonLog('Host', '关闭小程序 $appId（剩余 ${_sessions.length} 个）');
+    // 窗口里没有「空窗口」这种状态：最后一个会话没了，这张卡就该消失。
+    if (windowMode && _sessions.isEmpty) {
+      await NativeBridge.finishTask();
+    }
   }
 
   /// **仅供测试**：把宿主恢复到「没有任何会话」的干净状态。
@@ -265,6 +285,9 @@ class MiniappHost extends ChangeNotifier {
   @visibleForTesting
   void resetForTest() {
     _taskDescriptionTimer?.cancel();
+    // 窗口标记是进程级的「模式」，测试之间必须复位，否则上一条用例
+    // 把 Host 切成窗口模式后，下一条用例的「转后台」会变成「关窗口」。
+    windowMode = false;
     for (final MiniappSession s in _sessions) {
       s.titleNotifier.removeListener(notifyListeners);
     }
@@ -313,6 +336,12 @@ class MiniappHost extends ChangeNotifier {
       if (handled) return true;
     } catch (e) {
       lemonLog('Host', '返回键处理失败，按后台运行处理：$e');
+    }
+    // 窗口模式没有「后台」这个概念（系统切换器就是它的后台）：
+    // 退到页面历史最前面，再按一次就该关掉这张任务卡。
+    if (windowMode) {
+      await close(session.appId);
+      return true;
     }
     final String title = session.title;
     await sendToBackground(session.appId);
@@ -389,6 +418,10 @@ class MiniappHost extends ChangeNotifier {
   /// 把「最近任务」里的那张卡片刷成当前状态：前台是小程序就显示小程序，
   /// 否则显示宿主自己。详见 NativeBridge.setTaskDescription 的注释。
   Future<void> _syncTaskDescription() async {
+    // 宿主那张卡永远是「轻柠」—— 用户明确要求「主程序不变」。
+    // 只有独立窗口才需要把卡片刷成小程序（窗口本身代表那个小程序）。
+    // 宿主内嵌模式（自检 / 非 Android 降级）不去动系统卡片。
+    if (!windowMode) return;
     final MiniappSession? session = foregroundSession;
     if (session == null) {
       await NativeBridge.resetTaskDescription();

@@ -18,6 +18,7 @@ import 'data/services/application_registry.dart';
 import 'data/services/download_service.dart';
 import 'data/services/permission_service.dart';
 import 'data/services/settings_service.dart';
+import 'pages/miniapp/miniapp_window.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -25,6 +26,22 @@ Future<void> main() async {
   // 尽早接上异常钩子：之后的任何异常都会进日志缓冲区，
   // 用户一键导出就能看到。这是「release 包也能排障」的基石。
   RunLog.instance.installErrorHooks();
+
+  // 这个进程是「宿主」还是某个小程序开出来的「独立窗口」？
+  //
+  // 原生侧用两种方式启动同一个 Flutter 代码：
+  //   * Launcher → MainActivity → 路由 "/"                  → 宿主
+  //   * 打开小程序 → MiniappTaskActivity → 路由 "/miniapp-window?appId=…"
+  //                                                          → 只渲染那个小程序
+  // 判断放在这里、且在任何单例初始化之前：窗口走的是另一套更轻的启动流程，
+  // 让宿主那一整套（账号、市场、下载队列）在窗口进程里白跑一遍没有意义。
+  final String initialRoute =
+      WidgetsBinding.instance.platformDispatcher.defaultRouteName;
+  final MiniappWindowArgs? windowArgs = MiniappWindowArgs.parse(initialRoute);
+  if (windowArgs != null) {
+    await runMiniappWindow(windowArgs);
+    return;
+  }
 
   final SettingsService settings = await SettingsService.init();
   // 权限服务必须在任何小程序页面之前就绪：桥接层每次调用都会查它，

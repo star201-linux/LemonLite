@@ -237,7 +237,9 @@ class _EmptyState extends StatelessWidget {
             Text('没有正在运行的小程序', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
             Text(
-              '从主页打开一个应用，然后在小程序里选「后台运行」，它就会出现在这里。',
+              '小程序现在以独立窗口打开：它会出现在系统的「最近任务」里，'
+              '从那里切回去就行，不占用宿主会话。\n\n'
+              '这里只列宿主内嵌运行的会话（开发者选项里的本地包调试、自检等）。',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: scheme.onSurfaceVariant,

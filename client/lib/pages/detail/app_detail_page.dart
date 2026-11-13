@@ -27,6 +27,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/globals.dart';
+import '../../core/native_bridge.dart';
 import '../../data/models/app_item.dart';
 import '../../data/models/app_version.dart';
 import '../../data/models/category.dart';
@@ -561,14 +562,34 @@ class _AppDetailPageState extends State<AppDetailPage> {
       // 选「直接打开」就继续用本机这一版
     }
 
-    await MiniappHost.instance.open(
+    // 「打开」= 把小程序作为**独立任务**打开：系统最近任务里多一张卡，
+    // 宿主那张卡原样不动（见 MiniappTaskActivity 的文件头）。
+    //
+    // 图标先确保落盘再拉起窗口：窗口的卡片要在第一帧就显示小程序的图标，
+    // 那是个原生 Bitmap，等窗口自己去下载就晚了，而且窗口里也没有
+    // 「应用市场」那套网络上下文。
+    final String? iconPath = await IconCacheService.instance.ensure(
+      appId: app.id,
+      url: app.icon,
+    );
+    final bool asWindow = await NativeBridge.openMiniappWindow(
       appId: app.id,
       title: app.name,
-      iconUrl: app.icon,
-      declaredPermissions: app.declaredPermissions,
-      // 已经装好的本地包：会话直接用 file:// 打开
-      installedPackage: pkg,
+      iconPath: iconPath,
     );
+    if (!asWindow) {
+      // 非 Android（iOS / 桌面）或原生通道不可用：退回宿主内嵌层。
+      // 那里没有「独立任务」这个概念，但小程序照样能跑起来 ——
+      // 降级也要能用，这是这个项目一贯的取向。
+      await MiniappHost.instance.open(
+        appId: app.id,
+        title: app.name,
+        iconUrl: app.icon,
+        declaredPermissions: app.declaredPermissions,
+        // 已经装好的本地包：会话直接用 file:// 打开
+        installedPackage: pkg,
+      );
+    }
     if (mounted) _loadInstalled();
   }
 

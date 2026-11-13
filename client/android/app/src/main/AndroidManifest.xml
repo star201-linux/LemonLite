@@ -98,6 +98,24 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- 小程序独立窗口：一个 Activity = 一张独立的任务卡。
+             documentLaunchMode="intoExisting" 表示「同一个文档只留一张卡」——
+             MainActivity 把 data 设成 lemonlite://miniapp/<appId>，
+             所以再次打开同一个小程序是把已有那张卡提到前台，不会越开越多。 -->
+        <activity
+            android:name=".MiniappTaskActivity"
+            android:exported="false"
+            android:launchMode="standard"
+            android:documentLaunchMode="intoExisting"
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+        </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
