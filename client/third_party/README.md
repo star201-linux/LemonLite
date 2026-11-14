@@ -13,7 +13,7 @@
 
 只有一处：`material3_expressive_loading_indicator/pubspec.yaml` 里对
 `material_new_shapes` 的依赖从 `^1.0.0` 改成了 `path: ../material_new_shapes`。
-其余文件与上游 tarball 逐字节一致。
+其余文件与上游 tarball 内容一致（换行符在入库时统一成了 LF）。
 
 ## 升级
 
