@@ -1,7 +1,7 @@
 // lib/pages/settings/settings_page.dart
 //
 // 设置页：
-//   * 账号（第一位）：登录 / 注册 / 账号管理
+//   * 账号（第一位）：账号卡（头像 / 名字 / 邮箱 / 登录状态）→ 账号管理
 //   * 个性化（二级页面）：主题模式、动态取色、主题主色
 //   * 权限 / 存储 / 市场 / 插件
 //   * 关于：版本号 —— **连点 8 次进入开发者模式**（验收标准第 4 条）
@@ -11,6 +11,8 @@
 //   **整个过程完全静默**：不弹任何提示，界面上也不写解锁方式 ——
 //   隐藏入口一旦自我说明就不是隐藏入口了（需要时看 README「开发者模式」一节）。
 //   解锁后设置页才会多出「开发者选项」，这本身就是唯一的反馈。
+
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -50,7 +52,6 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget build(BuildContext context) {
     final SettingsService settings = context.watch<SettingsService>();
     final HomeController home = context.watch<HomeController>();
-    final AccountService account = context.watch<AccountService>();
     final ColorScheme scheme = Theme.of(context).colorScheme;
 
     return Scaffold(
@@ -59,25 +60,9 @@ class _SettingsPageState extends State<SettingsPage> {
         padding: const EdgeInsets.only(bottom: 32),
         children: <Widget>[
           // ------------------------------ 账号 ------------------------------
-          // 未登录也显示这一行：它本身就是「去登录」的入口，
+          // 未登录也显示这一块：它本身就是「去登录」的入口，
           // 藏起来会让用户以为这个 App 没有账号系统。
-          _section(context, '账号', <Widget>[
-            ListTile(
-              leading: account.isLoggedIn
-                  ? const Icon(Icons.account_circle)
-                  : const Icon(Icons.account_circle_outlined),
-              title: Text(account.isLoggedIn ? '账号管理' : '登录 / 注册'),
-              subtitle: Text(
-                account.isLoggedIn
-                    ? '${account.profile?.username ?? ''} · ${account.profile?.email ?? ''}'
-                    : '登录后可在设备间同步资料与头像；不登录也能正常使用',
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.of(context).push(AccountPage.route()),
-            ),
-          ]),
+          _section(context, '账号', <Widget>[const _AccountHeader()]),
 
           // ------------------------------ 个性化 ------------------------------
           // 颜色那三项（模式 / 动态取色 / 种子色）都进了二级页面：
@@ -272,5 +257,175 @@ class _SettingsPageState extends State<SettingsPage> {
 
   void _openDeveloperPage(BuildContext context) {
     Navigator.of(context).push(DeveloperPage.route());
+  }
+}
+
+/// 账号分组里的账号卡：头像 + 名字 / 邮箱 + 状态胶囊 + 箭头。
+///
+/// 这套版式原来在主页顶部（未登录时是「登录 / 注册」入口）。挪到这里是因为
+/// 「我现在是谁」属于账号而不是市场：主页首屏该留给应用列表，而设置里
+/// 账号相关的操作本来就集中在这一屏，不用再来回跳。
+class _AccountHeader extends StatefulWidget {
+  const _AccountHeader();
+
+  @override
+  State<_AccountHeader> createState() => _AccountHeaderState();
+}
+
+class _AccountHeaderState extends State<_AccountHeader> {
+  /// 头像字节。按 avatarVersion 缓存：版本没变就不重复下载。
+  Uint8List? _avatarBytes;
+  String _avatarVersion = '';
+
+  /// 只在生命周期回调里读一次（watch 只能出现在 build 里）
+  AccountService get _account => context.read<AccountService>();
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncAvatar();
+  }
+
+  Future<void> _syncAvatar() async {
+    final AccountProfile? profile = _account.profile;
+    if (profile == null || !profile.hasAvatar) {
+      if (_avatarBytes != null) {
+        setState(() {
+          _avatarBytes = null;
+          _avatarVersion = '';
+        });
+      }
+      return;
+    }
+    if (profile.avatarVersion == _avatarVersion) return;
+    _avatarVersion = profile.avatarVersion;
+    final Uint8List? bytes = await _account.downloadAvatar();
+    if (!mounted) return;
+    setState(() => _avatarBytes = bytes);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final AccountService account = context.watch<AccountService>();
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    final TextTheme textTheme = Theme.of(context).textTheme;
+    final AccountProfile? profile = account.profile;
+    final bool loggedIn = account.isLoggedIn && profile != null;
+
+    return InkWell(
+      onTap: () => Navigator.of(context).push(AccountPage.route()),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 12, 16),
+        child: Row(
+          children: <Widget>[
+            _avatar(scheme, profile),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Row(
+                    children: <Widget>[
+                      Flexible(
+                        child: Text(
+                          loggedIn ? profile.username : '登录 / 注册',
+                          style: textTheme.titleMedium,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      // 未登录时不加胶囊：标题本身就是「登录 / 注册」，
+                      // 再挂一个「未登录」只是把同一句话说两遍。
+                      if (loggedIn)
+                        const _AccountBadge(label: '已登录'),
+                    ],
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    loggedIn
+                        ? profile.email
+                        : '登录后可在设备间同步资料与头像；不登录也能正常使用',
+                    style: textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 4),
+            Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _avatar(ColorScheme scheme, AccountProfile? profile) {
+    final Uint8List? bytes = _avatarBytes;
+    return Container(
+      width: 52,
+      height: 52,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: scheme.primaryContainer,
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: bytes != null
+          ? Image.memory(
+              bytes,
+              fit: BoxFit.cover,
+              errorBuilder: (BuildContext c, Object e, StackTrace? s) =>
+                  _initialAvatar(scheme, profile),
+            )
+          : _initialAvatar(scheme, profile),
+    );
+  }
+
+  Widget _initialAvatar(ColorScheme scheme, AccountProfile? profile) {
+    if (profile == null) {
+      return Icon(
+        Icons.account_circle_outlined,
+        size: 34,
+        color: scheme.onPrimaryContainer,
+      );
+    }
+    return Center(
+      child: Text(
+        profile.initial,
+        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+          color: scheme.onPrimaryContainer,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+/// 账号卡里的小状态胶囊：已登录
+class _AccountBadge extends StatelessWidget {
+  const _AccountBadge({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: scheme.primary,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+          color: scheme.onPrimary,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
   }
 }

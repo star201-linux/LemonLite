@@ -5,6 +5,10 @@
 // 滚动结构用 CustomScrollView：搜索框挂在 SliverAppBar.bottom 上，
 // 这样它会一直「钉」在顶部（市场页最常见的交互），而分类 chips 会随内容滚走，
 // 给列表让出更多空间。
+//
+// 标题栏用常规高度而不是 SliverAppBar.large：large 版展开时标题下面/上面
+// 会留出一大块只有背景的空白，首屏几乎看不到应用。账号信息也不在这里 ——
+// 它属于「我是谁」，放在设置页的账号分组里更合适。
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -12,13 +16,11 @@ import 'package:provider/provider.dart';
 
 import '../../data/models/app_item.dart';
 import '../../data/repositories/market_repository.dart';
-import '../../data/services/account_service.dart';
 import '../../data/services/miniapp_package_service.dart';
 import '../../data/services/settings_service.dart';
 import '../../data/services/update_service.dart';
 import '../../theme/app_theme.dart';
 import '../../theme/motion.dart';
-import '../account/account_page.dart';
 import '../miniapp/miniapp_installer.dart';
 import '../background/background_apps_page.dart';
 import '../detail/app_detail_page.dart';
@@ -148,9 +150,10 @@ class _HomePageState extends State<HomePage> {
           // 内容不足一屏时也要能下拉，否则刷不出来
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: <Widget>[
-            // MD3 Expressive 的大标题 AppBar：展开时是 display 级标题，
-            // 收起后只留一行 + 固定的搜索框。
-            SliverAppBar.large(
+            // 常规高度的标题栏：一行标题 + 固定搜索框。
+            // 不用 .large —— 它展开时是一整块只有标题的空白，把搜索框压到
+            // 屏幕中下部，进页面第一眼看不到任何应用。
+            SliverAppBar(
               pinned: true,
               backgroundColor: scheme.surface,
               surfaceTintColor: Colors.transparent,
@@ -185,7 +188,7 @@ class _HomePageState extends State<HomePage> {
               bottom: PreferredSize(
                 preferredSize: const Size.fromHeight(72),
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 14),
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
                   // 只读的假搜索框：点一下进搜索页。
                   //
                   // 为什么不在主页边输入边过滤：搜索是服务端筛的
@@ -216,16 +219,6 @@ class _HomePageState extends State<HomePage> {
                     ),
                   ),
                 ),
-              ),
-            ),
-
-            // 顶部是账号卡（和设置页「账号」那一块同一种信息结构：
-            // 头像 + 名字 + 一行说明），不再是市场宣传位。
-            SliverToBoxAdapter(
-              child: _AccountCard(
-                loadedCount: controller.loadedCount,
-                updateCount: updates.length,
-                loading: controller.isLoading,
               ),
             ),
 
@@ -469,222 +462,6 @@ class _LoadMoreTriggerState extends State<_LoadMoreTrigger> {
           height: 20,
           child: CircularProgressIndicator(strokeWidth: 2),
         ),
-      ),
-    );
-  }
-}
-
-/// 主页顶部的账号卡。
-///
-/// 原来这里是「发现小程序」的大色块宣传位，信息密度很低：用户每次打开
-/// 市场都要先划过一块和自己无关的广告。换成**账号信息**之后，这一块
-/// 既回答了「我现在是谁」，也顺手把市场状态（加载了多少、有几个可更新）
-/// 放在同一行 —— 和设置页的「账号」那一块是同一套信息结构，不用重新学。
-///
-/// 未登录也照常显示：它本身就是「去登录」的入口。藏起来会让用户以为
-/// 这个 App 没有账号系统。
-class _AccountCard extends StatefulWidget {
-  const _AccountCard({
-    required this.loadedCount,
-    required this.updateCount,
-    required this.loading,
-  });
-
-  final int loadedCount;
-  final int updateCount;
-  final bool loading;
-
-  @override
-  State<_AccountCard> createState() => _AccountCardState();
-}
-
-class _AccountCardState extends State<_AccountCard> {
-  /// 头像字节。按 avatarVersion 缓存：版本没变就不重复下载。
-  Uint8List? _avatarBytes;
-  String _avatarVersion = '';
-
-  /// 只在生命周期回调里读一次（watch 只能出现在 build 里）
-  AccountService get _account => context.read<AccountService>();
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _syncAvatar();
-  }
-
-  Future<void> _syncAvatar() async {
-    final AccountProfile? profile = _account.profile;
-    if (profile == null || !profile.hasAvatar) {
-      if (_avatarBytes != null) {
-        setState(() {
-          _avatarBytes = null;
-          _avatarVersion = '';
-        });
-      }
-      return;
-    }
-    if (profile.avatarVersion == _avatarVersion) return;
-    _avatarVersion = profile.avatarVersion;
-    final Uint8List? bytes = await _account.downloadAvatar();
-    if (!mounted) return;
-    setState(() => _avatarBytes = bytes);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final AccountService account = context.watch<AccountService>();
-    final ColorScheme scheme = Theme.of(context).colorScheme;
-    final TextTheme textTheme = Theme.of(context).textTheme;
-    final AccountProfile? profile = account.profile;
-    final bool loggedIn = account.isLoggedIn && profile != null;
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-      child: Card.outlined(
-        margin: EdgeInsets.zero,
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: () => Navigator.of(context).push(AccountPage.route()),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
-            child: Row(
-              children: <Widget>[
-                _avatar(scheme, profile),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Text(
-                        loggedIn ? profile.username : '登录 / 注册',
-                        style: textTheme.titleMedium,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        loggedIn
-                            ? profile.email
-                            : '登录后可在设备间同步资料与头像；不登录也能正常使用',
-                        style: textTheme.bodySmall?.copyWith(
-                          color: scheme.onSurfaceVariant,
-                        ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 6,
-                        children: <Widget>[
-                          _StatusPill(
-                            icon: Icons.storefront_rounded,
-                            label: widget.loading
-                                ? '正在同步市场…'
-                                : '已加载 ${widget.loadedCount} 个小程序',
-                          ),
-                          if (widget.updateCount > 0)
-                            _StatusPill(
-                              icon: Icons.system_update_alt_rounded,
-                              label: '${widget.updateCount} 个可更新',
-                              highlight: true,
-                            ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _avatar(ColorScheme scheme, AccountProfile? profile) {
-    final Uint8List? bytes = _avatarBytes;
-    return Container(
-      width: 52,
-      height: 52,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: scheme.primaryContainer,
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: bytes != null
-          ? Image.memory(
-              bytes,
-              fit: BoxFit.cover,
-              errorBuilder: (BuildContext c, Object e, StackTrace? s) =>
-                  _initialAvatar(scheme, profile),
-            )
-          : _initialAvatar(scheme, profile),
-    );
-  }
-
-  Widget _initialAvatar(ColorScheme scheme, AccountProfile? profile) {
-    if (profile == null) {
-      return Icon(
-        Icons.account_circle_outlined,
-        size: 34,
-        color: scheme.onPrimaryContainer,
-      );
-    }
-    return Center(
-      child: Text(
-        profile.initial,
-        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-          color: scheme.onPrimaryContainer,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-    );
-  }
-}
-
-/// 账号卡里的小状态胶囊（市场加载量 / 可更新数）
-class _StatusPill extends StatelessWidget {
-  const _StatusPill({
-    required this.icon,
-    required this.label,
-    this.highlight = false,
-  });
-
-  final IconData icon;
-  final String label;
-  final bool highlight;
-
-  @override
-  Widget build(BuildContext context) {
-    final ColorScheme scheme = Theme.of(context).colorScheme;
-    final Color background = highlight
-        ? scheme.primary
-        : scheme.surfaceContainerHighest;
-    final Color foreground = highlight
-        ? scheme.onPrimary
-        : scheme.onSurfaceVariant;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: background,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          Icon(icon, size: 13, color: foreground),
-          const SizedBox(width: 5),
-          Text(
-            label,
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: foreground,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ],
       ),
     );
   }
