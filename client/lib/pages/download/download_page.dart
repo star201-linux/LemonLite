@@ -17,6 +17,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/services/download_service.dart';
 import '../home/widgets/state_views.dart';
+import '../../theme/loading.dart';
 
 class DownloadPage extends StatefulWidget {
   const DownloadPage({super.key});
@@ -284,10 +285,9 @@ class _DownloadPageState extends State<DownloadPage> {
                     ),
                     if (active) ...<Widget>[
                       const SizedBox(height: 6),
-                      LinearProgressIndicator(
+                      M3ELinearProgressIndicator(
                         value: task.progress,
-                        minHeight: 3,
-                        borderRadius: BorderRadius.circular(2),
+                        height: 6,
                       ),
                     ],
                     const SizedBox(height: 2),

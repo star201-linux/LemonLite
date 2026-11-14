@@ -23,6 +23,7 @@ import '../../theme/motion.dart';
 import '../detail/app_detail_page.dart';
 import 'widgets/app_card.dart';
 import 'widgets/state_views.dart';
+import '../../theme/loading.dart';
 
 class SearchPage extends StatefulWidget {
   const SearchPage({super.key, this.initialQuery = ''});
@@ -307,7 +308,7 @@ class _SearchPageState extends State<SearchPage> {
                     ? const SizedBox(
                         width: 20,
                         height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                        child: M3ELoadingIndicator(),
                       )
                     : Text(
                         page.hasMore

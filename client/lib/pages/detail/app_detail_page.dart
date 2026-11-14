@@ -45,6 +45,7 @@ import '../miniapp/miniapp_host.dart';
 import '../miniapp/miniapp_installer.dart';
 import '../permissions/permission_prompt.dart';
 import '../permissions/widgets/permission_chips.dart';
+import '../../theme/loading.dart';
 
 class AppDetailPage extends StatefulWidget {
   const AppDetailPage({super.key, required this.app, this.manageEntry = false});
@@ -396,7 +397,7 @@ class _AppDetailPageState extends State<AppDetailPage> {
                     ? const SizedBox(
                         width: 16,
                         height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                        child: M3ELoadingIndicator(),
                       )
                     : const Icon(Icons.system_update_alt),
                 label: const Text('更新'),
@@ -780,7 +781,7 @@ class _RegisteredAppDetailPageState extends State<_RegisteredAppDetailPage> {
     if (_loading || _app == null) {
       return Scaffold(
         appBar: AppBar(title: Text(widget.name)),
-        body: const Center(child: CircularProgressIndicator()),
+        body: const Center(child: M3ELoadingIndicator()),
       );
     }
     return AppDetailPage(app: _app!, manageEntry: true);

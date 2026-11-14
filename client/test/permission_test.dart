@@ -80,41 +80,102 @@ void main() {
   // ================================================================ 权限模型
 
   group('权限模型', () {
-    test('受控能力清单：媒体采集 + 定位 + 剪贴板/通知 + 蓝牙/NFC + 文件访问', () {
+    test('受控能力清单覆盖浏览器标准 API（媒体/位置/传感器/输入/连接/身份/存储/系统）', () {
+      final Set<String> ids = MiniappPermission.values
+          .map((MiniappPermission p) => p.id)
+          .toSet();
       expect(
-        MiniappPermission.values.map((MiniappPermission p) => p.id).toList(),
-        <String>[
+        ids,
+        containsAll(<String>[
+          // 媒体与显示
           'camera',
           'microphone',
-          'geolocationFine',
-          'geolocationCoarse',
-          'clipboard',
-          'notifications',
+          'displayCapture',
+          'speakerSelection',
+          'pictureInPicture',
+          // 位置（一项权限 + 两个维度）
+          'location',
+          // 传感器
+          'accelerometer',
+          'gyroscope',
+          'magnetometer',
+          'ambientLight',
+          'proximity',
+          // 输入与振动
+          'gamepad',
+          'vibrate',
+          'midi',
+          // 连接与近场
           'bluetooth',
+          'usb',
+          'serial',
           'nfc',
+          'networkInfo',
+          // 身份与安全
+          'webauthn',
+          // 文件与剪贴板
+          'clipboard',
           'sdcard',
-        ],
+          // 系统与设备
+          'notifications',
+          'battery',
+          'deviceMemory',
+          'print',
+        ]),
       );
+      // 旧的 geolocationFine / Coarse 已合并，不再出现在枚举里（但仍是别名）
+      expect(ids, isNot(contains('geolocationFine')));
+      expect(ids, isNot(contains('geolocationCoarse')));
+      expect(MiniappPermission.byId('geolocationFine'), MiniappPermission.location);
+      expect(MiniappPermission.byId('geolocationCoarse'), MiniappPermission.location);
+      // 每一项都要写明对应的标准 Web API
+      for (final MiniappPermission p in MiniappPermission.values) {
+        expect(p.webApi.trim(), isNotEmpty, reason: '${p.id} 没写 webApi');
+      }
     });
 
-    test('精确/模糊定位成对，且精度不同', () {
-      expect(
-        MiniappPermission.geolocationFine.pairedWith,
-        MiniappPermission.geolocationCoarse,
+    test('定位是「一项权限 + 两个维度」，后台精度不超过前台', () {
+      expect(MiniappPermission.location.isLocation, isTrue);
+      expect(MiniappPermission.camera.isLocation, isFalse);
+
+      const LocationGrant coarseBackground = LocationGrant(
+        decision: PermissionDecision.granted,
+        precision: LocationPrecision.coarse,
+        background: true,
       );
-      expect(
-        MiniappPermission.geolocationCoarse.pairedWith,
-        MiniappPermission.geolocationFine,
+      // 前台、后台都放行，但精度仍是近似
+      expect(coarseBackground.allows(foreground: true), isTrue);
+      expect(coarseBackground.allows(foreground: false), isTrue);
+      expect(coarseBackground.precision, LocationPrecision.coarse);
+
+      const LocationGrant fineForegroundOnly = LocationGrant(
+        decision: PermissionDecision.granted,
+        precision: LocationPrecision.fine,
+        background: false,
       );
-      // 非定位项没有配对
-      expect(MiniappPermission.camera.pairedWith, isNull);
-      // 精细只申请 FINE，粗略只申请 COARSE —— 不能反过来
-      expect(MiniappPermission.geolocationFine.runtimePermissions, <String>[
-        'android.permission.ACCESS_FINE_LOCATION',
-      ]);
-      expect(MiniappPermission.geolocationCoarse.runtimePermissions, <String>[
-        'android.permission.ACCESS_COARSE_LOCATION',
-      ]);
+      // 没给后台：切到后台立刻失效
+      expect(fineForegroundOnly.allows(foreground: true), isTrue);
+      expect(fineForegroundOnly.allows(foreground: false), isFalse);
+
+      // 未允许时前台也不放行
+      expect(
+        LocationGrant.initial.allows(foreground: true),
+        isFalse,
+      );
+
+      // 近似位置有取整网格，精确位置没有
+      expect(LocationPrecision.coarse.gridDegrees, greaterThan(0));
+      expect(LocationPrecision.fine.gridDegrees, 0);
+      expect(
+        LocationPrecision.coarse.reportedAccuracy,
+        greaterThanOrEqualTo(1000),
+      );
+      // 下发给页面的策略里带上了网格与精度
+      final Map<String, dynamic> js = coarseBackground.toJs(foreground: false);
+      expect(js['precision'], 'coarse');
+      expect(js['background'], isTrue);
+      expect(js['foreground'], isFalse);
+      expect(js['grid'], LocationPrecision.coarse.gridDegrees);
     });
 
     test('每个权限的 id 唯一、非空，且都有中文名与说明', () {
@@ -148,12 +209,9 @@ void main() {
       expect(MiniappPermission.sdcard.runtimePermissions, isEmpty);
       expect(MiniappPermission.camera.needsRuntimePermission, isTrue);
       expect(MiniappPermission.sdcard.needsRuntimePermission, isFalse);
-      // 定位两档都需要系统权限
-      expect(MiniappPermission.geolocationFine.needsRuntimePermission, isTrue);
-      expect(
-        MiniappPermission.geolocationCoarse.needsRuntimePermission,
-        isTrue,
-      );
+      // 定位的运行时权限按精度动态算，所以枚举里是空的
+      expect(MiniappPermission.location.runtimePermissions, isEmpty);
+      expect(MiniappPermission.location.needsRuntimePermission, isFalse);
       // 剪贴板不需要 Android 运行时权限
       expect(MiniappPermission.clipboard.needsRuntimePermission, isFalse);
     });
@@ -163,8 +221,9 @@ void main() {
           .toSet();
       expect(sensitive, contains(MiniappPermission.camera));
       expect(sensitive, contains(MiniappPermission.microphone));
-      expect(sensitive, contains(MiniappPermission.geolocationFine));
-      expect(sensitive, contains(MiniappPermission.geolocationCoarse));
+      expect(sensitive, contains(MiniappPermission.location));
+      expect(sensitive, contains(MiniappPermission.usb));
+      expect(sensitive, contains(MiniappPermission.webauthn));
       expect(sensitive, contains(MiniappPermission.clipboard));
       expect(sensitive, contains(MiniappPermission.sdcard));
       // 通知是「常规」等级：它不读数据，只是打扰
@@ -173,12 +232,10 @@ void main() {
     });
 
     test('定位归在「位置」分组，不与媒体采集混在一起', () {
-      expect(MiniappPermission.geolocationFine.group, PermissionGroup.location);
-      expect(
-        MiniappPermission.geolocationCoarse.group,
-        PermissionGroup.location,
-      );
+      expect(MiniappPermission.location.group, PermissionGroup.location);
       expect(MiniappPermission.camera.group, PermissionGroup.media);
+      expect(MiniappPermission.bluetooth.group, PermissionGroup.connectivity);
+      expect(MiniappPermission.accelerometer.group, PermissionGroup.sensors);
     });
 
     test('分组覆盖全部权限，且不产生空分组', () {
@@ -457,6 +514,102 @@ void main() {
   });
 
   // ========================================================= 权限服务行为
+
+  // ============================================================ 定位授权
+
+  group('定位授权（精度 + 后台）', () {
+    test('默认是「询问」，精度精确、后台关着', () {
+      final LocationGrant grant = permissions.locationOf('app1');
+      expect(grant.decision, PermissionDecision.ask);
+      expect(grant.precision, LocationPrecision.fine);
+      expect(grant.background, isFalse);
+      expect(grant.allows(foreground: true), isFalse);
+    });
+
+    test('精度与后台开关能落盘并读回', () async {
+      await permissions.setDecision(
+        'app1',
+        MiniappPermission.location,
+        PermissionDecision.granted,
+      );
+      await permissions.setLocationOptions(
+        'app1',
+        precision: LocationPrecision.coarse,
+        background: true,
+      );
+      final LocationGrant grant = permissions.locationOf('app1');
+      expect(grant.granted, isTrue);
+      expect(grant.precision, LocationPrecision.coarse);
+      expect(grant.background, isTrue);
+      // 后台放行，但精度仍是近似 —— 后台拿不到比前台更准的位置
+      expect(grant.allows(foreground: false), isTrue);
+      expect(grant.precision, LocationPrecision.coarse);
+    });
+
+    test('旧的「大致位置」授权会迁移成近似精度', () async {
+      await settings.writeRaw(
+        'perm.decision.app2.geolocationCoarse',
+        PermissionDecision.granted.id,
+      );
+      final LocationGrant grant = permissions.locationOf('app2');
+      expect(grant.decision, PermissionDecision.granted);
+      expect(grant.precision, LocationPrecision.coarse);
+      // 旧记录没写过后台，按「仅前台」处理
+      expect(grant.background, isFalse);
+    });
+
+    test('旧的「精确位置」授权迁移成精确精度', () async {
+      await settings.writeRaw(
+        'perm.decision.app3.geolocationFine',
+        PermissionDecision.granted.id,
+      );
+      final LocationGrant grant = permissions.locationOf('app3');
+      expect(grant.decision, PermissionDecision.granted);
+      expect(grant.precision, LocationPrecision.fine);
+    });
+
+    test('运行时权限按精度与后台组合', () {
+      final List<String> fine = permissions.locationRuntimePermissions(
+        const LocationGrant(
+          decision: PermissionDecision.granted,
+          precision: LocationPrecision.fine,
+          background: false,
+        ),
+      );
+      expect(fine, <String>['android.permission.ACCESS_FINE_LOCATION']);
+
+      final List<String> coarseBackground =
+          permissions.locationRuntimePermissions(
+            const LocationGrant(
+              decision: PermissionDecision.granted,
+              precision: LocationPrecision.coarse,
+              background: true,
+            ),
+          );
+      expect(coarseBackground, <String>[
+        'android.permission.ACCESS_COARSE_LOCATION',
+        'android.permission.ACCESS_BACKGROUND_LOCATION',
+      ]);
+
+      // 未授权时不申请任何系统权限
+      expect(
+        permissions.locationRuntimePermissions(LocationGrant.initial),
+        isEmpty,
+      );
+    });
+
+    test('恢复「全部询问」会把精度/后台记录一起清掉', () async {
+      await permissions.setLocationOptions(
+        'app4',
+        precision: LocationPrecision.coarse,
+        background: true,
+      );
+      await permissions.resetApp('app4');
+      final LocationGrant grant = permissions.locationOf('app4');
+      expect(grant.background, isFalse);
+      expect(grant.precision, LocationPrecision.fine);
+    });
+  });
 
   group('PermissionService 授权（三态）', () {
     const String app = 'demo.app';

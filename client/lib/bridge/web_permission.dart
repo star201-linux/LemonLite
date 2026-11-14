@@ -54,14 +54,17 @@ class WebPermissionAsk {
   ///   FILE_READ_WRITE               → sdcard
   ///   CLIPBOARD_READ                → clipboard
   ///   NOTIFICATIONS                 → notifications
+  ///   MIDI_SYSEX                    → midi（Web MIDI 的系统专用消息）
+  ///   OTHER_SENSORS                 → accelerometer + gyroscope
+  ///   LOCAL_FONTS                   → localFonts
   ///
   /// **GEOLOCATION 刻意不在这里**：Android WebView 的 onPermissionRequest
   /// 根本不回调定位请求 —— 定位走的是 WebChromeClient 上另一个回调
-  /// `onGeolocationPermissionsShowPrompt`。所以定位的拦截在
-  /// miniapp_page.dart 的那个回调里，见 `WebPermissionAsk.forGeolocation`。
-  /// 把 GEOLOCATION 写进这张表只会让人以为它在这儿被拦了。
+  /// `onGeolocationPermissionsShowPrompt`，而且定位的精度/后台是两个
+  /// 独立维度（见 LocationGrant）。所以定位的拦截在 miniapp_page.dart
+  /// 的那个回调里。把 GEOLOCATION 写进这张表只会让人以为它在这儿被拦了。
   ///
-  /// 其余资源（AUTOPLAY / MIDI_SYSEX / PROTECTED_MEDIA_ID …）
+  /// 其余资源（AUTOPLAY / PROTECTED_MEDIA_ID / WINDOW_MANAGEMENT …）
   /// 不纳入权限模型：与小程序场景无关。返回空列表表示「不认识」，由调用方放行。
   static WebPermissionAsk from(PermissionRequest request) {
     final List<PermissionResourceType> resources = request.resources;
@@ -83,6 +86,12 @@ class WebPermissionAsk {
         wanted.add(MiniappPermission.clipboard);
       } else if (resource == PermissionResourceType.NOTIFICATIONS) {
         wanted.add(MiniappPermission.notifications);
+      } else if (resource == PermissionResourceType.MIDI_SYSEX) {
+        wanted.add(MiniappPermission.midi);
+      } else if (resource == PermissionResourceType.OTHER_SENSORS) {
+        // devicemotion 同时涵盖加速度与转动，两类传感器一起问
+        wanted.add(MiniappPermission.accelerometer);
+        wanted.add(MiniappPermission.gyroscope);
       }
     }
 
@@ -126,30 +135,6 @@ class WebPermissionAsk {
     );
   }
 
-  /// 定位请求 → 需要问的框架权限集合。
-  ///
-  /// 为什么单独一个入口：`onGeolocationPermissionsShowPrompt` 的回调
-  /// **不告诉宿主网页要的精度** —— 它只说「这个 origin 想用定位」。
-  /// 精度是 Android 运行时权限层（FINE / COARSE）决定的。
-  ///
-  /// 所以策略是：
-  ///   * [requestFine] 为 true（网页的 PositionOptions.enableHighAccuracy
-  ///     我们拿不到，所以调用方按「用户上次的选择」或「默认先问精确」传）
-  ///     → 问 `geolocationFine`，与它配对的 coarse 一并问；
-  ///   * 用户只同意 coarse（或直接选了大致）→ 只申请 COARSE，
-  ///     Android 自己会把坐标模糊到街区级。
-  ///
-  /// 返回的列表顺序固定按枚举走，弹窗顺序才稳定。
-  static List<MiniappPermission> forGeolocation({bool requestFine = true}) {
-    final Set<MiniappPermission> wanted = <MiniappPermission>{
-      if (requestFine) MiniappPermission.geolocationFine,
-      MiniappPermission.geolocationCoarse,
-    };
-    return MiniappPermission.values
-        .where(wanted.contains)
-        .toList(growable: false);
-  }
-
   /// 某个原始资源需要哪些框架权限。
   static Set<MiniappPermission> _needsOf(PermissionResourceType resource) {
     if (resource == PermissionResourceType.CAMERA) {
@@ -172,6 +157,18 @@ class WebPermissionAsk {
     }
     if (resource == PermissionResourceType.NOTIFICATIONS) {
       return <MiniappPermission>{MiniappPermission.notifications};
+    }
+    if (resource == PermissionResourceType.MIDI_SYSEX) {
+      return <MiniappPermission>{MiniappPermission.midi};
+    }
+    if (resource == PermissionResourceType.OTHER_SENSORS) {
+      return <MiniappPermission>{
+        MiniappPermission.accelerometer,
+        MiniappPermission.gyroscope,
+      };
+    }
+    if (resource == PermissionResourceType.GEOLOCATION) {
+      return <MiniappPermission>{MiniappPermission.location};
     }
     return <MiniappPermission>{};
   }

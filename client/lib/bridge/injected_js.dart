@@ -71,7 +71,9 @@ class LemonJsSdk {
  *
  * 两类能力要走「权限管理」：
  *   1) 浏览器受控资源（不走这里）：
- *      getUserMedia() → 摄像头 / 麦克风；File System Access API → 手机存储
+ *      getUserMedia() → 摄像头 / 麦克风；File System Access API → 手机存储；
+ *      navigator.geolocation → 定位（近似位置会被宿主取整，切到后台且未授权
+ *      后台定位时会收到 code=1；当前策略可用 window.lemonliteGeoPolicy() 读）。
  *      被拒绝时页面拿到的是浏览器的 DOMException（NotAllowedError）。
  *   2) 宿主原生能力（走这里）：
  *      lemonlite.bluetooth.* / lemonlite.nfc.*

@@ -32,6 +32,7 @@ import '../../data/services/permission_service.dart';
 import '../../data/services/settings_service.dart';
 import '../../theme/theme_controller.dart';
 import 'miniapp_host.dart';
+import '../../theme/loading.dart';
 
 /// 窗口启动参数（来自原生 `getInitialRoute()`）。
 class MiniappWindowArgs {
@@ -222,7 +223,7 @@ class _MiniappWindowPageState extends State<MiniappWindowPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              const CircularProgressIndicator(),
+              const M3ELoadingIndicator(),
               const SizedBox(height: 16),
               Text('正在打开「${widget.args.title}」…'),
             ],

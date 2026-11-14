@@ -201,6 +201,15 @@ class PermissionPromptService {
         permission,
         answer.allowed ? PermissionDecision.granted : PermissionDecision.denied,
       );
+      // 定位的精度 / 后台只在「记住」时落盘：选「仅本次」本来就不该
+      // 留下任何痕迹，否则用户会以为自己只是这一次让步。
+      if (permission.isLocation && answer.allowed) {
+        await PermissionService.instance.setLocationOptions(
+          appId,
+          precision: answer.precision,
+          background: answer.background,
+        );
+      }
       await autotestLog(
         '权限确认结果：${permission.id} → ${answer.allowed ? "允许" : "拒绝"}（已落盘，长期生效）',
       );
@@ -337,6 +346,9 @@ class PermissionPromptService {
       appId: appId,
       appName: appName,
       title: '允许「$appName」使用${permission.label}权限吗？',
+      location: permission.isLocation
+          ? PermissionService.instance.locationOf(appId)
+          : null,
       body: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -412,6 +424,18 @@ class PermissionPromptService {
                 ),
               ),
             ),
+          // 定位的精度与后台不在这里选：一次问七八项时再塞两组开关，
+          // 用户只会草草点「允许」。默认给「精确 + 仅前台」，
+          // 需要更精确或后台的，去权限管理里单独调。
+          if (permissions.contains(MiniappPermission.location)) ...<Widget>[
+            const SizedBox(height: 4),
+            Text(
+              '定位默认给「精确 + 仅前台」；精度与后台定位可以在「权限管理」里单独设置。',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -448,6 +472,7 @@ class _PromptDialog extends StatefulWidget {
     required this.appName,
     required this.title,
     required this.body,
+    this.location,
   });
 
   final String appId;
@@ -455,6 +480,9 @@ class _PromptDialog extends StatefulWidget {
 
   final String title;
   final Widget body;
+
+  /// 非空表示这次问的是定位：弹窗里要给出精度与后台两个选项。
+  final LocationGrant? location;
 
   @override
   State<_PromptDialog> createState() => _PromptDialogState();
@@ -465,9 +493,19 @@ class _PromptDialogState extends State<_PromptDialog> {
   /// 选中 = 只对这一次调用有效，不写任何持久记录。
   bool _onceOnly = true;
 
+  /// 定位弹窗里的两个维度（初始值取自当前的授权）
+  late LocationPrecision _precision =
+      widget.location?.precision ?? LocationPrecision.fine;
+  late bool _background = widget.location?.background ?? false;
+
   void _answer(bool allowed) {
     Navigator.of(context).pop(
-      PermissionAnswer(allowed: allowed, remember: !_onceOnly),
+      PermissionAnswer(
+        allowed: allowed,
+        remember: !_onceOnly,
+        precision: widget.location == null ? null : _precision,
+        background: widget.location == null ? null : _background,
+      ),
     );
   }
 
@@ -487,6 +525,16 @@ class _PromptDialogState extends State<_PromptDialog> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               widget.body,
+              if (widget.location != null) ...<Widget>[
+                const SizedBox(height: 12),
+                _PromptLocationOptions(
+                  precision: _precision,
+                  background: _background,
+                  onPrecision: (LocationPrecision p) =>
+                      setState(() => _precision = p),
+                  onBackground: (bool v) => setState(() => _background = v),
+                ),
+              ],
               const Divider(height: 24),
               // 整行可点：只让那个小方块可点的话，命中区域太小了
               InkWell(
@@ -583,6 +631,91 @@ class _SystemSettingsHint extends StatelessWidget {
               '这一项还需要 Android 的系统权限。你在这里允许之后，'
               '系统会再问一次；如果之前拒绝过且勾了「不再询问」，'
               '就只能去「应用管理 → 权限」里跳转系统设置打开。',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 定位弹窗里的两个独立维度：精度 + 后台。
+///
+/// 与权限管理页的控件保持同一套语义（那里管长期设置，这里管这一次），
+/// 唯一区别是这里的「后台」默认关着 —— 后台定位是更高一档的授权，
+/// 用户不该因为点了一次「允许」就顺带把它给出去了。
+class _PromptLocationOptions extends StatelessWidget {
+  const _PromptLocationOptions({
+    required this.precision,
+    required this.background,
+    required this.onPrecision,
+    required this.onBackground,
+  });
+
+  final LocationPrecision precision;
+  final bool background;
+  final ValueChanged<LocationPrecision> onPrecision;
+  final ValueChanged<bool> onBackground;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme scheme = theme.colorScheme;
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text('定位精度', style: theme.textTheme.labelMedium),
+          const SizedBox(height: 6),
+          SizedBox(
+            width: double.infinity,
+            child: SegmentedButton<LocationPrecision>(
+              showSelectedIcon: false,
+              style: const ButtonStyle(visualDensity: VisualDensity.compact),
+              segments: <ButtonSegment<LocationPrecision>>[
+                for (final LocationPrecision p in LocationPrecision.values)
+                  ButtonSegment<LocationPrecision>(
+                    value: p,
+                    label: Text(p.label),
+                    icon: Icon(
+                      p == LocationPrecision.fine
+                          ? Icons.gps_fixed
+                          : Icons.gps_not_fixed,
+                      size: 16,
+                    ),
+                  ),
+              ],
+              selected: <LocationPrecision>{precision},
+              onSelectionChanged: (Set<LocationPrecision> selection) =>
+                  onPrecision(selection.first),
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            precision.description,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            value: background,
+            onChanged: onBackground,
+            title: Text('允许后台定位', style: theme.textTheme.bodyMedium),
+            subtitle: Text(
+              background
+                  ? '切到后台后仍可获取位置，精度最多到「${precision.label}」'
+                  : '只在小程序位于前台时可用',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: scheme.onSurfaceVariant,
               ),

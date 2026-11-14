@@ -14,6 +14,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../data/services/account_service.dart';
+import '../../theme/loading.dart';
 
 class EmailCodeButton extends StatefulWidget {
   const EmailCodeButton({
@@ -102,7 +103,7 @@ class _EmailCodeButtonState extends State<EmailCodeButton> {
             ? const SizedBox(
                 width: 16,
                 height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
+                child: M3ELoadingIndicator(),
               )
             : Text(
                 _cooldown > 0 ? '${_cooldown}s 后重发' : '获取验证码',

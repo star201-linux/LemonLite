@@ -95,6 +95,12 @@ class MiniappHost extends ChangeNotifier {
 
   bool isRunning(String appId) => _sessionOf(appId) != null;
 
+  /// 这个会话是不是当前显示在最前面的那个。
+  ///
+  /// 定位策略要用它：小程序之间有层级，被压在下面的那个虽然在运行，
+  /// 但对用户来说是「后台」—— 没有后台定位授权时不该继续读位置。
+  bool isForeground(String appId) => _foregroundId == appId;
+
   MiniappSession? _sessionOf(String? appId) {
     if (appId == null) return null;
     for (final MiniappSession s in _sessions) {

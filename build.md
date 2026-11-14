@@ -275,9 +275,11 @@ dart analyze lib/
 main/repo/client/
 ├── lib/
 │   ├── core/          全局常量、日志、主题
-│   ├── bridge/        JSBridge（小程序 ↔ 宿主）
+│   ├── bridge/        JSBridge（小程序 ↔ 宿主）+ 定位策略注入
 │   ├── data/          模型、仓库、服务
+│   ├── theme/         主题、MD3E 样式、M3E 加载指示器（loading.dart）
 │   └── pages/         页面（home / miniapp / settings / account / detail）
+├── third_party/       内置的两个 M3E 加载指示器依赖（path 依赖，见其 README）
 ├── android/           Android 工程（含签名配置）
 ├── assets/            自检页与插件包（不含示例小程序）
 └── test/              单元测试

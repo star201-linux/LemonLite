@@ -33,6 +33,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../bridge/bridge_api.dart';
 import '../../bridge/bundle_injector.dart';
+import '../../bridge/geo_policy_js.dart';
 import '../../bridge/injected_js.dart';
 import '../../bridge/js_bridge.dart';
 import '../../bridge/web_permission.dart';
@@ -44,9 +45,11 @@ import '../../data/models/miniapp_permission.dart';
 import '../../data/models/miniapp_session.dart';
 import '../../data/repositories/bundle_repository.dart';
 import '../../data/services/download_service.dart';
+import '../../data/services/permission_service.dart';
 import '../../theme/app_theme.dart';
 import '../../theme/md3e_interceptor.dart';
 import '../../theme/md3e_styles.dart';
+import '../../theme/loading.dart';
 import '../../theme/theme_controller.dart';
 import '../../theme/theme_injector.dart';
 import '../home/widgets/state_views.dart';
@@ -65,7 +68,8 @@ class MiniappSessionView extends StatefulWidget {
   State<MiniappSessionView> createState() => _MiniappSessionViewState();
 }
 
-class _MiniappSessionViewState extends State<MiniappSessionView> {
+class _MiniappSessionViewState extends State<MiniappSessionView>
+    with WidgetsBindingObserver {
   /// WebView 初始设置（与主题无关，做成常量保证 widget 恒等）
   static final InAppWebViewSettings _webViewSettings = InAppWebViewSettings(
     javaScriptEnabled: true,
@@ -153,6 +157,62 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
       _loadLocalAsset();
     }
     _loadBundles();
+
+    // 定位策略依赖两件事：宿主是否在前台、这个小程序是不是当前前台会话。
+    // 两者都会变，所以都要订阅。
+    WidgetsBinding.instance.addObserver(this);
+    MiniappHost.instance.addListener(_onGeoPolicyChanged);
+    // 用户在权限页改了精度 / 后台时，正在运行的小程序要立刻按新策略走
+    PermissionService.maybeInstance?.addListener(_onGeoPolicyChanged);
+  }
+
+  // ------------------------------------------------------------ 定位策略
+
+  /// 当前生效的定位策略（精度 + 后台 + 此刻是否前台）。
+  /// 建 WebView 时的初始快照。
+  ///
+  /// 这里**假定前台**：页面刚开始加载就说明它要被展示，此时 MiniappHost
+  /// 可能还没把 _foregroundId 切过来；按后台处理会让刚打开的页面直接
+  /// 拿不到定位，直到下一次生命周期回调才恢复。
+  Map<String, dynamic> _initialGeoPolicy() {
+    final LocationGrant grant =
+        PermissionService.maybeInstance?.locationOf(_session.appId) ??
+        LocationGrant.initial;
+    return grant.toJs(foreground: true);
+  }
+
+  Map<String, dynamic> _geoPolicy() {
+    final LocationGrant grant =
+        PermissionService.maybeInstance?.locationOf(_session.appId) ??
+        LocationGrant.initial;
+    final AppLifecycleState state =
+        WidgetsBinding.instance.lifecycleState ?? AppLifecycleState.resumed;
+    final bool foreground =
+        state == AppLifecycleState.resumed &&
+        MiniappHost.instance.isForeground(_session.appId);
+    return grant.toJs(foreground: foreground);
+  }
+
+  /// 把策略推给页面里的 shim（坐标取整与后台拦截都在那一边做）。
+  void _pushGeoPolicy() {
+    final InAppWebViewController? controller = _controller;
+    if (controller == null) return;
+    controller.evaluateJavascript(
+      source:
+          'window.__lemonliteApplyGeo && '
+          'window.__lemonliteApplyGeo(${jsonEncode(_geoPolicy())})',
+    );
+  }
+
+  void _onGeoPolicyChanged() {
+    if (!mounted) return;
+    _pushGeoPolicy();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    _pushGeoPolicy();
   }
 
   /// 读取已启用的模块。
@@ -206,6 +266,9 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
   @override
   void dispose() {
     // 会话可能比视图活得久（后台运行），所以这里只解绑回调，不动会话本身
+    WidgetsBinding.instance.removeObserver(this);
+    MiniappHost.instance.removeListener(_onGeoPolicyChanged);
+    PermissionService.maybeInstance?.removeListener(_onGeoPolicyChanged);
     _bridge?.dispose();
     _bridge = null;
     _session.onEvent = null;
@@ -272,10 +335,22 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
   static List<UserScript> _buildUserScripts(
     Map<String, dynamic> payload,
     List<BundlePayload> bundles,
+    Map<String, dynamic> geoPolicy,
   ) {
     final List<UserScript> scripts = <UserScript>[
       UserScript(
         source: ThemeInjector.buildPayloadScript(payload),
+        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+      ),
+      // 定位策略要**早于页面脚本**就位：页面可能一上来就 watchPosition。
+      // 先给数据，再上 shim —— shim 初始化时读的就是这份快照。
+      UserScript(
+        source:
+            'window.__LEMONLITE_GEO__ = ${jsonEncode(geoPolicy)};',
+        injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+      ),
+      UserScript(
+        source: GeoPolicyJs.source,
         injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
       ),
       UserScript(
@@ -382,7 +457,12 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
               top: 0,
               left: 0,
               right: 0,
-              child: LinearProgressIndicator(value: _progress),
+              // 页面加载进度：细条贴在页面顶部，不抢内容
+              child: M3ELinearProgressIndicator(
+                value: _progress,
+                height: 4,
+                showStopIndicator: false,
+              ),
             ),
           if (_pageError != null)
             ColoredBox(
@@ -469,7 +549,7 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
               : "无入口"}'
           ' · html=${assetHtml == null ? "null" : "${assetHtml.length} 字符"}'
           ' · fileUri=$fileUri'
-          ' · scripts=${_buildUserScripts(payload, _payloads).length}',
+          ' · scripts=${_buildUserScripts(payload, _payloads, _initialGeoPolicy()).length}',
     );
 
     return InAppWebView(
@@ -488,7 +568,7 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
             ),
       initialSettings: _webViewSettings,
       initialUserScripts: UnmodifiableListView<UserScript>(
-        _buildUserScripts(payload, _payloads),
+        _buildUserScripts(payload, _payloads, _initialGeoPolicy()),
       ),
       // ------------------------------------------------------------ 文档拦截
       //
@@ -578,25 +658,20 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
       // 网页调 navigator.geolocation 时走的是这个回调，不是上面那个。
       // 两个都要接，否则定位会静默失败（页面一直 pending）。
       //
-      // 精度策略：Android 12+ 允许用户只给「大致位置」。我们先把
-      // geolocationFine / Coarse 两项都问（用户在弹窗里二选一），
-      // 然后按**实际同意的那档**去申请系统权限 —— 只同意大致时
-      // 只申请 COARSE，系统的定位服务自己会把坐标模糊掉。
+      // 定位是「一项权限 + 两个维度」：
+      //   * 精度（精确 / 近似）—— 决定申请 FINE 还是 COARSE；
+      //   * 后台（允许 / 不允许）—— 决定切到后台后还能不能读，精度不超过前台。
+      // 系统权限只解决「能不能拿」，坐标模糊与后台拦截在页面侧做
+      // （见 bridge/geo_policy_js.dart），两者合起来才是完整的授权。
       onGeolocationPermissionsShowPrompt:
           (InAppWebViewController controller, String origin) async {
-            final List<MiniappPermission> ask =
-                WebPermissionAsk.forGeolocation();
-
-            final Set<MiniappPermission> granted = await PermissionPromptService
-                .instance
-                .ensureAll(_session.appId, ask, appName: _session.title);
-
-            // 用户至少要给「大致位置」才算数；只给了精细而没给粗略是矛盾的，
-            // 但 Android 上 FINE 隐含 COARSE，所以这里把 FINE 也当作已授权 COARSE。
-            final bool allow =
-                granted.contains(MiniappPermission.geolocationCoarse) ||
-                granted.contains(MiniappPermission.geolocationFine);
-            if (!allow) {
+            final PermissionAnswer answer = await PermissionPromptService.instance
+                .ensure(
+                  _session.appId,
+                  MiniappPermission.location,
+                  appName: _session.title,
+                );
+            if (!answer.allowed) {
               await autotestLog('定位请求被拒绝：$origin');
               return GeolocationPermissionShowPromptResponse(
                 origin: origin,
@@ -605,21 +680,28 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
               );
             }
 
-            // 系统层：只申请用户实际同意的那一档。
-            // FINE 会隐含 COARSE（Android 规则），所以给了 FINE 就不必再要 COARSE。
-            final List<String> runtime = <String>[
-              if (granted.contains(MiniappPermission.geolocationFine))
-                'android.permission.ACCESS_FINE_LOCATION'
-              else
-                'android.permission.ACCESS_COARSE_LOCATION',
-            ];
+            // 「仅本次」的精度 / 后台选择不落盘，但必须对这一次生效，
+            // 所以这里用答案覆盖已存的那份，而不是直接读库。
+            final PermissionService perms = PermissionService.instance;
+            final LocationGrant stored = perms.locationOf(_session.appId);
+            final LocationGrant grant = stored.copyWith(
+              decision: PermissionDecision.granted,
+              precision: answer.precision,
+              background: answer.background,
+            );
+
+            // 系统层：精度决定 FINE / COARSE。FINE 隐含 COARSE，所以精确时
+            // 只申请 FINE 一条（多申请一条 COARSE 在 Android 12+ 上是无效值）。
             final bool systemOk = await NativeBridge.requestRuntimePermissions(
-              runtime,
+              perms.locationRuntimePermissions(grant),
             );
             await autotestLog(
-              '定位请求：$origin → 应用内 ${granted.map((MiniappPermission p) => p.id).join(",")}'
-              ' · 系统层 $runtime = $systemOk',
+              '定位请求：$origin → 精度 ${grant.precision.id}'
+              ' · 后台 ${grant.background} · 系统层 $systemOk',
             );
+
+            // 页面侧立刻按新策略走：近似要取整、后台要拦。
+            _pushGeoPolicy();
 
             return GeolocationPermissionShowPromptResponse(
               origin: origin,
@@ -672,6 +754,8 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
         MiniappHost.instance.touch(_session.appId);
         // 页面加载完，用「当前最新」主题覆盖一次（UserScript 里的快照可能已过期）
         _syncTheme(Theme.of(context).colorScheme, force: true);
+        // 定位策略同理：文档开始时的快照可能早于权限变更
+        _pushGeoPolicy();
       },
       onReceivedError:
           (
@@ -794,6 +878,9 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
     _bridge = api;
     _session.onEvent = _dispatchEvent;
     JsBridge.attach(controller: controller, api: api);
+    // 页面里的定位 shim 可能已经按初始快照跑起来了：这里用真实的前后台
+    // 状态覆盖一次（初始快照按「前台」算，见 _initialGeoPolicy）。
+    _pushGeoPolicy();
     lemonLog('Miniapp', '打开小程序 ${_session.appId}：${_session.entry}');
   }
 

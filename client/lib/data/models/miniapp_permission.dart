@@ -4,27 +4,29 @@
 //
 // 权限分两类：
 //
-//   1) **浏览器的受控资源**：摄像头、麦克风、定位、剪贴板、手机存储。
-//      小程序就是 WebView 里的网页，网页请求它们的途径是标准 Web API
-//      （`getUserMedia()`、`navigator.geolocation`、File System Access API…）。
+//   1) **浏览器的受控资源**：摄像头、麦克风、屏幕捕获、定位、传感器、剪贴板、
+//      文件、通知、MIDI、蓝牙、USB、串口、NFC、WebAuthn……
+//      小程序就是 WebView 里的网页，网页请求它们的途径是**标准 Web API**
+//      （`getUserMedia()`、`getDisplayMedia()`、`navigator.geolocation`、
+//      `new Accelerometer()`、`navigator.bluetooth`、File System Access API…）。
 //      宿主在 Chromium 弹出默认授权框之前把它拦下来，换成自己的权限模型 ——
-//      拦截点见 bridge/web_permission.dart。
+//      拦截点见 bridge/web_permission.dart 与 bridge/geo_policy_js.dart。
 //
-//   2) **宿主原生能力**：蓝牙、NFC。这些不是浏览器标准 API（Android WebView
-//      没有 Web Bluetooth / Web NFC），小程序只能通过 JSBridge 的
-//      `lemonlite.bluetooth.*` / `lemonlite.nfc.*` 调用。桥接层在真正调用
-//      原生通道之前同样会过这一道权限确认 —— **小程序一请求就先弹框**，
-//      不需要等系统层，也不会因为「Android 没要求运行时权限」就静默放行
-//      （NFC 就是这种情况：系统不需要授权，但宿主仍然要问用户）。
+//   2) **宿主原生能力**：Android WebView 没有实现的那几个标准 API
+//      （Web Bluetooth / Web USB / Web Serial / Web NFC），小程序只能通过
+//      JSBridge 的 `lemonlite.bluetooth.*` / `lemonlite.nfc.*` 调用。
+//      桥接层在真正调用原生通道之前同样会过这一道权限确认。
 //
-// 之前那份清单把音量、亮度、屏幕方向、后台运行也当成权限来管，那是不对的：
-// Android 本来就不禁止应用调整音量与亮度，把它们摆在权限管理器里只会让用户
-// 面对一堆「点了也没有实际意义」的开关，真正的风险项反而被淹没。
-// 这些能力现在一律直接放行。
+// 命名原则：**枚举的 id 尽量就是浏览器的权限名**（camera / microphone /
+//   clipboard / notifications / midi / nfc …），这样 metadata.json 里写的
+//   名字与 `navigator.permissions.query({name})` 是同一套词汇，作者不用记两套。
 //
-// 权限管理器管的三项都必须由用户本人点头：
-//   * camera / microphone —— 采集用户的影像与声音
-//   * sdcard              —— 网页请求读写**手机存储（sdcard）**里的文件/目录
+// 定位刻意**不拆成两项权限**，而是「一项权限 + 两个正交维度」：
+//   * 时间维度：仅前台（应用在用的时候）/ 允许后台；
+//   * 精度维度：精确 / 近似（Android 的近似位置精度范围约 3 平方公里）。
+//   这与 Android 12+ 的模型一致（FINE / COARSE + ACCESS_BACKGROUND_LOCATION），
+//   并且有一条硬规则：**后台精度永远受限于前台授权** —— 只给了近似，后台也
+//   只能是近似。见 [LocationGrant]。
 //
 // 这份清单同时就是权限管理器与「应用管理」里权限页的真相来源：
 // 展示的条目、风险分级、分组全部由它推导。以后要纳入新的浏览器资源，
@@ -46,10 +48,14 @@ enum PermissionRisk {
 
 /// 权限分组（管理器里的分节标题）
 enum PermissionGroup {
-  media('媒体采集'),
+  media('媒体与显示'),
   location('位置'),
+  sensors('传感器'),
+  input('输入与振动'),
   connectivity('连接与近场'),
-  storage('文件访问');
+  identity('身份与安全'),
+  storage('文件与剪贴板'),
+  system('系统与设备');
 
   const PermissionGroup(this.label);
 
@@ -91,6 +97,96 @@ enum PermissionDecision {
   }
 }
 
+/// 定位精度档位（对应 Android 的 FINE / COARSE）。
+enum LocationPrecision {
+  fine('fine', '精确', '米级坐标，可用于导航、附近搜索'),
+  coarse('coarse', '近似', '模糊到约 3 平方公里，只能判断大致片区');
+
+  const LocationPrecision(this.id, this.label, this.description);
+
+  final String id;
+  final String label;
+  final String description;
+
+  static LocationPrecision? byId(String? id) {
+    for (final LocationPrecision p in values) {
+      if (p.id == id) return p;
+    }
+    return null;
+  }
+
+  /// 近似位置向下取整的经纬度网格（度）。
+  ///
+  /// 0.02° 在纬度上约 2.2 km，3 km² 量级的模糊效果与 Android 的
+  /// 「大致位置」一致；精确位置不做任何取整。
+  double get gridDegrees => this == LocationPrecision.coarse ? 0.02 : 0.0;
+
+  /// 近似位置向页面报告的精度（米）。Android 的近似位置大约在公里级。
+  double get reportedAccuracy => this == LocationPrecision.coarse ? 1500 : 0;
+}
+
+/// 一个应用的定位授权：决定 + 精度 + 是否允许后台。
+///
+/// 关键规则（与 Android 一致）：**后台精度永远受限于前台授权**。
+/// 所以这里只有一个 `precision` 字段 —— 后台不存在「比前台更精确」的状态，
+/// 这条规则是被数据结构保证的，而不是靠某处 if 记得写。
+@immutable
+class LocationGrant {
+  const LocationGrant({
+    required this.decision,
+    required this.precision,
+    required this.background,
+  });
+
+  final PermissionDecision decision;
+  final LocationPrecision precision;
+
+  /// 是否允许在小程序切到后台后继续获取位置
+  final bool background;
+
+  static const LocationGrant initial = LocationGrant(
+    decision: PermissionDecision.ask,
+    precision: LocationPrecision.fine,
+    background: false,
+  );
+
+  bool get granted => decision == PermissionDecision.granted;
+
+  /// 当前这次读取位置是否放行。[foreground] 表示小程序此刻是否在前台。
+  bool allows({required bool foreground}) => granted && (foreground || background);
+
+  /// 给页面注入/下发的策略（见 bridge/geo_policy_js.dart）。
+  Map<String, dynamic> toJs({required bool foreground}) => <String, dynamic>{
+    'allowed': granted,
+    'precision': precision.id,
+    'background': background,
+    'foreground': foreground,
+    // 页面侧按这个网格取整；精确位置是 0，即不取整。
+    'grid': precision.gridDegrees,
+    'accuracy': precision.reportedAccuracy,
+  };
+
+  LocationGrant copyWith({
+    PermissionDecision? decision,
+    LocationPrecision? precision,
+    bool? background,
+  }) => LocationGrant(
+    decision: decision ?? this.decision,
+    precision: precision ?? this.precision,
+    background: background ?? this.background,
+  );
+
+  @override
+  bool operator ==(Object other) =>
+      other is LocationGrant &&
+      other.decision == decision &&
+      other.precision == precision &&
+      other.background == background;
+
+  @override
+  int get hashCode => Object.hash(decision, precision, background);
+}
+
 /// 一次授权询问的答案。
 ///
 /// [remember] 就是弹窗里那个**默认勾选**的「仅本次生效」的反面：
@@ -100,15 +196,29 @@ enum PermissionDecision {
 /// 之所以把「仅本次」做成默认：权限弹窗最容易被用户当成一个必须点掉的拦路虎，
 /// 手一快就点了「允许」，而这个决定会一直生效。默认不记住，
 /// 就把「长期授权」变成一次需要用户主动取消勾选的、有意识的选择。
+///
+/// [precision] / [background] 只在定位权限上有值：它们回答的是
+/// 「这次给多大范围的位置、后台还要不要给」，与「允不允许」是两件事。
 @immutable
 class PermissionAnswer {
-  const PermissionAnswer({required this.allowed, this.remember = false});
+  const PermissionAnswer({
+    required this.allowed,
+    this.remember = false,
+    this.precision,
+    this.background,
+  });
 
   /// 是否允许
   final bool allowed;
 
   /// 是否把这次决定记住（false = 仅本次生效）
   final bool remember;
+
+  /// 本次选择的定位精度（非定位权限为 null）
+  final LocationPrecision? precision;
+
+  /// 本次是否允许后台定位（非定位权限为 null）
+  final bool? background;
 
   /// 只允许这一次
   static const PermissionAnswer allowOnce = PermissionAnswer(
@@ -138,15 +248,19 @@ class PermissionAnswer {
   bool operator ==(Object other) =>
       other is PermissionAnswer &&
       other.allowed == allowed &&
-      other.remember == remember;
+      other.remember == remember &&
+      other.precision == precision &&
+      other.background == background;
 
   @override
-  int get hashCode => Object.hash(allowed, remember);
+  int get hashCode => Object.hash(allowed, remember, precision, background);
 
   @override
   String toString() =>
       'PermissionAnswer(${allowed ? "allow" : "deny"}, '
-      '${remember ? "remember" : "once"})';
+      '${remember ? "remember" : "once"}'
+      '${precision == null ? "" : ", ${precision!.id}"}'
+      '${background == null ? "" : ", background=$background"})';
 }
 
 /// 桥接层眼里的"要权限"动作：给定小程序与权限，返回用户的答案。
@@ -161,14 +275,16 @@ typedef PermissionPrompter =
       String? appName,
     });
 
-/// 一个受控权限。命名与 Android 的运行时权限一一对应（注释里标了对应的系统权限）。
+/// 一个受控权限。id 尽量与浏览器 Permissions API 的名字保持一致。
 enum MiniappPermission {
+  // ---------------------------------------------------------------- 媒体与显示
   camera(
     id: 'camera',
     label: '摄像头',
     description:
         '网页通过 navigator.mediaDevices.getUserMedia() 请求摄像头画面。'
         '同意后浏览器才会打开设备；底层还需要 Android 的 CAMERA 权限。',
+    webApi: 'MediaDevices.getUserMedia()',
     group: PermissionGroup.media,
     risk: PermissionRisk.sensitive,
     runtimePermissions: <String>['android.permission.CAMERA'],
@@ -179,72 +295,163 @@ enum MiniappPermission {
     description:
         '网页通过 navigator.mediaDevices.getUserMedia() 请求麦克风录音。'
         '同意后浏览器才会打开设备；底层还需要 Android 的 RECORD_AUDIO 权限。',
+    webApi: 'MediaDevices.getUserMedia()',
     group: PermissionGroup.media,
     risk: PermissionRisk.sensitive,
     runtimePermissions: <String>['android.permission.RECORD_AUDIO'],
   ),
-
-  /// 精确位置（细粒度）—— 对应 W3C Geolocation 的「精确」档。
-  ///
-  /// 为什么和模糊定位拆成两项而不是一个开关：
-  ///   Android 12+ 把定位权限拆成了 FINE / COARSE 两档，系统授权框也让用户
-  ///   二选一（「精确」/「大致」）。宿主如果只做一个「定位」开关，就等于替
-  ///   用户决定了精度 —— 这正好是这次要避免的事。
-  ///   拆开后：用户同意「大致」时我们只申请 COARSE，网页拿到的坐标会被
-  ///   Android 自己模糊到街区级；同意「精确」才申请 FINE。
-  geolocationFine(
-    id: 'geolocationFine',
-    label: '精确位置',
+  displayCapture(
+    id: 'displayCapture',
+    label: '屏幕捕获',
     description:
-        '网页通过 navigator.geolocation 获取你的精确坐标（米级）。'
-        '只在需要导航、附近搜索这类场景才该给；底层需要 ACCESS_FINE_LOCATION。',
-    group: PermissionGroup.location,
+        '网页通过 navigator.mediaDevices.getDisplayMedia() 请求录制整个屏幕、'
+        '某个应用窗口或浏览器标签页。系统会再弹一次「开始录制」的确认框。',
+    webApi: 'MediaDevices.getDisplayMedia()',
+    group: PermissionGroup.media,
     risk: PermissionRisk.sensitive,
-    runtimePermissions: <String>['android.permission.ACCESS_FINE_LOCATION'],
+    // MediaProjection 由系统自己弹确认框，不属于 Android 运行时权限。
+    runtimePermissions: <String>[],
   ),
-
-  /// 模糊位置（城市/街区级）。
-  ///
-  /// 注意 Android 的规则：**申请 FINE 时系统会同时要求 COARSE**，
-  /// 只申请 COARSE 才是「我只要大致位置」。所以这里的 runtimePermissions
-  /// 只有 COARSE —— 语义上它就是「我不要精确位置」。
-  geolocationCoarse(
-    id: 'geolocationCoarse',
-    label: '大致位置',
+  speakerSelection(
+    id: 'speakerSelection',
+    label: '音频输出设备',
     description:
-        '网页通过 navigator.geolocation 获取你的大致位置（城市/街区级）。'
-        '不需要精确坐标的场景选这个就够；底层只需 ACCESS_COARSE_LOCATION。',
-    group: PermissionGroup.location,
-    risk: PermissionRisk.sensitive,
-    runtimePermissions: <String>['android.permission.ACCESS_COARSE_LOCATION'],
+        '网页通过 HTMLMediaElement.setSinkId() / selectAudioOutput() 把声音'
+        '路由到指定的扬声器、耳机或蓝牙音箱。',
+    webApi: 'HTMLMediaElement.setSinkId()',
+    group: PermissionGroup.media,
+    risk: PermissionRisk.normal,
+    runtimePermissions: <String>[],
   ),
-
-  clipboard(
-    id: 'clipboard',
-    label: '剪贴板',
+  pictureInPicture(
+    id: 'pictureInPicture',
+    label: '画中画',
     description:
-        '网页通过 navigator.clipboard 读写剪贴板。'
-        '读剪贴板可能拿到你刚复制的密码、验证码，所以列为敏感项。',
-    group: PermissionGroup.storage,
-    risk: PermissionRisk.sensitive,
-    // 现代 Chromium 的异步剪贴板不需要 Android 运行时权限（写入除外，
-    // 但 WebView 里写入本来就不弹系统框）。读操作由 WebView 侧
-    // 的 onPermissionRequest 拦。
+        '网页通过 requestPictureInPicture() 让视频脱离页面，悬浮在其它应用之上播放。'
+        '浏览器不弹系统授权框，由宿主这一层控制。',
+    webApi: 'HTMLVideoElement.requestPictureInPicture()',
+    group: PermissionGroup.media,
+    risk: PermissionRisk.normal,
     runtimePermissions: <String>[],
   ),
 
-  notifications(
-    id: 'notifications',
-    label: '通知',
+  // -------------------------------------------------------------------- 位置
+  /// 位置信息：**一项权限，两个维度**。
+  ///
+  /// 为什么不是「精确位置 / 大致位置」两个开关：
+  ///   两者不是并列的能力，而是同一份数据的不同精度档。拆成两个枚举会逼出
+  ///   一个假状态 —— 两项都允许、精度算哪个？Android 12+ 的做法是
+  ///   一个授权里带一个精度选择，后台是另一个独立开关，这里照搬。
+  ///
+  /// 实际生效的精度与后台开关存放在 [LocationGrant] 里（见 PermissionService）。
+  location(
+    id: 'location',
+    label: '位置信息',
     description:
-        '网页通过 Notification.requestPermission() 请求发送通知。'
-        'Android 13+ 还需要 POST_NOTIFICATIONS 运行时权限。',
-    group: PermissionGroup.media,
-    risk: PermissionRisk.normal,
-    runtimePermissions: <String>['android.permission.POST_NOTIFICATIONS'],
+        '网页通过 navigator.geolocation 获取位置。可以只给近似位置（约 3 平方公里），'
+        '也可以允许小程序切到后台后继续获取 —— 后台精度不会超过前台设置。',
+    webApi: 'navigator.geolocation',
+    group: PermissionGroup.location,
+    risk: PermissionRisk.sensitive,
+    // 运行时权限按精度/后台动态计算，见 PermissionService.locationRuntimePermissions。
+    runtimePermissions: <String>[],
   ),
 
+  // ------------------------------------------------------------------ 传感器
+  accelerometer(
+    id: 'accelerometer',
+    label: '加速度计',
+    description:
+        '网页通过 new Accelerometer()（Generic Sensor API）或 devicemotion 事件'
+        '读取设备的加速度，可用于计步、体感操作。',
+    webApi: 'Accelerometer / DeviceMotionEvent',
+    group: PermissionGroup.sensors,
+    risk: PermissionRisk.normal,
+    runtimePermissions: <String>[],
+  ),
+  gyroscope(
+    id: 'gyroscope',
+    label: '陀螺仪',
+    description:
+        '网页通过 new Gyroscope() 或 deviceorientation 事件读取设备的旋转角速度，'
+        '可用于体感游戏、画面防抖。',
+    webApi: 'Gyroscope / DeviceOrientationEvent',
+    group: PermissionGroup.sensors,
+    risk: PermissionRisk.normal,
+    runtimePermissions: <String>[],
+  ),
+  magnetometer(
+    id: 'magnetometer',
+    label: '磁力计',
+    description:
+        '网页通过 new Magnetometer() 读取磁场方向，可用于指南针；'
+        '与加速度计、陀螺仪一起可算出设备的绝对朝向。',
+    webApi: 'Magnetometer',
+    group: PermissionGroup.sensors,
+    risk: PermissionRisk.normal,
+    runtimePermissions: <String>[],
+  ),
+  ambientLight(
+    id: 'ambientLight',
+    label: '环境光',
+    description:
+        '网页通过 new AmbientLightSensor() 读取环境光强度（部分设备不提供该传感器）。',
+    webApi: 'AmbientLightSensor',
+    group: PermissionGroup.sensors,
+    risk: PermissionRisk.normal,
+    runtimePermissions: <String>[],
+  ),
+  proximity(
+    id: 'proximity',
+    label: '距离感应',
+    description:
+        '网页通过 new ProximitySensor() 判断是否有物体靠近（例如贴耳时熄屏），'
+        '很多设备并不暴露这个传感器。',
+    webApi: 'ProximitySensor',
+    group: PermissionGroup.sensors,
+    risk: PermissionRisk.normal,
+    runtimePermissions: <String>[],
+  ),
+
+  // -------------------------------------------------------------- 输入与振动
+  gamepad(
+    id: 'gamepad',
+    label: '游戏手柄',
+    description:
+        '网页通过 navigator.getGamepads() 读取已连接手柄的按键与摇杆状态。',
+    webApi: 'Gamepad API',
+    group: PermissionGroup.input,
+    risk: PermissionRisk.normal,
+    runtimePermissions: <String>[],
+  ),
+  vibrate(
+    id: 'vibrate',
+    label: '振动',
+    description:
+        '网页通过 navigator.vibrate() 让设备振动，常用于通知与游戏反馈。'
+        'Android 的 VIBRATE 是安装期权限，这里仍然先问用户一次。',
+    webApi: 'navigator.vibrate()',
+    group: PermissionGroup.input,
+    risk: PermissionRisk.normal,
+    runtimePermissions: <String>[],
+  ),
+  midi(
+    id: 'midi',
+    label: 'MIDI 设备',
+    description:
+        '网页通过 navigator.requestMIDIAccess() 与电子乐器（MIDI 键盘、合成器）通信。'
+        '发送系统专用消息（SysEx）风险更高，Chromium 会单独再确认一次。',
+    webApi: 'Web MIDI API',
+    group: PermissionGroup.input,
+    risk: PermissionRisk.sensitive,
+    runtimePermissions: <String>[],
+  ),
+
+  // ------------------------------------------------------------- 连接与近场
   /// 蓝牙（BLE 扫描 / 连接 / 读写特征值）。
+  ///
+  /// Android WebView 没有实现 Web Bluetooth，所以走 `lemonlite.bluetooth.*`；
+  /// 能力本身仍对应标准的 Web Bluetooth 语义（设备发现 → 连接 → GATT 读写）。
   ///
   /// 为什么仍然要应用内授权：蓝牙能拿到附近设备的名称、地址与广播数据，
   /// 连接后还能读写设备特征值 —— 这是一条真实的旁路通道（附近的信标、
@@ -258,8 +465,9 @@ enum MiniappPermission {
     id: 'bluetooth',
     label: '蓝牙',
     description:
-        '小程序通过 lemonlite.bluetooth 扫描附近的蓝牙设备，'
+        '小程序通过 Web Bluetooth 语义（lemonlite.bluetooth）扫描附近的蓝牙设备，'
         '并连接 BLE 设备读写特征值。同意后系统还会再确认一次蓝牙权限。',
+    webApi: 'Web Bluetooth（经 JSBridge 转接）',
     group: PermissionGroup.connectivity,
     risk: PermissionRisk.sensitive,
     runtimePermissions: <String>[
@@ -267,7 +475,28 @@ enum MiniappPermission {
       'android.permission.BLUETOOTH_CONNECT',
     ],
   ),
-
+  usb(
+    id: 'usb',
+    label: 'USB 设备',
+    description:
+        '网页通过 navigator.usb.requestDevice() 与 Arduino 开发板、USB 外设通信。'
+        '每次连接都要用户从系统列表里挑设备，宿主不会拿到整块 USB 总线的通行证。',
+    webApi: 'WebUSB API',
+    group: PermissionGroup.connectivity,
+    risk: PermissionRisk.sensitive,
+    runtimePermissions: <String>[],
+  ),
+  serial(
+    id: 'serial',
+    label: '串口设备',
+    description:
+        '网页通过 navigator.serial.requestPort() 打开串口（例如开发板、传感器模块）。'
+        '同样需要用户逐次选择设备。',
+    webApi: 'Web Serial API',
+    group: PermissionGroup.connectivity,
+    risk: PermissionRisk.sensitive,
+    runtimePermissions: <String>[],
+  ),
   /// NFC（读取 / 写入标签）。
   ///
   /// Android 的 NFC 是一个**安装期权限**（normal），不需要运行时弹框；
@@ -278,13 +507,53 @@ enum MiniappPermission {
     id: 'nfc',
     label: 'NFC',
     description:
-        '小程序通过 lemonlite.nfc 读取或写入 NFC 标签（NDEF）。'
+        '小程序通过 Web NFC 语义（lemonlite.nfc）读取或写入 NFC 标签（NDEF）。'
         'NFC 不需要 Android 运行时权限，但宿主仍会先问你是否允许。',
+    webApi: 'Web NFC（经 JSBridge 转接）',
     group: PermissionGroup.connectivity,
     risk: PermissionRisk.sensitive,
     runtimePermissions: <String>[],
   ),
+  networkInfo(
+    id: 'networkInfo',
+    label: '网络信息',
+    description:
+        '网页通过 navigator.connection 读取网络类型（Wi-Fi / 4G / 5G）与带宽估算，'
+        '用来决定要不要加载高清资源。',
+    webApi: 'Network Information API',
+    group: PermissionGroup.connectivity,
+    risk: PermissionRisk.normal,
+    runtimePermissions: <String>[],
+  ),
 
+  // ------------------------------------------------------------- 身份与安全
+  webauthn(
+    id: 'webauthn',
+    label: '生物识别与安全密钥',
+    description:
+        '网页通过 navigator.credentials.create() / get()（WebAuthn）调用指纹、'
+        '面容或外接安全密钥完成无密码登录。每次验证都由系统弹框确认。',
+    webApi: 'Web Authentication API',
+    group: PermissionGroup.identity,
+    risk: PermissionRisk.sensitive,
+    runtimePermissions: <String>[],
+  ),
+
+  // ----------------------------------------------------------- 文件与剪贴板
+  clipboard(
+    id: 'clipboard',
+    label: '剪贴板',
+    description:
+        '网页通过 navigator.clipboard 读写剪贴板。'
+        '读剪贴板可能拿到你刚复制的密码、验证码，所以列为敏感项。',
+    webApi: 'Async Clipboard API',
+    group: PermissionGroup.storage,
+    risk: PermissionRisk.sensitive,
+    // 现代 Chromium 的异步剪贴板不需要 Android 运行时权限（写入除外，
+    // 但 WebView 里写入本来就不弹系统框）。读操作由 WebView 侧
+    // 的 onPermissionRequest 拦。
+    runtimePermissions: <String>[],
+  ),
   /// 手机存储（sdcard）读写。
   ///
   /// 这一项刻意**不是**「管理所有文件」：
@@ -306,10 +575,53 @@ enum MiniappPermission {
         '网页请求读写手机存储（sdcard）里的文件或目录，例如 Download、Pictures。'
         '同意后由系统文件选择器逐个确认，页面只能拿到你选中的那些。'
         '（读写小程序自己的两个沙箱目录不需要这个权限。）',
+    webApi: 'File System Access API',
     group: PermissionGroup.storage,
     risk: PermissionRisk.dangerous,
     // File System Access API 由 Chromium 自己弹系统文件选择器，
     // 真正的逐次授权发生在系统侧，这里不需要额外的运行时权限。
+    runtimePermissions: <String>[],
+  ),
+
+  // ------------------------------------------------------------- 系统与设备
+  notifications(
+    id: 'notifications',
+    label: '通知',
+    description:
+        '网页通过 Notification.requestPermission() 请求发送通知。'
+        'Android 13+ 还需要 POST_NOTIFICATIONS 运行时权限。',
+    webApi: 'Notifications API',
+    group: PermissionGroup.system,
+    risk: PermissionRisk.normal,
+    runtimePermissions: <String>['android.permission.POST_NOTIFICATIONS'],
+  ),
+  battery(
+    id: 'battery',
+    label: '电池状态',
+    description:
+        '网页通过 navigator.getBattery() 读取电量与充电状态，用来决定要不要省电。',
+    webApi: 'Battery Status API',
+    group: PermissionGroup.system,
+    risk: PermissionRisk.normal,
+    runtimePermissions: <String>[],
+  ),
+  deviceMemory(
+    id: 'deviceMemory',
+    label: '设备内存',
+    description:
+        '网页通过 navigator.deviceMemory 读取近似内存大小（GB），用来决定资源加载策略。',
+    webApi: 'Device Memory API',
+    group: PermissionGroup.system,
+    risk: PermissionRisk.normal,
+    runtimePermissions: <String>[],
+  ),
+  print(
+    id: 'print',
+    label: '打印',
+    description: '网页通过 window.print() 调起系统打印面板。',
+    webApi: 'window.print()',
+    group: PermissionGroup.system,
+    risk: PermissionRisk.normal,
     runtimePermissions: <String>[],
   );
 
@@ -320,6 +632,7 @@ enum MiniappPermission {
     required this.group,
     required this.risk,
     required this.runtimePermissions,
+    required this.webApi,
   });
 
   /// 持久化用的稳定标识（**不要改**：改了等于把用户已有的授权全部丢掉）
@@ -329,6 +642,10 @@ enum MiniappPermission {
   final String description;
   final PermissionGroup group;
   final PermissionRisk risk;
+
+  /// 这一项对应的**标准 Web API**。UI 与文档都用它来说明
+  /// 「小程序该写哪一行代码」，而不是「调哪个桥接方法」。
+  final String webApi;
 
   /// 这一项在 Android 侧还需要哪些**运行时权限**。
   ///
@@ -342,11 +659,14 @@ enum MiniappPermission {
   /// 否则会出现「用户在弹窗里点了允许，摄像头却仍然打不开且没有报错」。
   ///
   /// 为空表示不需要系统层授权（例如 File System Access API 由 Chromium
-  /// 自己弹文件选择器）。
+  /// 自己弹文件选择器）。定位的运行时权限按精度动态计算，所以这里是空的。
   final List<String> runtimePermissions;
 
   /// 是否需要 Android 运行时权限
   bool get needsRuntimePermission => runtimePermissions.isNotEmpty;
+
+  /// 是否走「两项独立维度」的定位模型
+  bool get isLocation => this == MiniappPermission.location;
 
   /// 用户还没做过决定时的状态 —— 一律是「询问」。
   ///
@@ -366,25 +686,67 @@ enum MiniappPermission {
   IconData get icon => switch (this) {
     MiniappPermission.camera => Icons.photo_camera_outlined,
     MiniappPermission.microphone => Icons.mic_none_outlined,
-    MiniappPermission.geolocationFine => Icons.my_location,
-    MiniappPermission.geolocationCoarse => Icons.location_searching,
-    MiniappPermission.clipboard => Icons.content_paste,
-    MiniappPermission.notifications => Icons.notifications_outlined,
+    MiniappPermission.displayCapture => Icons.screen_share_outlined,
+    MiniappPermission.speakerSelection => Icons.speaker_outlined,
+    MiniappPermission.pictureInPicture => Icons.picture_in_picture_alt_outlined,
+    MiniappPermission.location => Icons.my_location,
+    MiniappPermission.accelerometer => Icons.speed_outlined,
+    MiniappPermission.gyroscope => Icons.screen_rotation_outlined,
+    MiniappPermission.magnetometer => Icons.explore_outlined,
+    MiniappPermission.ambientLight => Icons.light_mode_outlined,
+    MiniappPermission.proximity => Icons.sensors_outlined,
+    MiniappPermission.gamepad => Icons.sports_esports_outlined,
+    MiniappPermission.vibrate => Icons.vibration,
+    MiniappPermission.midi => Icons.piano_outlined,
     MiniappPermission.bluetooth => Icons.bluetooth_searching,
+    MiniappPermission.usb => Icons.usb,
+    MiniappPermission.serial => Icons.cable_outlined,
     MiniappPermission.nfc => Icons.nfc,
+    MiniappPermission.networkInfo => Icons.network_cell_outlined,
+    MiniappPermission.webauthn => Icons.fingerprint,
+    MiniappPermission.clipboard => Icons.content_paste,
     MiniappPermission.sdcard => Icons.folder_shared_outlined,
+    MiniappPermission.notifications => Icons.notifications_outlined,
+    MiniappPermission.battery => Icons.battery_5_bar_outlined,
+    MiniappPermission.deviceMemory => Icons.memory_outlined,
+    MiniappPermission.print => Icons.print_outlined,
   };
 
-  /// 精确/模糊定位是一对：用户选了其中一个，另一个的状态就不该再问。
+  /// 旧 id → 当前枚举的别名。
   ///
-  /// 为什么需要这条关系：Android 的 FINE 隐含 COARSE（申请 FINE 会让系统
-  /// 同时给 COARSE）。如果两项各自独立判定，用户同意「精确」之后
-  /// 网页再请求「大致」还会被问一次 —— 那是在问一个已经被回答过的问题。
-  MiniappPermission? get pairedWith => switch (this) {
-    MiniappPermission.geolocationFine => MiniappPermission.geolocationCoarse,
-    MiniappPermission.geolocationCoarse => MiniappPermission.geolocationFine,
-    _ => null,
+  /// 为什么需要别名而不是直接把 id 改掉：用户在过去版本里对 `allFiles`
+  /// 做过的「允许/拒绝」还躺在 SharedPreferences 里，市场数据里也有
+  /// 应用在声明 `allFiles`。改 id 等于让这些记录全部失效、并且让那些
+  /// 应用在详情页被标成「未知权限」。别名把两件事都接住了：
+  /// 声明照旧能识别，旧决定也会被当作新权限的决定读出来。
+  static const Map<String, MiniappPermission> aliases =
+      <String, MiniappPermission>{
+        'allFiles': MiniappPermission.sdcard,
+        // 0.3 起定位合并为一项；旧的精确/大致两项按 location 读回，
+        // 原来的选择会迁移成精度档（见 PermissionService.locationOf）。
+        'geolocationFine': MiniappPermission.location,
+        'geolocationCoarse': MiniappPermission.location,
+        'geolocation': MiniappPermission.location,
+      };
+
+  /// 这一项曾经用过的 id（读旧记录时按顺序回退）。
+  List<String> get legacyIds => switch (this) {
+    MiniappPermission.sdcard => const <String>['allFiles'],
+    MiniappPermission.location => const <String>[
+      'geolocationFine',
+      'geolocationCoarse',
+      'geolocation',
+    ],
+    _ => const <String>[],
   };
+
+  /// 从持久化的 id 反查；未知 id 返回 null（旧版本写入的权限被删掉时不至于崩）
+  static MiniappPermission? byId(String id) {
+    for (final MiniappPermission p in values) {
+      if (p.id == id) return p;
+    }
+    return aliases[id];
+  }
 
   /// 按分组聚合（管理器里按分节渲染）
   static Map<PermissionGroup, List<MiniappPermission>> grouped() {
@@ -403,30 +765,6 @@ enum MiniappPermission {
   static List<MiniappPermission> get sensitiveList => values
       .where((MiniappPermission p) => p.isSensitive)
       .toList(growable: false);
-
-  /// 旧 id → 当前枚举的别名。
-  ///
-  /// 为什么需要别名而不是直接把 id 改掉：用户在过去版本里对 `allFiles`
-  /// 做过的「允许/拒绝」还躺在 SharedPreferences 里，市场数据里也有
-  /// 应用在声明 `allFiles`。改 id 等于让这些记录全部失效、并且让那些
-  /// 应用在详情页被标成「未知权限」。别名把两件事都接住了：
-  /// 声明照旧能识别，旧决定也会被当作新权限的决定读出来。
-  static const Map<String, MiniappPermission> aliases =
-      <String, MiniappPermission>{'allFiles': MiniappPermission.sdcard};
-
-  /// 这一项曾经用过的 id（读旧记录时按顺序回退）。
-  List<String> get legacyIds => switch (this) {
-    MiniappPermission.sdcard => const <String>['allFiles'],
-    _ => const <String>[],
-  };
-
-  /// 从持久化的 id 反查；未知 id 返回 null（旧版本写入的权限被删掉时不至于崩）
-  static MiniappPermission? byId(String id) {
-    for (final MiniappPermission p in values) {
-      if (p.id == id) return p;
-    }
-    return aliases[id];
-  }
 
   /// 曾经是权限、但这一版**已经不再需要授权**的能力 id。
   ///

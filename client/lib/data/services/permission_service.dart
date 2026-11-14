@@ -268,6 +268,12 @@ class PermissionService extends ChangeNotifier {
 
   static PermissionService? _instance;
 
+  /// 未初始化时返回 null。
+  ///
+  /// 给「可能在 main() 之前就被构建的 UI」用（widget 测试、启动早期的
+  /// 预渲染）：拿不到服务时按「还没问过用户」处理，而不是抛异常。
+  static PermissionService? get maybeInstance => _instance;
+
   static PermissionService get instance {
     final PermissionService? s = _instance;
     if (s == null) {
@@ -285,6 +291,14 @@ class PermissionService extends ChangeNotifier {
   static const String _kDecisionPrefix = 'perm.decision.';
   static const String _kUsagePrefix = 'perm.usage.';
   static const String _kKnownApps = 'perm.known_apps';
+
+  /// 定位的两个维度（精度 / 后台）存在一个键里：`perm.location.<appId>`
+  /// → `{"p":"fine|coarse","b":true|false}`。
+  /// 单独一个键而不是两个，是为了「要么全在，要么全无」——
+  /// 半份记录（只有精度没有后台）会让迁移逻辑猜来猜去。
+  static const String _kLocationPrefix = 'perm.location.';
+
+  static String _locationKey(String appId) => '$_kLocationPrefix$appId';
 
   static String _decisionKey(String appId, MiniappPermission p) =>
       '$_kDecisionPrefix$appId.${p.id}';
@@ -427,11 +441,113 @@ class PermissionService extends ChangeNotifier {
   /// 恢复默认 = 全部回到「询问」：删掉该小程序的所有决定，
   /// 下次用到哪个权限就为哪个弹窗。这是「我改错了想重来」的出口。
   Future<void> resetApp(String appId) async {
-    final List<String> keys = MiniappPermission.values
-        .expand((MiniappPermission p) => _decisionKeys(appId, p))
-        .toList(growable: false);
+    final List<String> keys = <String>[
+      ...MiniappPermission.values.expand(
+        (MiniappPermission p) => _decisionKeys(appId, p),
+      ),
+      _locationKey(appId),
+    ];
     await _settings.removeMany(keys);
     notifyListeners();
+  }
+
+  // ---------------------------------------------------------------- 定位
+
+  /// 某个小程序的定位授权（决定 + 精度 + 后台）。
+  ///
+  /// 迁移规则（0.3 之前是 geolocationFine / geolocationCoarse 两项）：
+  ///   * 决定沿用旧 key（[PermissionService.decisionOf] 会回退到 legacy id）；
+  ///   * 精度按「当时究竟给了哪一档」还原：给过精确就是精确，
+  ///     只给过大致就是近似，都没给过则默认精确（弹窗里也默认精确）。
+  LocationGrant locationOf(String appId) {
+    final PermissionDecision decision = decisionOf(
+      appId,
+      MiniappPermission.location,
+    );
+
+    LocationPrecision? precision;
+    bool? background;
+    final String? raw = _settings.readRaw(_locationKey(appId));
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final Object? decoded = jsonDecode(raw);
+        if (decoded is Map) {
+          precision = LocationPrecision.byId(decoded['p']?.toString());
+          final Object? b = decoded['b'];
+          if (b is bool) background = b;
+        }
+      } catch (e) {
+        lemonLog('Permission', '定位记录损坏，按默认处理：$e');
+      }
+    }
+
+    precision ??= _legacyPrecision(appId);
+    return LocationGrant(
+      decision: decision,
+      precision: precision,
+      background: background ?? false,
+    );
+  }
+
+  /// 从旧的 geolocationFine / geolocationCoarse 决定里推断精度。
+  LocationPrecision _legacyPrecision(String appId) {
+    if (_rawDecision(appId, 'geolocationFine') == PermissionDecision.granted) {
+      return LocationPrecision.fine;
+    }
+    if (_rawDecision(appId, 'geolocationCoarse') == PermissionDecision.granted) {
+      return LocationPrecision.coarse;
+    }
+    return LocationPrecision.fine;
+  }
+
+  /// 只读某个具体 key 的决定（不做别名回退），迁移与诊断用。
+  PermissionDecision _rawDecision(String appId, String id) {
+    final String? raw = _settings.readRaw('$_kDecisionPrefix$appId.$id');
+    if (raw == null || raw.isEmpty) return PermissionDecision.ask;
+    return PermissionDecision.byId(raw) ?? PermissionDecision.ask;
+  }
+
+  /// 改定位的精度 / 后台开关。
+  ///
+  /// **不会**顺手把决定改成「允许」：这两个维度只在已经允许的前提下有意义，
+  /// 但「用户点了一下精确/近似」不等于「同意给定位」。决定仍然由
+  /// [setDecision] 单独管。
+  Future<void> setLocationOptions(
+    String appId, {
+    LocationPrecision? precision,
+    bool? background,
+  }) async {
+    final LocationGrant current = locationOf(appId);
+    final LocationGrant next = current.copyWith(
+      precision: precision,
+      background: background,
+    );
+    await _settings.writeRaw(
+      _locationKey(appId),
+      jsonEncode(<String, dynamic>{
+        'p': next.precision.id,
+        'b': next.background,
+      }),
+    );
+    notifyListeners();
+  }
+
+  /// 定位需要的 Android 运行时权限：精度决定 FINE / COARSE，
+  /// 允许后台时再加一条 ACCESS_BACKGROUND_LOCATION。
+  ///
+  /// 注意后台定位在 Android 11+ 不能和前台权限一起申请 —— 系统会忽略它，
+  /// 用户必须去系统设置里选「始终允许」。调用方（miniapp_page）负责在
+  /// 前台权限拿到之后再单独申请一次，失败了也不影响前台定位。
+  List<String> locationRuntimePermissions(LocationGrant grant) {
+    if (!grant.granted) return const <String>[];
+    return <String>[
+      if (grant.precision == LocationPrecision.fine)
+        'android.permission.ACCESS_FINE_LOCATION'
+      else
+        'android.permission.ACCESS_COARSE_LOCATION',
+      // FINE 隐含 COARSE（Android 规则），所以精确时不必再列 COARSE。
+      if (grant.background) 'android.permission.ACCESS_BACKGROUND_LOCATION',
+    ];
   }
 
   // -------------------------------------------------------------- 用量记录
@@ -547,7 +663,7 @@ class PermissionService extends ChangeNotifier {
   /// **它不负责「移除应用」** —— 那件事属于应用管理（ApplicationRegistry.remove）。
   /// 保留这个方法是为了让「只想清权限记录、保留应用」这种场景有出口。
   Future<void> clearAppRecords(String appId) async {
-    final List<String> keys = <String>[];
+    final List<String> keys = <String>[_locationKey(appId)];
     for (final MiniappPermission p in MiniappPermission.values) {
       keys.addAll(_decisionKeys(appId, p));
       keys.addAll(_usageKeys(appId, p));

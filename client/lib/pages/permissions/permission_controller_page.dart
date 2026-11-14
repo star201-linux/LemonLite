@@ -32,6 +32,7 @@ import '../../data/services/permission_service.dart';
 import '../../theme/app_theme.dart';
 import '../home/home_controller.dart';
 import 'widgets/permission_chips.dart';
+import '../../theme/loading.dart';
 
 class PermissionControllerPage extends StatefulWidget {
   const PermissionControllerPage({super.key, this.appId, this.appName});
@@ -122,7 +123,7 @@ class _PermissionControllerPageState extends State<PermissionControllerPage> {
               AsyncSnapshot<PermissionScanReport> snapshot,
             ) {
               if (snapshot.connectionState != ConnectionState.done) {
-                return const Center(child: CircularProgressIndicator());
+                return const Center(child: M3ELoadingIndicator());
               }
               if (snapshot.hasError) {
                 return _ErrorBody(
@@ -491,6 +492,7 @@ class _PermissionControllerPageState extends State<PermissionControllerPage> {
                 for (final MiniappPermission p in entry.value)
                   if (relevant.contains(p))
                     _PermissionDecisionTile(
+                      appId: appId,
                       permission: p,
                       decision: report.decisionOf(appId, p),
                       usage: report.usageOf(appId, p),
@@ -697,8 +699,8 @@ class _ScanSummaryCard extends StatelessWidget {
                       builder: (BuildContext ctx) => AlertDialog(
                         title: const Text('拒绝全部应用的权限？'),
                         content: Text(
-                          '将对全部 ${report.totalApps} 个应用把摄像头、麦克风、'
-                          '手机存储设为「拒绝」。',
+                          '将对全部 ${report.totalApps} 个应用把定位、摄像头、'
+                          '麦克风、蓝牙、剪贴板、文件访问等敏感权限设为「拒绝」。',
                         ),
                         actions: <Widget>[
                           TextButton(
@@ -787,6 +789,7 @@ class _ScanPermissionTile extends StatelessWidget {
 /// "已允许"或"已拒绝"，而这一版里"还没问过"是默认状态，必须能一眼看出来。
 class _PermissionDecisionTile extends StatelessWidget {
   const _PermissionDecisionTile({
+    required this.appId,
     required this.permission,
     required this.decision,
     required this.usage,
@@ -794,6 +797,7 @@ class _PermissionDecisionTile extends StatelessWidget {
     required this.onChanged,
   });
 
+  final String appId;
   final MiniappPermission permission;
   final PermissionDecision decision;
   final MiniappUsage usage;
@@ -802,6 +806,9 @@ class _PermissionDecisionTile extends StatelessWidget {
   final bool declared;
 
   final ValueChanged<PermissionDecision> onChanged;
+
+  LocationGrant get _locationGrant =>
+      PermissionService.instance.locationOf(appId);
 
   @override
   Widget build(BuildContext context) {
@@ -861,6 +868,13 @@ class _PermissionDecisionTile extends StatelessWidget {
                   onChanged(selection.first),
             ),
           ),
+          // 定位：一项权限、两个独立维度。精度与后台开关放在同一张卡里，
+          // 是因为它们和「允不允许」是同一个决定的三个面 —— 分到别处用户
+          // 找不到，也容易以为改了精度等于改了授权。
+          if (permission.isLocation) ...<Widget>[
+            const SizedBox(height: 12),
+            _LocationControls(appId: appId, initial: _locationGrant),
+          ],
           // 「手机存储」在系统侧还有一层授权：应用内允许只是第一层，
           // 没有系统侧的「所有文件访问权限」照样读不到沙箱外的文件。
           // 所以这里直接给一个跳转入口，省得用户自己去设置里翻。
@@ -1013,6 +1027,111 @@ class _RuntimeChip extends StatelessWidget {
           color: scheme.onTertiaryContainer,
         ),
       ),
+    );
+  }
+}
+
+/// 定位的两个独立维度：精度 + 后台。
+///
+/// 为什么要单独一块而不是复用三态分段：
+///   「允许定位」只回答了「能不能」，没回答「给多准」「后台还给不给」。
+///   Android 12+ 的授权框就是三段：允许 / 仅这次 / 拒绝 + 精确/大致，
+///   后台再单列一个开关。这里照同一套语义做，规则也一致：
+///   **后台精度永远不超过前台** —— 所以只有一个精度选择，后台只是一个开关。
+class _LocationControls extends StatefulWidget {
+  const _LocationControls({required this.appId, required this.initial});
+
+  final String appId;
+  final LocationGrant initial;
+
+  @override
+  State<_LocationControls> createState() => _LocationControlsState();
+}
+
+class _LocationControlsState extends State<_LocationControls> {
+  late LocationGrant _grant = widget.initial;
+
+  Future<void> _set({LocationPrecision? precision, bool? background}) async {
+    setState(() => _grant = _grant.copyWith(
+      precision: precision,
+      background: background,
+    ));
+    await PermissionService.instance.setLocationOptions(
+      widget.appId,
+      precision: precision,
+      background: background,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    final TextTheme text = Theme.of(context).textTheme;
+    final bool enabled = _grant.granted;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Row(
+          children: <Widget>[
+            Icon(Icons.straighten, size: 16, color: scheme.onSurfaceVariant),
+            const SizedBox(width: 6),
+            Text(
+              '定位精度',
+              style: text.labelMedium?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        // 撑满一行：否则两端按钮各自缩到最小宽度，两个字的标签会被挤成两行
+        SizedBox(
+          width: double.infinity,
+          child: SegmentedButton<LocationPrecision>(
+            showSelectedIcon: false,
+            style: const ButtonStyle(visualDensity: VisualDensity.compact),
+            segments: <ButtonSegment<LocationPrecision>>[
+              for (final LocationPrecision p in LocationPrecision.values)
+                ButtonSegment<LocationPrecision>(
+                  value: p,
+                  label: Text(p.label),
+                  icon: Icon(
+                    p == LocationPrecision.fine
+                        ? Icons.gps_fixed
+                        : Icons.gps_not_fixed,
+                    size: 16,
+                  ),
+                ),
+            ],
+            selected: <LocationPrecision>{_grant.precision},
+            onSelectionChanged: (Set<LocationPrecision> selection) =>
+                _set(precision: selection.first),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          _grant.precision.description,
+          style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          dense: true,
+          value: _grant.background,
+          // 没允许定位时后台开关没有意义，置灰而不是隐藏 ——
+          // 隐藏会让用户不知道还有这个维度。
+          onChanged: enabled
+              ? (bool value) => _set(background: value)
+              : null,
+          title: Text('允许后台定位', style: text.bodyMedium),
+          subtitle: Text(
+            enabled
+                ? (_grant.background
+                      ? '切到后台后仍可获取位置，精度最多到「${_grant.precision.label}」'
+                      : '只在小程序位于前台时可用，切到后台立即停止')
+                : '先允许定位，才能开启后台定位',
+            style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+        ),
+      ],
     );
   }
 }

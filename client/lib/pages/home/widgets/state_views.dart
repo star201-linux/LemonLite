@@ -5,6 +5,7 @@
 // 也顺便保证「所有网络/解析错误都有 UI 反馈，不崩溃」（验收标准第 7 条）。
 
 import 'package:flutter/material.dart';
+import '../../../theme/loading.dart';
 
 /// 加载中
 class LoadingView extends StatelessWidget {
@@ -22,7 +23,7 @@ class LoadingView extends StatelessWidget {
           const SizedBox(
             width: 32,
             height: 32,
-            child: CircularProgressIndicator(strokeWidth: 3),
+            child: M3ELoadingIndicator(),
           ),
           const SizedBox(height: 16),
           Text(

@@ -30,6 +30,7 @@ import '../../data/services/miniapp_storage_service.dart';
 import '../../data/services/update_service.dart';
 import '../../theme/app_theme.dart';
 import '../home/home_controller.dart';
+import '../../theme/loading.dart';
 
 class StoragePage extends StatefulWidget {
   const StoragePage({super.key});
@@ -142,7 +143,7 @@ class _StoragePageState extends State<StoragePage> {
         builder:
             (BuildContext context, AsyncSnapshot<_StorageSnapshot> snapshot) {
               if (snapshot.connectionState != ConnectionState.done) {
-                return const Center(child: CircularProgressIndicator());
+                return const Center(child: M3ELoadingIndicator());
               }
               if (snapshot.hasError) {
                 return Center(
@@ -429,7 +430,7 @@ class _MiniappDataPageState extends State<MiniappDataPage> {
               AsyncSnapshot<MiniappStorageUsage> snapshot,
             ) {
               if (snapshot.connectionState != ConnectionState.done) {
-                return const Center(child: CircularProgressIndicator());
+                return const Center(child: M3ELoadingIndicator());
               }
               if (snapshot.hasError) {
                 return Center(child: Text('读取失败：${snapshot.error}'));

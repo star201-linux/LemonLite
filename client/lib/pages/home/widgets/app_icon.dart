@@ -13,6 +13,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import '../../../theme/loading.dart';
 
 class AppIcon extends StatelessWidget {
   const AppIcon({
@@ -102,10 +103,7 @@ class AppIcon extends StatelessWidget {
             ? SizedBox(
                 width: size * 0.32,
                 height: size * 0.32,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: scheme.onSecondaryContainer,
-                ),
+                child: M3ELoadingIndicator(color: scheme.onSecondaryContainer),
               )
             : Text(
                 _initial,

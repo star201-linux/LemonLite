@@ -31,6 +31,7 @@ import '../../data/services/permission_service.dart';
 import '../../data/services/update_service.dart';
 import '../detail/app_detail_page.dart';
 import '../home/widgets/app_icon.dart';
+import '../../theme/loading.dart';
 
 class ApplicationsPage extends StatefulWidget {
   const ApplicationsPage({super.key});
@@ -147,7 +148,7 @@ class _ApplicationsPageState extends State<ApplicationsPage> {
                 ? const SizedBox(
                     width: 18,
                     height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                    child: M3ELoadingIndicator(),
                   )
                 : const Icon(Icons.refresh),
             onPressed: _refreshing ? null : _refresh,
@@ -166,7 +167,7 @@ class _ApplicationsPageState extends State<ApplicationsPage> {
                   AsyncSnapshot<_ApplicationsSnapshot> snapshot,
                 ) {
                   if (snapshot.connectionState != ConnectionState.done) {
-                    return const Center(child: CircularProgressIndicator());
+                    return const Center(child: M3ELoadingIndicator());
                   }
                   if (snapshot.hasError) {
                     return _ErrorBody(

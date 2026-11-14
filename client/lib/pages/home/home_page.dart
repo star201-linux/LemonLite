@@ -30,6 +30,7 @@ import 'search_page.dart';
 import 'widgets/app_card.dart';
 import 'widgets/category_chips.dart';
 import 'widgets/state_views.dart';
+import '../../theme/loading.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -460,7 +461,7 @@ class _LoadMoreTriggerState extends State<_LoadMoreTrigger> {
         child: SizedBox(
           width: 20,
           height: 20,
-          child: CircularProgressIndicator(strokeWidth: 2),
+          child: M3ELoadingIndicator(),
         ),
       ),
     );
@@ -629,7 +630,7 @@ class _UpdateBanner extends StatelessWidget {
                 child: SizedBox(
                   width: 18,
                   height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                  child: M3ELoadingIndicator(),
                 ),
               )
             else

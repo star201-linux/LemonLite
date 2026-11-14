@@ -26,6 +26,7 @@ import '../home/home_controller.dart';
 import 'bundles_page.dart';
 import 'miniapp_test_page.dart';
 import 'run_log_page.dart';
+import '../../theme/loading.dart';
 
 class DeveloperPage extends StatefulWidget {
   const DeveloperPage({super.key});
@@ -293,7 +294,7 @@ class _DeveloperPageState extends State<DeveloperPage> {
                           ? const SizedBox(
                               width: 16,
                               height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2),
+                              child: M3ELoadingIndicator(),
                             )
                           : const Icon(Icons.save_outlined),
                       label: const Text('保存并重新加载'),
@@ -359,7 +360,7 @@ class _DeveloperPageState extends State<DeveloperPage> {
                         ? const SizedBox(
                             width: 18,
                             height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
+                            child: M3ELoadingIndicator(),
                           )
                         : const Icon(Icons.wifi_tethering),
                     onPressed: _probing

@@ -26,6 +26,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../../theme/loading.dart';
 
 class AvatarCropResult {
   const AvatarCropResult({required this.pngBytes, required this.size});
@@ -210,7 +211,7 @@ class _AvatarCropperState extends State<AvatarCropper> {
                 ? const SizedBox(
                     width: 16,
                     height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
+                    child: M3ELoadingIndicator(),
                   )
                 : const Text('完成'),
           ),
@@ -249,7 +250,7 @@ class _AvatarCropperState extends State<AvatarCropper> {
       return const SizedBox(
         width: 200,
         height: 200,
-        child: Center(child: CircularProgressIndicator()),
+        child: Center(child: M3ELoadingIndicator()),
       );
     }
 

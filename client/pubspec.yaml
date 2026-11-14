@@ -99,6 +99,17 @@ dependencies:
   # 它是 archive 的传递依赖，但直接 import 就必须显式声明，否则 lint 会报。
   path: ^1.9.1
 
+  # M3 Expressive 加载指示器（圆形 shape-morph + 线性波浪进度）。
+  # 官方 Material 库（flutter/material）截至 Flutter 3.47 只有传统的
+  # CircularProgressIndicator，没有 Expressive 版本；这个包是从
+  # AndroidX `LoadingIndicator.kt` 移植的，形状数据与弹簧动画都对齐规范。
+  #
+  # 用 path 而不是 hosted：包本身很小，但它的形状数据（material_new_shapes）
+  # 只此一家，锁在仓库里能保证 CI 与本地解析出完全相同的版本 ——
+  # 少一个「构建时悄悄换了上游」的变量。升级步骤见 third_party/README.md。
+  material3_expressive_loading_indicator:
+    path: third_party/material3_expressive_loading_indicator
+
   # 系统分享。
   # 日志导出必须走它：只把文件写进应用私有目录（/data/data/<pkg>/files/...）
   # 用户根本拿不到 —— 那个路径在未 root 的机器上连文件管理器都进不去。

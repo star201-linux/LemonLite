@@ -302,6 +302,8 @@ class ApplicationRegistry extends ChangeNotifier {
       keys.add('perm.decision.$appId.$id');
       keys.add('perm.usage.$appId.$id');
     }
+    // 定位的精度 / 后台是单独一条键，不在上面的 id 清单里
+    keys.add('perm.location.$appId');
     await _settings.removeMany(keys);
   }
 
@@ -311,17 +313,37 @@ class ApplicationRegistry extends ChangeNotifier {
   /// 「历史上写过的所有权限记录」，包括那些已经从枚举里删掉的旧权限 id ——
   /// 如果只遍历当前枚举，旧版本的残留记录永远清不掉。
   static const List<String> _permissionIds = <String>[
-    // 当前版本
+    // 当前版本（与 MiniappPermission.values 的 id 保持一致）
     'camera',
     'microphone',
+    'displayCapture',
+    'speakerSelection',
+    'pictureInPicture',
+    'location',
+    'accelerometer',
+    'gyroscope',
+    'magnetometer',
+    'ambientLight',
+    'proximity',
+    'gamepad',
+    'vibrate',
+    'midi',
+    'bluetooth',
+    'usb',
+    'serial',
+    'nfc',
+    'networkInfo',
+    'webauthn',
+    'clipboard',
+    'sdcard',
+    'notifications',
+    'battery',
+    'deviceMemory',
+    'print',
+    // 历史 id（0.3 把定位合并成一项；sdcard 原名 allFiles）
     'geolocationFine',
     'geolocationCoarse',
-    'clipboard',
-    'notifications',
-    'bluetooth',
-    'nfc',
-    'sdcard',
-    // 历史 id（sdcard 的旧名字）：升级前写下的决定要能一起清掉
+    'geolocation',
     'allFiles',
     // 历史版本（已不再是权限，但记录可能还在盘上）
     'network',
@@ -334,6 +356,7 @@ class ApplicationRegistry extends ChangeNotifier {
     'background',
     'openUrl',
     'wasm',
+    'plugin',
   ];
 
   // -------------------------------------------------------------- 持久化

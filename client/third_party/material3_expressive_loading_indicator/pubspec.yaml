@@ -1,0 +1,34 @@
+name: material3_expressive_loading_indicator
+description: >-
+  Material Design 3 expressive loading and progress indicators for Flutter:
+  morphing circular indicator, outlined variant, and wavy linear progress.
+version: 0.1.2
+# 内置副本，不发布
+publish_to: none
+homepage: https://github.com/priyanshupatra02/material3_expressive_loading_indicator
+repository: https://github.com/priyanshupatra02/material3_expressive_loading_indicator
+issue_tracker: https://github.com/priyanshupatra02/material3_expressive_loading_indicator/issues
+
+topics:
+  - ui
+  - material-design
+  - loading-indicator
+  - progress-indicator
+  - animation
+
+environment:
+  sdk: ^3.8.1
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  material_new_shapes:
+    path: ../material_new_shapes
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:

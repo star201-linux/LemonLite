@@ -23,6 +23,7 @@ import '../../data/repositories/bundle_repository.dart';
 import '../../data/services/plugin_service.dart';
 import '../../theme/app_theme.dart';
 import '../home/widgets/state_views.dart';
+import '../../theme/loading.dart';
 
 class BundlesPage extends StatefulWidget {
   const BundlesPage({super.key, required this.type});
@@ -376,9 +377,7 @@ class _BundlesPageState extends State<BundlesPage> {
                                 ? const SizedBox(
                                     width: 16,
                                     height: 16,
-                                    child: CircularProgressIndicator(
-                                      strokeWidth: 2,
-                                    ),
+                                    child: M3ELoadingIndicator(),
                                   )
                                 : const Icon(Icons.add),
                             label: Text(_addVerb),

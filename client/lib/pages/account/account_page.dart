@@ -22,6 +22,7 @@ import '../../data/services/account_service.dart';
 import '../../theme/app_theme.dart';
 import 'avatar_cropper.dart';
 import 'email_code_button.dart';
+import '../../theme/loading.dart';
 
 class AccountPage extends StatelessWidget {
   const AccountPage({super.key});
@@ -232,7 +233,7 @@ class _LoggedInViewState extends State<_LoggedInView> {
     final ColorScheme scheme = Theme.of(context).colorScheme;
 
     if (profile == null) {
-      return const Center(child: CircularProgressIndicator());
+      return const Center(child: M3ELoadingIndicator());
     }
 
     return RefreshIndicator(
@@ -339,7 +340,7 @@ class _LoggedInViewState extends State<_LoggedInView> {
                     leading: SizedBox(
                       width: 20,
                       height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      child: M3ELoadingIndicator(),
                     ),
                     title: Text('正在读取登录设备…'),
                   );
@@ -757,7 +758,7 @@ class _LoginPageState extends State<LoginPage> {
                   ? const SizedBox(
                       width: 18,
                       height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      child: M3ELoadingIndicator(),
                     )
                   : const Text('登录'),
             ),
@@ -1039,7 +1040,7 @@ class _RegisterPageState extends State<RegisterPage> {
                   ? const SizedBox(
                       width: 18,
                       height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      child: M3ELoadingIndicator(),
                     )
                   : const Text('注册并登录'),
             ),
@@ -1309,7 +1310,7 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
                   ? const SizedBox(
                       width: 18,
                       height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      child: M3ELoadingIndicator(),
                     )
                   : const Text('修改密码'),
             ),

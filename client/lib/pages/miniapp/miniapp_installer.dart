@@ -23,6 +23,7 @@ import '../../data/services/application_registry.dart';
 import '../../data/services/icon_cache_service.dart';
 import '../../data/services/miniapp_package_service.dart';
 import '../../theme/app_theme.dart';
+import '../../theme/loading.dart';
 
 class MiniappInstaller {
   const MiniappInstaller._();
@@ -268,9 +269,9 @@ class _InstallDialog extends StatelessWidget {
                 children: <Widget>[
                   // 服务端没给 Content-Length 时用不确定进度条（而不是假装 0%）
                   if (fraction != null)
-                    LinearProgressIndicator(value: fraction)
+                    M3ELinearProgressIndicator(value: fraction)
                   else
-                    const LinearProgressIndicator(),
+                    const M3ELinearProgressIndicator(),
                   const SizedBox(height: 8),
                   Text(
                     p == null ? '准备中…' : p.label,

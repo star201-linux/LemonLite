@@ -24,10 +24,16 @@
 // 约定：
 //   * `id` 必须与包里被安装到的 appId 一致。不一致直接拒绝安装 ——
 //     否则一个包可以顶着别人的 id 拿到别人已授权的权限。
-//   * `permissions` 里写的是 MiniappPermission 的 id（camera / microphone /
-//     geolocationFine / geolocationCoarse / clipboard / notifications /
-//     bluetooth / nfc / sdcard）。写错的 id 不会让安装失败，但会在权限页
-//     作为「未知声明」列出来，方便作者发现。
+//   * `permissions` 里写的是 MiniappPermission 的 id，与浏览器权限名基本一致：
+//     camera / microphone / displayCapture / speakerSelection /
+//     pictureInPicture / location / accelerometer / gyroscope / magnetometer /
+//     ambientLight / proximity / gamepad / vibrate / midi / bluetooth / usb /
+//     serial / nfc / networkInfo / webauthn / clipboard / sdcard /
+//     notifications / battery / deviceMemory / print。
+//     写错的 id 不会让安装失败，但会在权限页作为「未知声明」列出来，
+//     方便作者发现。
+//   * 定位只写 `location` 一项：精度（精确/近似）与是否允许后台不是声明的
+//     东西，而是用户在权限管理里单独设置的授权维度。
 //   * `entry` 缺省 index.html；`version` 缺省用服务端给的版本（更新检查以
 //     服务端为准，包里这个字段用于展示与本机记录）。
 //   * `minFrameworkVersion` 缺省不限制；高于宿主框架版本时拒绝安装，

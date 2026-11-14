@@ -143,35 +143,31 @@ void main() {
 
   // ========================================================== 定位映射
 
-  group('定位权限映射（forGeolocation）', () {
-    test('默认同时问精确与模糊两档，顺序固定按枚举', () {
-      final List<MiniappPermission> ask = WebPermissionAsk.forGeolocation();
-      expect(
-        ask,
-        <MiniappPermission>[
-          MiniappPermission.geolocationFine,
-          MiniappPermission.geolocationCoarse,
-        ],
-      );
-    });
-
-    test('requestFine=false 时只问模糊', () {
-      final List<MiniappPermission> ask =
-          WebPermissionAsk.forGeolocation(requestFine: false);
-      expect(ask, <MiniappPermission>[MiniappPermission.geolocationCoarse]);
-    });
-
+  group('定位权限映射（同一项权限，两个维度）', () {
     test('定位不在 onPermissionRequest 的映射表里（走另一个回调）', () {
       // 这是刻意的：Android WebView 的 onPermissionRequest 根本不回调定位。
       // 把它写进映射表只会让人以为定位在那儿被拦了。
       final WebPermissionAsk ask = WebPermissionAsk.from(
         PermissionRequest(
           origin: WebUri('https://example.com'),
-          resources: <PermissionResourceType>[PermissionResourceType.GEOLOCATION],
+          resources: <PermissionResourceType>[
+            PermissionResourceType.GEOLOCATION,
+          ],
         ),
       );
       expect(ask.isUnmanaged, isTrue);
       expect(ask.permissions, isEmpty);
+    });
+
+    test('精度 / 后台是 LocationGrant 的两个维度，不是两条权限', () {
+      const LocationGrant grant = LocationGrant(
+        decision: PermissionDecision.granted,
+        precision: LocationPrecision.coarse,
+        background: false,
+      );
+      expect(grant.allows(foreground: true), isTrue);
+      expect(grant.allows(foreground: false), isFalse);
+      expect(grant.toJs(foreground: true)['precision'], 'coarse');
     });
   });
 
@@ -250,7 +246,7 @@ void main() {
         'permissions': <dynamic>[
           'network', // 退役
           'camera', // 有效
-          'geolocationFine', // 有效
+          'geolocationFine', // 旧 id，映射到 location
           'camra', // 拼错
         ],
       });
@@ -259,7 +255,7 @@ void main() {
         app!.declaredPermissions,
         <MiniappPermission>[
           MiniappPermission.camera,
-          MiniappPermission.geolocationFine,
+          MiniappPermission.location,
         ],
       );
       // 已退役的 id **不进** unknownPermissionIds（它是预期数据，不是错误）；

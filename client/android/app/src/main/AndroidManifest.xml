@@ -21,10 +21,22 @@
         Android 的规则是「申请 FINE 时必须同时声明 COARSE」，否则 FINE 会被
         忽略；而只声明 COARSE 才是「我只要大致位置」。
         运行时按用户在权限弹窗里选的那一档决定申请哪个（见 miniapp_page.dart
-        的 onGeolocationPermissionsShowPrompt），并不是声明了就一定会申请。
+        的 onGeolocationPermissionsShowPrompt）：精确 → FINE，近似 → COARSE。
+        坐标的模糊（近似位置取整到约 3 平方公里）在页面侧完成，
+        见 bridge/geo_policy_js.dart。
     -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+
+    <!--
+        后台定位（「允许后台定位」开关打开时才申请）。
+
+        注意 Android 10+ 的规则：后台定位必须**先拿到前台定位**，再单独申请；
+        Android 11+ 还会把用户带到系统设置里选「始终允许」，不能和前台权限
+        一次申请。这里的声明只是让系统知道有这个能力，实际申请时机在
+        miniapp_page.dart 的定位回调里。
+    -->
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
 
     <!-- Android 13+：网页发通知（Notification.requestPermission）需要它 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
@@ -61,6 +73,9 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28"/>
 
+    <!-- 网页 navigator.vibrate()（MiniappPermission.vibrate） -->
+    <uses-permission android:name="android.permission.VIBRATE"/>
+
     <!-- 摄像头/麦克风属于「硬件可选」：没有摄像头的设备也能装，
          装了之后调用 getUserMedia 会拿到 NotAllowedError，而不是装不上。 -->
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
@@ -69,6 +84,9 @@
     <uses-feature android:name="android.hardware.location.gps" android:required="false"/>
     <uses-feature android:name="android.hardware.location.network" android:required="false"/>
     <uses-feature android:name="android.hardware.bluetooth" android:required="false"/>
+    <uses-feature android:name="android.hardware.usb.host" android:required="false"/>
+    <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false"/>
+    <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false"/>
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false"/>
     <uses-feature android:name="android.hardware.nfc" android:required="false"/>
 
