@@ -328,12 +328,6 @@ class BridgeApi {
         case 'close':
           return await closeMiniapp();
 
-        // ---- WASM（由插件提供，宿主只负责转发字节） ----
-        case 'wasmList':
-          return await wasmList();
-        case 'wasmRead':
-          return await wasmRead(params);
-
         // ---- 插件 ----
         case 'pluginsList':
           return await pluginsList();
@@ -1632,62 +1626,10 @@ class BridgeApi {
     return <String, dynamic>{'closed': true};
   }
 
-  // ---------------------------------------------------------------- WASM
-
-  /// 列出**插件**提供的 WebAssembly 模块。
-  ///
-  /// 从 0.1.5 起 wasm 不再是宿主内置能力：宿主核心代码里没有模块清单、
-  /// 没有 asset 路径，只有一个"按能力去问插件"的转发层。
-  /// 没装插件时返回空 modules（`supported` 仍为 true —— WebView 本身支持 wasm，
-  /// 只是暂时没有模块可用），小程序据此提示去装插件。
-  Future<Map<String, dynamic>> wasmList() =>
-      PluginService.instance.wasmListPayload();
-
-  /// 读取模块字节（base64）。
-  ///
-  /// 为什么不返回数组：JSBridge 的返回值必须能 JSON 序列化，二进制过不去；
-  /// base64 是唯一在所有 WebView 版本上都稳的编码。JS SDK 侧会解码成 Uint8Array
-  /// 再交给 `WebAssembly.instantiate`，小程序不用自己处理编码。
-  Future<Map<String, dynamic>> wasmRead(Map<String, dynamic> params) async {
-    final List<PluginWasmEntry> entries = await PluginService.instance
-        .wasmEntries();
-    if (entries.isEmpty) {
-      throw const LemonBridgeException(
-        BridgeErrorCode.notSupported,
-        'wasmRead：没有启用中的 WebAssembly 插件。请到「设置 → 插件」安装或启用它。',
-      );
-    }
-    final String requested = _string(params['name']).trim();
-    // 不传名字 = 第一个模块（与旧版本行为一致，方便 "就看一眼" 的调用）
-    final String name = requested.isEmpty
-        ? entries.first.module.name
-        : requested;
-    final bool known = entries.any(
-      (PluginWasmEntry e) => e.module.name == name,
-    );
-    if (!known) {
-      final String available = entries
-          .map((PluginWasmEntry e) => e.module.name)
-          .join(', ');
-      throw LemonBridgeException(
-        BridgeErrorCode.invalidArgument,
-        'wasmRead(name)：没有名为「$name」的 wasm 模块（可用：$available）',
-      );
-    }
-    try {
-      return await PluginService.instance.wasmReadPayload(name);
-    } on PluginUnavailableException catch (e) {
-      throw LemonBridgeException(
-        BridgeErrorCode.internal,
-        'wasmRead：${e.message}',
-      );
-    }
-  }
-
   // ---------------------------------------------------------------- 插件
 
   /// 当前设备上已安装/启用/平台匹配的插件总览。
-  /// 小程序侧用来做能力探测：「这台设备上有没有 wasm」。
+  /// 小程序侧用来做能力探测：「这台设备上有哪些插件、它们声明了什么能力」。
   Future<Map<String, dynamic>> pluginsList() =>
       PluginService.instance.summary();
 

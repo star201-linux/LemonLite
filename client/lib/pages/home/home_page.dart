@@ -12,11 +12,13 @@ import 'package:provider/provider.dart';
 
 import '../../data/models/app_item.dart';
 import '../../data/repositories/market_repository.dart';
+import '../../data/services/account_service.dart';
 import '../../data/services/miniapp_package_service.dart';
 import '../../data/services/settings_service.dart';
 import '../../data/services/update_service.dart';
 import '../../theme/app_theme.dart';
 import '../../theme/motion.dart';
+import '../account/account_page.dart';
 import '../miniapp/miniapp_installer.dart';
 import '../background/background_apps_page.dart';
 import '../detail/app_detail_page.dart';
@@ -217,9 +219,10 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
 
-            // MD3E 的「大色块 + 大字号」开场卡片。
+            // 顶部是账号卡（和设置页「账号」那一块同一种信息结构：
+            // 头像 + 名字 + 一行说明），不再是市场宣传位。
             SliverToBoxAdapter(
-              child: _MarketHero(
+              child: _AccountCard(
                 loadedCount: controller.loadedCount,
                 updateCount: updates.length,
                 loading: controller.isLoading,
@@ -471,12 +474,17 @@ class _LoadMoreTriggerState extends State<_LoadMoreTrigger> {
   }
 }
 
-/// MD3E 开场卡片：大色块、大字号、装饰圆。
+/// 主页顶部的账号卡。
 ///
-/// 它不是「广告位」，而是把当前市场的状态（加载了多少、有没有更新）
-/// 用 Expressive 的方式说出来；刷新仍然在 AppBar 里。
-class _MarketHero extends StatelessWidget {
-  const _MarketHero({
+/// 原来这里是「发现小程序」的大色块宣传位，信息密度很低：用户每次打开
+/// 市场都要先划过一块和自己无关的广告。换成**账号信息**之后，这一块
+/// 既回答了「我现在是谁」，也顺手把市场状态（加载了多少、有几个可更新）
+/// 放在同一行 —— 和设置页的「账号」那一块是同一套信息结构，不用重新学。
+///
+/// 未登录也照常显示：它本身就是「去登录」的入口。藏起来会让用户以为
+/// 这个 App 没有账号系统。
+class _AccountCard extends StatefulWidget {
+  const _AccountCard({
     required this.loadedCount,
     required this.updateCount,
     required this.loading,
@@ -487,126 +495,158 @@ class _MarketHero extends StatelessWidget {
   final bool loading;
 
   @override
-  Widget build(BuildContext context) {
-    final ColorScheme scheme = Theme.of(context).colorScheme;
-    final TextTheme textTheme = Theme.of(context).textTheme;
-
-    return Container(
-      margin: const EdgeInsets.fromLTRB(20, 4, 20, 10),
-      padding: const EdgeInsets.fromLTRB(20, 20, 16, 20),
-      clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(
-        color: scheme.primaryContainer,
-        borderRadius: BorderRadius.circular(28),
-      ),
-      child: Stack(
-        children: <Widget>[
-          Positioned(
-            right: -34,
-            top: -52,
-            child: _DecorCircle(
-              size: 150,
-              color: scheme.primary.withValues(alpha: 0.16),
-            ),
-          ),
-          Positioned(
-            right: 36,
-            bottom: -56,
-            child: _DecorCircle(
-              size: 110,
-              color: scheme.tertiary.withValues(alpha: 0.14),
-            ),
-          ),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: <Widget>[
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Text(
-                      '发现小程序',
-                      style: textTheme.headlineMedium?.copyWith(
-                        color: scheme.onPrimaryContainer,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: -0.6,
-                        height: 1.1,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      loading ? '正在从服务端同步…' : '从服务端实时同步 · 已加载 $loadedCount 个',
-                      style: textTheme.bodyMedium?.copyWith(
-                        color: scheme.onPrimaryContainer.withValues(
-                          alpha: 0.78,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: <Widget>[
-                        const _HeroPill(
-                          icon: Icons.storefront_rounded,
-                          label: '轻柠市场',
-                        ),
-                        if (updateCount > 0)
-                          _HeroPill(
-                            icon: Icons.system_update_alt_rounded,
-                            label: '$updateCount 个可更新',
-                            highlight: true,
-                          )
-                        else if (loadedCount > 0)
-                          const _HeroPill(
-                            icon: Icons.cloud_done_rounded,
-                            label: '已是最新',
-                          ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 12),
-              Container(
-                width: 72,
-                height: 72,
-                decoration: BoxDecoration(
-                  color: scheme.primary,
-                  borderRadius: BorderRadius.circular(24),
-                ),
-                child: Icon(
-                  Icons.auto_awesome_rounded,
-                  size: 34,
-                  color: scheme.onPrimary,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
+  State<_AccountCard> createState() => _AccountCardState();
 }
 
-class _DecorCircle extends StatelessWidget {
-  const _DecorCircle({required this.size, required this.color});
+class _AccountCardState extends State<_AccountCard> {
+  /// 头像字节。按 avatarVersion 缓存：版本没变就不重复下载。
+  Uint8List? _avatarBytes;
+  String _avatarVersion = '';
 
-  final double size;
-  final Color color;
+  /// 只在生命周期回调里读一次（watch 只能出现在 build 里）
+  AccountService get _account => context.read<AccountService>();
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncAvatar();
+  }
+
+  Future<void> _syncAvatar() async {
+    final AccountProfile? profile = _account.profile;
+    if (profile == null || !profile.hasAvatar) {
+      if (_avatarBytes != null) {
+        setState(() {
+          _avatarBytes = null;
+          _avatarVersion = '';
+        });
+      }
+      return;
+    }
+    if (profile.avatarVersion == _avatarVersion) return;
+    _avatarVersion = profile.avatarVersion;
+    final Uint8List? bytes = await _account.downloadAvatar();
+    if (!mounted) return;
+    setState(() => _avatarBytes = bytes);
+  }
 
   @override
   Widget build(BuildContext context) {
+    final AccountService account = context.watch<AccountService>();
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    final TextTheme textTheme = Theme.of(context).textTheme;
+    final AccountProfile? profile = account.profile;
+    final bool loggedIn = account.isLoggedIn && profile != null;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      child: Card.outlined(
+        margin: EdgeInsets.zero,
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () => Navigator.of(context).push(AccountPage.route()),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 12, 14),
+            child: Row(
+              children: <Widget>[
+                _avatar(scheme, profile),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                        loggedIn ? profile.username : '登录 / 注册',
+                        style: textTheme.titleMedium,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        loggedIn
+                            ? profile.email
+                            : '登录后可在设备间同步资料与头像；不登录也能正常使用',
+                        style: textTheme.bodySmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: <Widget>[
+                          _StatusPill(
+                            icon: Icons.storefront_rounded,
+                            label: widget.loading
+                                ? '正在同步市场…'
+                                : '已加载 ${widget.loadedCount} 个小程序',
+                          ),
+                          if (widget.updateCount > 0)
+                            _StatusPill(
+                              icon: Icons.system_update_alt_rounded,
+                              label: '${widget.updateCount} 个可更新',
+                              highlight: true,
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _avatar(ColorScheme scheme, AccountProfile? profile) {
+    final Uint8List? bytes = _avatarBytes;
     return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      width: 52,
+      height: 52,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: scheme.primaryContainer,
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: bytes != null
+          ? Image.memory(
+              bytes,
+              fit: BoxFit.cover,
+              errorBuilder: (BuildContext c, Object e, StackTrace? s) =>
+                  _initialAvatar(scheme, profile),
+            )
+          : _initialAvatar(scheme, profile),
+    );
+  }
+
+  Widget _initialAvatar(ColorScheme scheme, AccountProfile? profile) {
+    if (profile == null) {
+      return Icon(
+        Icons.account_circle_outlined,
+        size: 34,
+        color: scheme.onPrimaryContainer,
+      );
+    }
+    return Center(
+      child: Text(
+        profile.initial,
+        style: Theme.of(context).textTheme.titleMedium?.copyWith(
+          color: scheme.onPrimaryContainer,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
     );
   }
 }
 
-class _HeroPill extends StatelessWidget {
-  const _HeroPill({
+/// 账号卡里的小状态胶囊（市场加载量 / 可更新数）
+class _StatusPill extends StatelessWidget {
+  const _StatusPill({
     required this.icon,
     required this.label,
     this.highlight = false,
@@ -621,13 +661,13 @@ class _HeroPill extends StatelessWidget {
     final ColorScheme scheme = Theme.of(context).colorScheme;
     final Color background = highlight
         ? scheme.primary
-        : scheme.surface.withValues(alpha: 0.55);
+        : scheme.surfaceContainerHighest;
     final Color foreground = highlight
         ? scheme.onPrimary
-        : scheme.onPrimaryContainer;
+        : scheme.onSurfaceVariant;
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
         color: background,
         borderRadius: BorderRadius.circular(999),
@@ -635,11 +675,11 @@ class _HeroPill extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
-          Icon(icon, size: 15, color: foreground),
-          const SizedBox(width: 6),
+          Icon(icon, size: 13, color: foreground),
+          const SizedBox(width: 5),
           Text(
             label,
-            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
               color: foreground,
               fontWeight: FontWeight.w600,
             ),

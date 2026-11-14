@@ -3,7 +3,7 @@
 // 设置页：
 //   * 账号（第一位）：登录 / 注册 / 账号管理
 //   * 个性化（二级页面）：主题模式、动态取色、主题主色
-//   * 权限 / 存储 / 市场 / 页面扩展
+//   * 权限 / 存储 / 市场 / 插件
 //   * 关于：版本号 —— **连点 8 次进入开发者模式**（验收标准第 4 条）
 //
 // 连点实现细节：
@@ -170,23 +170,13 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ]),
 
-          _section(context, '扩展与插件', <Widget>[
-            ListTile(
-              leading: const Icon(Icons.extension_outlined),
-              title: const Text('页面扩展'),
-              subtitle: const Text('从 ZIP 导入页面脚本与样式'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.of(
-                context,
-              ).push(BundlesPage.route(BundleType.extension)),
-            ),
-            const Divider(height: 1, indent: 16, endIndent: 16),
-            // 插件是「宿主能力」，和扩展/模块（注入页面）不是一回事，
-            // 所以单开一行而不是塞进扩展页里当第三个标签。
+          // 插件是「宿主能力」，模块是「注入页面」，两者不是一回事，
+          // 所以各占一个入口（模块收在开发者选项里）。
+          _section(context, '插件', <Widget>[
             ListTile(
               leading: const Icon(Icons.hub_outlined),
               title: const Text('插件'),
-              subtitle: const Text('给宿主增加能力（如 WebAssembly），可安装 / 停用 / 卸载'),
+              subtitle: const Text('给宿主增加能力，可安装 / 停用 / 卸载'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.of(
                 context,

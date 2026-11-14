@@ -1,17 +1,18 @@
 // lib/data/models/bundle_manifest.dart
 //
-// 「模块 / 扩展」包（bundle）的 manifest 解析。
+// 「模块 / 插件」包（bundle）的 manifest 解析。
 //
 // 两种包共用一套格式，靠 manifest 里的 type 区分：
 //
-//   type = "extension" —— 浏览器插件式的**扩展**：往匹配的小程序页面注入 CSS / JS。
-//                          不新增任何宿主能力，只改页面。
-//   type = "module"     —— mod 式的**模块**：除注入脚本外，还能通过 manifest.bridge
-//                          声明自己的 JSBridge 方法（由宿主用已有能力组合实现）。
-//   type = "plugin"     —— **插件**：不注入任何代码，而是给宿主**增加能力**。
-//                          与模块的根本区别：模块是"往页面里塞代码"，插件是
-//                          "宿主多一项能力，所有页面都能用"；插件还必须声明
-//                          自己支持哪些平台（多平台架构），宿主只在匹配的平台上启用它。
+//   type = "module" —— mod 式的**模块**：往匹配的小程序页面注入 CSS / JS，
+//                      并能通过 manifest.bridge 声明自己的 JSBridge 方法
+//                      （由宿主用已有能力组合实现）。
+//   type = "plugin" —— **插件**：不注入任何代码，而是给宿主**增加能力**。
+//                      它必须声明自己支持哪些平台（多平台架构），宿主只在
+//                      匹配的平台上启用它。
+//
+// 一句话区别：**模块改页面，插件改宿主**。README 的「插件与模块」一节
+// 有对照表，写包之前先看一眼。
 //
 // 包形态：一个 zip，或一个目录。根目录（或最外层子目录）必须有 lemonlite.json：
 //
@@ -19,26 +20,14 @@
 //   inject.js             （被 manifest 的 js 字段引用）
 //   inject.css            （被 manifest 的 css 字段引用）
 //
-// manifest 示例（扩展）：
-//   {
-//     "type": "extension",
-//     "id": "com.example.demo-extension",
-//     "name": "示例扩展",
-//     "version": "1.0.0",
-//     "description": "给所有页面加一条调试边框",
-//     "author": "someone",
-//     "matches": ["*"],
-//     "css": ["inject.css"],
-//     "js": ["inject.js"]
-//   }
-//
-// manifest 示例（模块，多声明了一个桥接方法）：
+// manifest 示例（模块）：
 //   {
 //     "type": "module",
 //     "id": "com.example.demo-module",
 //     "name": "示例模块",
 //     "version": "1.0.0",
 //     "matches": ["*"],
+//     "js": ["inject.js"],
 //     "bridge": [
 //       { "name": "ping", "action": "const", "params": { "pong": true } },
 //       { "name": "fetchConfig", "action": "http.get",
@@ -49,17 +38,11 @@
 // manifest 示例（插件）：
 //   {
 //     "type": "plugin",
-//     "id": "lemonlite.wasm",
-//     "name": "WebAssembly 运行时",
+//     "id": "com.example.camera-helper",
+//     "name": "相机辅助",
 //     "version": "1.0.0",
-//     "platforms": ["android", "ios", "macos", "windows", "linux", "web"],
-//     "capabilities": ["wasm"],
-//     "wasm": {
-//       "modules": [
-//         { "name": "lemonlite", "file": "modules/lemonlite.wasm",
-//           "description": "…", "exports": ["add", "fib"] }
-//       ]
-//     }
+//     "platforms": ["android", "ios"],
+//     "capabilities": ["camera.helper"]
 //   }
 //
 // 解析原则与 index.json 一致：**宽松读取 + 结构性错误才抛**。
@@ -70,9 +53,6 @@ import 'json_utils.dart';
 
 /// 包类型
 enum BundleType {
-  /// 扩展：只注入 CSS / JS
-  extension('extension', '扩展'),
-
   /// 模块：可注入脚本 + 声明桥接方法
   module('module', '模块'),
 
@@ -87,7 +67,7 @@ enum BundleType {
   /// 界面上的中文名
   final String label;
 
-  /// 对应目录名，形如 `lemonlite/extensions/<包 id>`
+  /// 对应目录名，形如 `lemonlite/modules/<包 id>`
   String get directoryName => '${wireName}s';
 
   static BundleType? parse(Object? value) {
@@ -109,7 +89,7 @@ enum BundleRunAt {
   final String wireName;
   final String label;
 
-  /// 缺省放在页面脚本之后：绝大多数扩展只是想改渲染结果，
+  /// 缺省放在页面脚本之后：绝大多数模块只是想改渲染结果，
   /// 提前跑反而会拿不到页面元素。
   static BundleRunAt parse(Object? value) {
     final String text = asString(value).toLowerCase();
@@ -199,50 +179,6 @@ class BundleContentScript {
   final BundleRunAt runAt;
 }
 
-/// 插件声明的一个 WebAssembly 模块。
-///
-/// 宿主只负责把字节交给页面（`WebAssembly.instantiate` 在页面里做），
-/// `exports` 是给小程序做提示/补全用的**手写清单**，
-/// 由 tool/wasm/verify_wasm.mjs 校验它和二进制里的真实导出是否一致。
-class PluginWasmModule {
-  const PluginWasmModule({
-    required this.name,
-    required this.file,
-    this.description = '',
-    this.exports = const <String>[],
-  });
-
-  /// 页面侧引用的名字（lemonlite.wasm.instantiate(name)）
-  final String name;
-
-  /// 包内相对路径，如 `modules/lemonlite.wasm`
-  final String file;
-
-  final String description;
-  final List<String> exports;
-
-  bool get hasMemory => true;
-
-  static PluginWasmModule? parse(Map<String, dynamic> json) {
-    final String name = asString(json['name']).trim();
-    final String file = asString(json['file']).trim();
-    if (name.isEmpty || file.isEmpty) return null;
-    return PluginWasmModule(
-      name: name,
-      file: file,
-      description: asString(json['description']),
-      exports: asStringList(json['exports']),
-    );
-  }
-
-  Map<String, dynamic> toJson() => <String, dynamic>{
-    'name': name,
-    'file': file,
-    'description': description,
-    'exports': exports,
-  };
-}
-
 /// manifest 解析结果
 class BundleManifest {
   const BundleManifest({
@@ -260,7 +196,6 @@ class BundleManifest {
     this.contentScripts = const <BundleContentScript>[],
     this.platforms = const <String>[],
     this.capabilities = const <String>[],
-    this.wasmModules = const <PluginWasmModule>[],
   });
 
   final BundleType type;
@@ -291,15 +226,12 @@ class BundleManifest {
   /// （让用户知道"它存在，只是这台设备跑不了"），这比静默消失更诚实。
   final List<String> platforms;
 
-  /// 仅插件有：向宿主声明自己提供哪些能力，例如 `wasm`。
+  /// 仅插件有：向宿主声明自己提供哪些能力（命名空间，例如 `device.nfc`）。
   ///
-  /// 能力名是宿主与插件之间的契约：宿主认识 `wasm`，就用包里的
-  /// wasm 模块回答 `lemonlite.wasm.*`；将来认识的能力越多，插件只要
-  /// 多声明一行就能接上。
+  /// 能力名是宿主与插件之间的契约。当前版本宿主**不内置任何能力实现**，
+  /// 所以这一栏暂时只是声明（`lemonlite.plugins.has(name)` 会如实回答），
+  /// 真正的实现要随宿主版本一起落地。
   final List<String> capabilities;
-
-  /// 仅插件有：声明的 wasm 模块
-  final List<PluginWasmModule> wasmModules;
 
   /// 是否声明了某个能力
   bool hasCapability(String capability) => capabilities.contains(capability);
@@ -325,7 +257,8 @@ class BundleManifest {
       if (author.isNotEmpty) author,
       if (type == BundleType.module) '${bridgeMethods.length} 个 API',
       if (jsFiles.isNotEmpty || cssFiles.isNotEmpty) '含注入脚本',
-      if (type == BundleType.plugin) '${platforms.isEmpty ? "全平台" : platforms.join("/")}',
+      if (type == BundleType.plugin)
+      platforms.isEmpty ? '全平台' : platforms.join('/'),
       if (type == BundleType.plugin && capabilities.isNotEmpty)
         '能力 ${capabilities.join("/")}',
     ];
@@ -346,7 +279,7 @@ class BundleManifest {
     if (type == null) {
       throw BundleManifestException(
         'type',
-        '缺少 type 字段，或不是 module / extension',
+        '缺少 type 字段，或不是 module / plugin',
       );
     }
 
@@ -381,34 +314,6 @@ class BundleManifest {
         .map((String value) => value.trim().toLowerCase())
         .where((String value) => value.isNotEmpty)
         .toList(growable: false);
-    final List<PluginWasmModule> wasmModules = <PluginWasmModule>[];
-    final Object? rawWasm = json['wasm'];
-    if (rawWasm is Map) {
-      final Object? rawModules = rawWasm['modules'];
-      if (rawModules is List) {
-        for (final Object? item in rawModules) {
-          if (item is! Map) continue;
-          final PluginWasmModule? module = PluginWasmModule.parse(
-            item.map<String, dynamic>(
-              (Object? k, Object? v) => MapEntry<String, dynamic>(k.toString(), v),
-            ),
-          );
-          if (module == null) {
-            throw const BundleManifestException('wasm', 'wasm.modules 里有一项缺少 name 或 file');
-          }
-          wasmModules.add(module);
-        }
-      }
-    }
-    if (type == BundleType.plugin) {
-      if (capabilities.isEmpty) {
-        throw const BundleManifestException('capabilities', '插件必须声明至少一项能力');
-      }
-      if (capabilities.contains('wasm') && wasmModules.isEmpty) {
-        throw const BundleManifestException('wasm', '声明了 wasm 能力，但 wasm.modules 是空的');
-      }
-    }
-
     final List<BundleBridgeMethod> methods = <BundleBridgeMethod>[];
     final Object? rawBridge = json['bridge'];
     if (rawBridge is List) {
@@ -473,7 +378,6 @@ class BundleManifest {
       id: id,
       platforms: platforms,
       capabilities: capabilities,
-      wasmModules: wasmModules,
       name: name,
       version: version,
       description: asString(json['description']),

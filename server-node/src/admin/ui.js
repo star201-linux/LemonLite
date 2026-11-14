@@ -419,7 +419,7 @@ export function renderAdminPage({ version }) {
     </div>
     <div class="field"><label for="a_home">主页 URL</label><input id="a_home" type="text" /></div>
     <div class="field"><label for="a_shots">截图 URL（每行一个）</label><textarea id="a_shots"></textarea></div>
-    <div class="field"><label for="a_perms">声明权限（逗号分隔，如 camera,microphone）</label><input id="a_perms" type="text" /></div>
+    <div class="field"><label for="a_perms">声明权限（逗号分隔，如 camera,microphone）</label><input id="a_perms" type="text" /><p class="hint">仅用于安装前的预览；安装后以包里 metadata.json 的 permissions 为准。</p></div>
     <div class="field"><label>标签（可多选）</label><div id="a_tags" class="chip-list"></div></div>
 
     <div id="pkgBlock" hidden>
@@ -428,7 +428,7 @@ export function renderAdminPage({ version }) {
       <div id="pkgVersions" class="hint"></div>
       <div class="row">
         <div class="field"><label for="pkg_version">上传的版本号</label><input id="pkg_version" type="text" placeholder="1.0.1" /></div>
-        <div class="field"><label for="pkg_entry">入口文件</label><input id="pkg_entry" type="text" placeholder="index.html" /></div>
+        <div class="field"><label for="pkg_entry">入口文件</label><input id="pkg_entry" type="text" placeholder="index.html（包里带 metadata.json 时以它为准）" /></div>
       </div>
       <div class="field"><label for="pkg_file">选择 zip</label><input id="pkg_file" type="file" accept=".zip" /></div>
       <button class="ghost" type="button" id="pkgUploadBtn">上传并设为当前版本</button>

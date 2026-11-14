@@ -1,22 +1,32 @@
-# 模块与扩展示例包
+# 模块与插件示例包
 
-这两个 zip 是 LemonLite 自有格式的导入样例：扩展在「设置 → 页面扩展」里导入（无需开发者模式），模块在「开发者选项 → 模块」里安装。也可以用 `adb push` 放进应用私有目录后重启 App：
+`demo-module.zip` 是 LemonLite 自有格式的导入样例：在「开发者选项 → 模块」里安装；
+插件同样是这个格式（`type: "plugin"`），在「设置 → 插件」里导入。也可以用 `adb push` 放进应用私有目录后重启 App：
 
 ```bash
-adb push demo-extension.zip /data/data/com.lemonlite.lemonlite/files/lemonlite/extensions/
+adb push demo-module.zip /data/data/com.lemonlite.lemonlite/files/lemonlite/modules/
 ```
 
 （应用私有目录需要 root 或 `adb shell run-as com.lemonlite.lemonlite`；正常用文件选择器即可。）
 
 ## 包结构
 
-这里提供的 LemonLite 格式模块与扩展都是 **一个 zip**，里面必须有 `lemonlite.json`。页面扩展另外支持 Chrome WebExtension ZIP（`manifest.json` + `content_scripts`）；只运行匹配的小程序页面脚本与样式，不支持 background、popup 或 `chrome.*` API。
+两种包都是 **一个 zip**，里面必须有 `lemonlite.json`。
+
+**模块**（注入页面）：
 
 ```
-demo-extension/
+demo-module/
 ├── lemonlite.json     # manifest，文件名固定
-├── style.css          # 被 manifest 的 css 字段引用
-└── inject.js          # 被 manifest 的 js 字段引用
+├── inject.js          # 被 manifest 的 js 字段引用
+└── style.css          # 可选，被 css 字段引用
+```
+
+**插件**（给宿主加能力，不注入代码）：
+
+```
+my-plugin/
+└── lemonlite.json     # 必须有 platforms，capabilities 可选
 ```
 
 - zip 里可以不带最外层目录，也可以带（带的话会被自动剥掉）。
@@ -26,7 +36,7 @@ demo-extension/
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| `type` | ✅ | `extension` 或 `module` |
+| `type` | ✅ | `module` 或 `plugin` |
 | `id` | ✅ | 全局唯一，小写字母数字与 `. _ -`，同时用作目录名 |
 | `name` / `version` | ✅ | 展示用 |
 | `description` / `author` | | 展示用 |
@@ -34,6 +44,8 @@ demo-extension/
 | `runAt` | | `documentStart`（页面脚本前）或 `documentEnd`（默认） |
 | `css` / `js` | | 包内相对路径，按数组顺序拼接 |
 | `bridge` | | **仅模块**：声明新的 JSBridge 方法 |
+| `platforms` | | **仅插件**：支持的平台（`android` / `ios` / `macos` / `windows` / `linux` / `web`），空 = 全平台 |
+| `capabilities` | | **仅插件**：声明提供的能力名（当前宿主未内置实现，仅作声明） |
 
 ## 模块的 `bridge`
 
@@ -68,7 +80,8 @@ const c = await lemonlite.recall();     // storage.get，manifest 里给了 defa
 
 ## 边界（重要）
 
-- 扩展/模块的脚本**只注入小程序 WebView 页面**，不执行任何 Dart，也无法改宿主 UI。
+- 模块的脚本**只注入小程序 WebView 页面**，不执行任何 Dart，也无法改宿主 UI。
+- 插件**不注入任何代码**，也不执行包内的脚本；它只是能力声明的载体。
 - 模块拿不到宿主没有的能力：`action` 是白名单，装之前就会校验并拒绝。
 - 名字不能覆盖宿主内置 API（`getTheme`、`showToast` 等），校验时会拦下。
 - 解压有安全上限：拒绝 `..` 路径、绝对路径；最多 200 个条目、单文件 2MB、总计 8MB。
@@ -79,7 +92,7 @@ const c = await lemonlite.recall();     // storage.get，manifest 里给了 defa
 
 ```bash
 cd docs/bundles
-for n in demo-extension demo-module; do
+for n in demo-module; do
   (cd src/$n && zip -r ../../$n.zip . -x '.*')
 done
 ```

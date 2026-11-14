@@ -160,16 +160,24 @@ class _PermissionControllerPageState extends State<PermissionControllerPage> {
         _section(
           context,
           '权限使用情况',
-          '按权限看：哪些应用申请过、被拒绝过几次',
+          '只列小程序声明过或真正用过的权限',
           <Widget>[
             for (final MapEntry<PermissionGroup, List<MiniappPermission>> entry
                 in MiniappPermission.grouped().entries)
-              ...entry.value.map(
-                (MiniappPermission p) => _ScanPermissionTile(
-                  permission: p,
-                  report: report,
-                  onTap: () => _showUsageDialog(context, report, p),
-                ),
+              ...entry.value
+                  .where(report.touchedPermissions.contains)
+                  .map(
+                    (MiniappPermission p) => _ScanPermissionTile(
+                      permission: p,
+                      report: report,
+                      onTap: () => _showUsageDialog(context, report, p),
+                    ),
+                  ),
+            if (report.touchedPermissions.isEmpty)
+              const ListTile(
+                leading: Icon(Icons.check_circle_outline),
+                title: Text('没有任何小程序声明或使用过受控权限'),
+                subtitle: Text('用到摄像头、蓝牙这类能力时会先弹窗询问你'),
               ),
           ],
         ),
@@ -321,15 +329,20 @@ class _PermissionControllerPageState extends State<PermissionControllerPage> {
   ) {
     final ColorScheme scheme = Theme.of(context).colorScheme;
     final KnownMiniapp? app = report.appById(appId);
+
+    // 只展示「声明过的 ∪ 真正用过的」。九项全摊开会让用户误以为
+    // 这个小程序什么都想要，见 PermissionScanReport.relevantOf。
+    final List<MiniappPermission> relevant = report.relevantOf(appId);
+    final Set<MiniappPermission> declared = app?.declaredPermissions.toSet() ??
+        <MiniappPermission>{};
     final int deniedCount = report.deniedOf(appId).length;
     final int undecidedCount = report.undecidedOf(appId).length;
-    final int usedCount = MiniappPermission.values
+    final int usedCount = relevant
         .where((MiniappPermission p) => report.usageOf(appId, p).used)
         .length;
-    final int deniedCalls = MiniappPermission.values.fold<int>(
+    final int deniedCalls = relevant.fold<int>(
       0,
-      (int sum, MiniappPermission p) =>
-          sum + report.usageOf(appId, p).deniedCount,
+      (int sum, MiniappPermission p) => sum + report.usageOf(appId, p).deniedCount,
     );
 
     return ListView(
@@ -370,20 +383,26 @@ class _PermissionControllerPageState extends State<PermissionControllerPage> {
                     runSpacing: 8,
                     children: <Widget>[
                       _StatChip(
-                        icon: Icons.help_outline,
-                        text: undecidedCount == 0
-                            ? '没有待询问的权限'
-                            : '$undecidedCount 项待询问',
-                      ),
-                      _StatChip(
-                        icon: Icons.rule,
-                        text: deniedCount == 0 ? '没有已拒绝的权限' : '已拒绝 $deniedCount 项',
-                        danger: deniedCount > 0,
+                        icon: Icons.assignment_outlined,
+                        text: declared.isEmpty
+                            ? '未声明权限'
+                            : '声明 ${declared.length} 项',
                       ),
                       _StatChip(
                         icon: Icons.bolt_outlined,
-                        text: usedCount == 0 ? '未申请过权限' : '申请过 $usedCount 项',
+                        text: usedCount == 0 ? '尚未使用' : '已使用 $usedCount 项',
                       ),
+                      if (undecidedCount > 0)
+                        _StatChip(
+                          icon: Icons.help_outline,
+                          text: '$undecidedCount 项待询问',
+                        ),
+                      if (deniedCount > 0)
+                        _StatChip(
+                          icon: Icons.rule,
+                          text: '已拒绝 $deniedCount 项',
+                          danger: true,
+                        ),
                       if (deniedCalls > 0)
                         _StatChip(
                           icon: Icons.block_outlined,
@@ -398,60 +417,103 @@ class _PermissionControllerPageState extends State<PermissionControllerPage> {
           ),
         ),
 
-        // ---------------- 批量操作 ----------------
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-          child: Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: <Widget>[
-              FilledButton.tonalIcon(
-                onPressed: () => _setAll(appId, PermissionDecision.granted),
-                icon: const Icon(Icons.check_circle_outline, size: 18),
-                label: const Text('全部允许'),
+        // ---------------- 没有可管的权限 ----------------
+        if (relevant.isEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+            child: Card.outlined(
+              margin: EdgeInsets.zero,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      '这个小程序没有申请任何权限',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '它的 metadata.json 里没有声明受控权限，也还没有调用过摄像头、'
+                      '麦克风、蓝牙这类能力。真正用到的那一次会单独弹窗问你，'
+                      '之后它的记录会出现在这里。',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              OutlinedButton.icon(
-                onPressed: () => _confirmAll(appId, PermissionDecision.denied),
-                icon: const Icon(Icons.block_outlined, size: 18),
-                label: const Text('全部拒绝'),
-              ),
-              TextButton.icon(
-                onPressed: () => _reset(appId),
-                icon: const Icon(Icons.restart_alt, size: 18),
-                label: const Text('全部改为询问'),
-              ),
-            ],
+            ),
           ),
-        ),
 
-        // ---------------- 权限开关（按分组） ----------------
+        // ---------------- 批量操作 ----------------
+        if (relevant.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: <Widget>[
+                FilledButton.tonalIcon(
+                  onPressed: () =>
+                      _setAll(appId, relevant, PermissionDecision.granted),
+                  icon: const Icon(Icons.check_circle_outline, size: 18),
+                  label: const Text('全部允许'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => _confirmAll(
+                    appId,
+                    relevant,
+                    PermissionDecision.denied,
+                  ),
+                  icon: const Icon(Icons.block_outlined, size: 18),
+                  label: const Text('全部拒绝'),
+                ),
+                TextButton.icon(
+                  onPressed: () => _reset(appId),
+                  icon: const Icon(Icons.restart_alt, size: 18),
+                  label: const Text('全部改为询问'),
+                ),
+              ],
+            ),
+          ),
+
+        // ---------------- 权限决定（按分组，只列相关的） ----------------
         for (final MapEntry<PermissionGroup, List<MiniappPermission>> entry
             in MiniappPermission.grouped().entries)
-          _section(
-            context,
-            entry.key.label,
-            null,
-            <Widget>[
-              for (final MiniappPermission p in entry.value)
-                _PermissionDecisionTile(
-                  permission: p,
-                  decision: report.decisionOf(appId, p),
-                  usage: report.usageOf(appId, p),
-                  onChanged: (PermissionDecision value) async {
-                    await PermissionService.instance.setDecision(appId, p, value);
-                    if (mounted) _reload();
-                  },
-                ),
-            ],
-          ),
+          if (entry.value.any(relevant.contains))
+            _section(
+              context,
+              entry.key.label,
+              null,
+              <Widget>[
+                for (final MiniappPermission p in entry.value)
+                  if (relevant.contains(p))
+                    _PermissionDecisionTile(
+                      permission: p,
+                      decision: report.decisionOf(appId, p),
+                      usage: report.usageOf(appId, p),
+                      declared: declared.contains(p),
+                      onChanged: (PermissionDecision value) async {
+                        await PermissionService.instance.setDecision(
+                          appId,
+                          p,
+                          value,
+                        );
+                        if (mounted) _reload();
+                      },
+                    ),
+              ],
+            ),
 
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
           child: Text(
-            '「询问」= 下次调用时弹窗（默认状态）；「允许 / 拒绝」= 已经替你记住，不再打断。'
-            '弹窗里的「仅本次生效」默认勾选，那种选择不会显示在这里 —— 因为它本就没被记住。'
-            '被拒绝时网页会收到浏览器的 NotAllowedError，设备不会被打开。'
-            '「清除数据」不会重置这里的决定 —— 授权是你对这个应用的信任决定。',
+            '列表按小程序自己的声明来：metadata.json 里写了哪几项，就显示哪几项；'
+            '声明漏写但运行时真的请求过的，也会出现在这里（标为「运行时请求」）。'
+            '「询问」= 下次调用时弹窗（默认）；「允许 / 拒绝」= 已经替你记住，不再打断。'
+            '弹窗里的「仅本次生效」默认勾选，那种选择不会显示在这里 —— 它本就没被记住。',
             style: Theme.of(
               context,
             ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
@@ -461,22 +523,36 @@ class _PermissionControllerPageState extends State<PermissionControllerPage> {
     );
   }
 
-  Future<void> _setAll(String appId, PermissionDecision decision) async {
-    await PermissionService.instance.setAllDecisions(appId, decision);
+  Future<void> _setAll(
+    String appId,
+    List<MiniappPermission> permissions,
+    PermissionDecision decision,
+  ) async {
+    await PermissionService.instance.setDecisions(
+      appId,
+      permissions,
+      decision,
+    );
     if (mounted) _reload();
   }
 
-  Future<void> _confirmAll(String appId, PermissionDecision decision) async {
+  Future<void> _confirmAll(
+    String appId,
+    List<MiniappPermission> permissions,
+    PermissionDecision decision,
+  ) async {
     final bool allowed = decision == PermissionDecision.granted;
+    final String names = permissions
+        .map((MiniappPermission p) => p.label)
+        .join('、');
     final bool? ok = await _confirm(
-      title: allowed ? '允许全部权限？' : '拒绝全部权限？',
+      title: allowed ? '允许这 ${permissions.length} 项权限？' : '拒绝这 ${permissions.length} 项权限？',
       message: allowed
-          ? '该应用将可以使用摄像头、麦克风、手机存储，之后不再弹窗询问。'
-          : '该应用将无法使用摄像头、麦克风，也无法读取手机存储。'
-                '它可能因此无法正常工作。',
+          ? '该应用将可以使用：$names，之后不再弹窗询问。'
+          : '该应用将无法使用：$names。它可能因此无法正常工作。',
       confirmLabel: allowed ? '允许' : '拒绝',
     );
-    if (ok == true) await _setAll(appId, decision);
+    if (ok == true) await _setAll(appId, permissions, decision);
   }
 
   Future<void> _reset(String appId) async {
@@ -714,12 +790,17 @@ class _PermissionDecisionTile extends StatelessWidget {
     required this.permission,
     required this.decision,
     required this.usage,
+    required this.declared,
     required this.onChanged,
   });
 
   final MiniappPermission permission;
   final PermissionDecision decision;
   final MiniappUsage usage;
+
+  /// 是否在 metadata.json 里声明过（false = 运行时才请求的）
+  final bool declared;
+
   final ValueChanged<PermissionDecision> onChanged;
 
   @override
@@ -749,6 +830,10 @@ class _PermissionDecisionTile extends StatelessWidget {
               ),
               const SizedBox(width: 8),
               PermissionRiskChip(risk: permission.risk, compact: true),
+              if (!declared) ...<Widget>[
+                const SizedBox(width: 6),
+                _RuntimeChip(),
+              ],
             ],
           ),
           const SizedBox(height: 4),
@@ -903,6 +988,29 @@ class _ErrorBody extends StatelessWidget {
               label: const Text('重试'),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 「运行时请求」标记：声明里没写，但真的调用过。
+///
+/// 这个标记不能省：用户看到的每一行都该能回答「它凭什么出现在这里」。
+class _RuntimeChip extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: scheme.tertiaryContainer,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        '运行时请求',
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+          color: scheme.onTertiaryContainer,
         ),
       ),
     );

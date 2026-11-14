@@ -7,8 +7,14 @@ import cors from 'cors';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { config, describeConfig, readEnvFile } from './config.js';
-import { ping } from './db.js';
+import { ping, closePool } from './db.js';
 import { errorHandler, notFoundHandler, sendOk } from './lib/http.js';
+import {
+  describeInsecureConfig,
+  rateLimit,
+  requestId,
+  securityHeaders,
+} from './lib/security.js';
 import { marketRouter } from './routes/market.js';
 import { authRouter } from './routes/auth.js';
 import { uploadRouter, userDataRouter } from './routes/upload.js';
@@ -25,22 +31,57 @@ const app = express();
 
 // ---------------------------------------------------------------- 中间件
 
+// 不报 X-Powered-By：这条头对客户端没用，只是告诉扫描器「这是 Express」。
+app.disable('x-powered-by');
+
 if (config.http.trustProxy) app.set('trust proxy', true);
 
+app.use(requestId);
+app.use(securityHeaders);
+
 // CORS：客户端是 Android App（原生 HTTP 请求，不受同源限制），
-// 但网页版调试 / 管理后台会需要。开发期放开，生产建议用 CORS_ORIGIN 收紧。
+// 网页版调试 / 管理后台才需要。开发期放开，生产必须用 CORS_ORIGIN 限定。
+//
+// 生产环境没配 CORS_ORIGIN 时**不发** CORS 头（默认同源）：
+// 放行全部等于把 API 借给任意网站，而客户端根本不需要它。
 const corsOrigin = process.env.CORS_ORIGIN;
+const isProduction = process.env.NODE_ENV === 'production';
 app.use(
   cors({
-    origin: corsOrigin && corsOrigin !== '*' ? corsOrigin.split(',') : true,
+    origin:
+      corsOrigin && corsOrigin !== '*'
+        ? corsOrigin.split(',').map((s) => s.trim()).filter(Boolean)
+        : isProduction
+          ? false
+          : true,
     credentials: false,
+    maxAge: 600,
   }),
 );
 
 // 请求体上限：头像走 multipart，不走这里；JSON 只放小对象（登录、改资料）。
-// 5MB 是给将来可能的批量导入留的余量，但绝不该更大。
-app.use(express.json({ limit: '5mb' }));
-app.use(express.urlencoded({ extended: false, limit: '5mb' }));
+// 1MB 足够，再大就是有人在拿它当文件传输。
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: false, limit: '1mb' }));
+
+// 限流：全局按 IP 300 次/分钟，认证类接口 20 次/分钟（防撞库与验证码轰炸）。
+// 放在路由之前，被限的请求不会碰到数据库。
+app.use(
+  '/api',
+  rateLimit({
+    windowMs: 60_000,
+    max: 300,
+    message: '请求太频繁，请稍后再试',
+  }),
+);
+app.use(
+  ['/api/auth/login', '/api/auth/register', '/api/auth/email-code', '/api/auth/login-code', '/api/auth/password'],
+  rateLimit({
+    windowMs: 60_000,
+    max: 20,
+    message: '尝试太频繁，请一分钟后再试',
+  }),
+);
 
 // 极简访问日志：方法、路径、状态、耗时。
 // 不记 body —— 里面可能有密码。
@@ -50,7 +91,8 @@ app.use((req, res, next) => {
     const ms = Date.now() - started;
     const mark = res.statusCode >= 500 ? '\x1b[31m' : res.statusCode >= 400 ? '\x1b[33m' : '\x1b[32m';
     console.log(
-      `${mark}${res.statusCode}\x1b[0m ${req.method} ${req.originalUrl} ${ms}ms`,
+      `${mark}${res.statusCode}\x1b[0m ${req.method} ${req.originalUrl} ${ms}ms` +
+        (req.id ? ` [${req.id}]` : ''),
     );
   });
   next();
@@ -82,6 +124,8 @@ app.use(
     maxAge: '1d',
     index: false,
     dotfiles: 'deny',
+    // 不落到后续路由：/icons 下没有的东西就是 404，不要被 SPA 兜底接走
+    fallthrough: false,
   }),
 );
 
@@ -91,7 +135,13 @@ app.use(
 app.get('/api/health', async (_req, res, next) => {
   try {
     await ping();
-    sendOk(res, { status: 'ok', db: 'up', time: new Date().toISOString() });
+    sendOk(res, {
+      status: 'ok',
+      db: 'up',
+      version: process.env.npm_package_version || '1.0.0',
+      uptime: Math.round(process.uptime()),
+      time: new Date().toISOString(),
+    });
   } catch (e) {
     next(e);
   }
@@ -182,6 +232,8 @@ async function start() {
   // 面板 cookie 的签名密钥：没有就生成一个写回 .env
   await ensureAdminSecret();
 
+  // 反代 / 慢客户端保护：头 10 秒内必须收完，整个请求 30 秒内必须结束。
+  // 不设的话，一个故意不读完 body 的连接会一直占着 socket。
   const server = app.listen(config.http.port, config.http.host, async () => {
     console.log('');
     console.log('\x1b[32mLemonLite 服务端已启动\x1b[0m');
@@ -210,12 +262,30 @@ async function start() {
     console.log('');
     console.log('  客户端在「设置 → 开发者选项 → 服务器地址」里填上面的地址。');
     console.log('');
+
+    for (const warning of describeInsecureConfig(config)) {
+      console.log(`\x1b[33m!\x1b[0m ${warning}`);
+    }
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('\x1b[90m（开发模式：CORS 放开、详细日志；生产请设 NODE_ENV=production）\x1b[0m');
+    }
+    console.log('');
   });
 
+  server.requestTimeout = 30_000;
+  server.headersTimeout = 10_000;
+  server.keepAliveTimeout = 65_000;
+
   // 优雅退出：让正在处理的请求跑完（容器部署时 SIGTERM 很重要）
+  let closing = false;
   const shutdown = (signal) => {
+    if (closing) return;
+    closing = true;
     console.log(`\n收到 ${signal}，正在关闭…`);
-    server.close(() => process.exit(0));
+    server.close(async () => {
+      await closePool();
+      process.exit(0);
+    });
     // 兜底：10 秒还没关完就强退，避免卡住部署流程
     setTimeout(() => process.exit(1), 10_000).unref();
   };

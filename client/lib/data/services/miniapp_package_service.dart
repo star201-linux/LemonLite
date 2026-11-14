@@ -34,6 +34,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../../core/globals.dart';
+import '../models/miniapp_metadata.dart';
 
 /// 一个本地已安装的小程序包
 class InstalledPackage {
@@ -42,10 +43,14 @@ class InstalledPackage {
     required this.version,
     required this.entry,
     required this.dir,
+    this.metadata,
   });
 
   final String appId;
   final String version;
+
+  /// 包自带的 metadata.json（老包可能没有）
+  final MiniappMetadata? metadata;
 
   /// 入口文件的**包内相对路径**（如 `index.html`）
   final String entry;
@@ -262,6 +267,7 @@ class MiniappPackageService {
       version: version,
       entry: entry,
       dir: versionDir.path,
+      metadata: _tryReadMetadata(versionDir),
     );
     return pkg.isUsable ? pkg : null;
   }
@@ -370,17 +376,38 @@ class MiniappPackageService {
       final List<int> bytes = tmp.readAsBytesSync();
       await _extractTo(bytes, target);
 
-      // ---- 4. 确认入口存在 ----
-      final File entryFile = File(p.join(target.path, entry));
+      // ---- 4. 读 metadata.json（包自己的身份与权限声明） ----
+      //
+      // 这一步在「确认入口」之前：入口路径以包自己的声明为准，
+      // 服务端那份 package_entry 只是没有 metadata.json 时的兜底。
+      //
+      // 允许 zip 外面再套一层目录（作者用「右键压缩文件夹」打出来的包
+      // 就是这样）：metadata.json 在唯一子目录里时，那个子目录就是包根，
+      // 入口要带上这层前缀 —— 与 Service 端 zip_meta.js 的规则保持一致。
+      final File? metadataFile = _findMetadataFile(target);
+      final MiniappMetadata? metadata = metadataFile == null
+          ? null
+          : _readMetadataFile(metadataFile, appId: appId);
+      final String prefix = metadataFile == null
+          ? ''
+          : p.relative(p.dirname(metadataFile.path), from: target.path);
+      final String effectiveEntry = metadata == null
+          ? entry
+          : p.posix.normalize(
+              p.posix.join(prefix.replaceAll('\\', '/'), metadata.entry),
+            );
+
+      // ---- 5. 确认入口存在 ----
+      final File entryFile = File(p.join(target.path, effectiveEntry));
       if (!entryFile.existsSync()) {
         target.deleteSync(recursive: true);
         throw PackageException(
           'missing_entry',
-          '包里没有入口文件 $entry（检查 lemonlite.json / package_entry）',
+          '包里没有入口文件 $effectiveEntry（检查 metadata.json 的 entry）',
         );
       }
 
-      // ---- 5. 写完成标记 + 切 current ----
+      // ---- 6. 写完成标记 + 切 current ----
       //
       // 顺序很重要：先写 .complete，再更新 current 指针。
       // 反过来的话，如果两步之间被杀，current 会指向一个没标记的目录 ——
@@ -390,7 +417,10 @@ class MiniappPackageService {
       ).writeAsStringSync(DateTime.now().toIso8601String());
 
       File(p.join(dir.path, 'current')).writeAsStringSync(
-        jsonEncode(<String, dynamic>{'version': safeVersion, 'entry': entry}),
+        jsonEncode(<String, dynamic>{
+          'version': safeVersion,
+          'entry': effectiveEntry,
+        }),
       );
 
       lemonLog('Package', '$appId 安装完成：v$safeVersion（$received 字节）');
@@ -398,11 +428,84 @@ class MiniappPackageService {
       return InstalledPackage(
         appId: appId,
         version: safeVersion,
-        entry: entry,
+        entry: effectiveEntry,
         dir: target.path,
+        metadata: metadata,
       );
     } finally {
       if (tmp.existsSync()) tmp.deleteSync();
+    }
+  }
+
+  /// 找 metadata.json：包根，或**唯一**子目录（作者多套了一层文件夹）。
+  ///
+  /// 多个子目录时不做猜测 —— 猜错会把入口指到别处，比直接报「没有 metadata」
+  /// 更难排查。
+  File? _findMetadataFile(Directory dir) {
+    final File atRoot = File(p.join(dir.path, MiniappMetadata.fileName));
+    if (atRoot.existsSync()) return atRoot;
+
+    Directory? only;
+    for (final FileSystemEntity entity in dir.listSync()) {
+      if (entity is! Directory) continue;
+      if (p.basename(entity.path).startsWith('.')) continue;
+      if (only != null) return null;
+      only = entity;
+    }
+    if (only == null) return null;
+    final File nested = File(p.join(only.path, MiniappMetadata.fileName));
+    return nested.existsSync() ? nested : null;
+  }
+
+  /// 严格读取 metadata.json（安装时用）：**存在就必须合法**，
+  /// 因为它决定这个包以谁的身份运行、能拿到哪些权限。
+  MiniappMetadata? _readMetadataFile(File file, {required String appId}) {
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(file.readAsStringSync());
+    } catch (e) {
+      throw PackageException('bad_metadata', 'metadata.json 不是合法 JSON：$e');
+    }
+    if (decoded is! Map) {
+      throw const PackageException('bad_metadata', 'metadata.json 顶层必须是对象');
+    }
+
+    final MiniappMetadata? metadata = MiniappMetadata.parse(
+      decoded.map<String, dynamic>(
+        (Object? k, Object? v) => MapEntry<String, dynamic>(k.toString(), v),
+      ),
+    );
+    if (metadata == null) {
+      throw const PackageException(
+        'bad_metadata',
+        'metadata.json 缺少 id 或 name（这两个字段必须有）',
+      );
+    }
+    if (metadata.id != appId) {
+      // 顶替别人的 id 等于继承别人已授权的权限，必须拦在这里。
+      throw PackageException(
+        'metadata_mismatch',
+        'metadata.json 的 id（${metadata.id}）与被安装的应用（$appId）不一致',
+      );
+    }
+    if (metadata.needsNewerFramework) {
+      throw PackageException(
+        'framework_too_old',
+        '这个包要求宿主 ${metadata.minFrameworkVersion} 以上，'
+            '当前是 ${MiniappMetadata.currentFramework}，请先升级轻柠',
+      );
+    }
+    return metadata;
+  }
+
+  /// 宽松读取（打开已有包时用）：读坏了就当没有，不能让小程序打不开。
+  MiniappMetadata? _tryReadMetadata(Directory dir) {
+    final File? file = _findMetadataFile(dir);
+    if (file == null) return null;
+    try {
+      return _readMetadataFile(file, appId: p.basename(p.dirname(dir.path)));
+    } catch (_) {
+      return null;
     }
   }
 

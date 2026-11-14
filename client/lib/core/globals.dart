@@ -53,8 +53,11 @@ bool miniappForegroundActive = false;
 /// 框架名（getSystemInfo 会返回给小程序的 framework 字段）
 const String kFrameworkName = 'LemonLite';
 
-/// 框架阶段版本：阶段一只做「WebView 承载 + JSBridge」，不做原生渲染
-const String kFrameworkVersion = '0.1.5';
+/// 框架版本。
+///
+/// 0.2.0：小程序包引入 metadata.json（身份 / 版本 / 入口 / 权限声明），
+///        权限页改为按声明展示；移除页面扩展与插件 wasm。
+const String kFrameworkVersion = '0.2.0';
 
 /// index.json 的 schema 版本（当前支持的版本号）
 const int kSupportedSchemaVersion = 1;

@@ -344,6 +344,10 @@ appsRouter.post(
 
     const stored = await storePackage({ appId: id, version, buffer: req.file.buffer });
 
+    // 包里有 metadata.json 时以它声明的入口为准：客户端就是按那个路径打开的，
+    // 库里若存另一个，详情页 / 更新检查会给出错的信息。
+    const effectiveEntry = stored.metadataEntry || entry;
+
     // 版本号、包地址、入口、哈希、大小必须一次性写入：
     // 「版本变了但包没变」会让客户端一直提示升级却升不上去。
     await execute(
@@ -351,16 +355,19 @@ appsRouter.post(
           SET version = ?, package_url = ?, package_entry = ?,
               package_sha256 = ?, package_bytes = ?
         WHERE id = ?`,
-      [version, stored.relUrl, entry, stored.sha256, stored.bytes, id],
+      [version, stored.relUrl, effectiveEntry, stored.sha256, stored.bytes, id],
     );
 
     sendOk(res, {
       appId: id,
       version,
-      entry,
+      entry: effectiveEntry,
       sha256: stored.sha256,
       bytes: stored.bytes,
       previousVersion: app.version,
+      // 面板可以据此提示「这个包没带 metadata.json」
+      hasMetadata: stored.hasMetadata,
+      metadata: stored.metadata ?? null,
     });
   }),
 );

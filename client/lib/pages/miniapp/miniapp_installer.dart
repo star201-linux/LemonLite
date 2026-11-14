@@ -18,6 +18,8 @@ import 'package:flutter/material.dart';
 
 import '../../core/globals.dart';
 import '../../data/models/app_item.dart';
+import '../../data/models/miniapp_metadata.dart';
+import '../../data/services/application_registry.dart';
 import '../../data/services/icon_cache_service.dart';
 import '../../data/services/miniapp_package_service.dart';
 import '../../theme/app_theme.dart';
@@ -112,6 +114,15 @@ class MiniappInstaller {
       // 不联网也显示它。缓存失败不影响安装结果（ensure 内部已吞异常）。
       await IconCacheService.instance.ensure(appId: app.id, url: app.icon);
 
+      // 把包自己的身份登记进应用清单：名字按包里的 metadata.json 校正，
+      // 声明权限一并存下来 —— 权限页与「打开前确认」都读这份，
+      // 不再依赖市场数据（市场数据可能和包不一致）。
+      await _registerInstalled(
+        installed,
+        fallbackName: app.name,
+        iconUrl: app.icon,
+      );
+
       _closeDialog(dialogNavigator);
       // AppTheme.showToast 走全局 ScaffoldMessenger key，**不用**这个 context。
       // 所以这里不存在「跨 async gap 用 context」的问题 —— 直接弹。
@@ -138,6 +149,28 @@ class MiniappInstaller {
     }
   }
 
+  /// 安装完成后把包的信息写进应用清单。
+  ///
+  /// 名字以包里的 metadata.json 为准（市场数据可能滞后），声明权限也来自它；
+  /// 老包没有 metadata.json 时保留市场给的名字、不动已有声明。
+  static Future<void> _registerInstalled(
+    InstalledPackage pkg, {
+    String? fallbackName,
+    String? iconUrl,
+  }) async {
+    final MiniappMetadata? meta = pkg.metadata;
+    try {
+      await ApplicationRegistry.instance.ensureKnown(
+        appId: pkg.appId,
+        name: meta?.name ?? fallbackName ?? pkg.appId,
+        icon: iconUrl,
+        permissions: meta?.permissionIds,
+      );
+    } catch (e) {
+      lemonLog('Installer', '登记 ${pkg.appId} 失败（不影响使用）：$e');
+    }
+  }
+
   /// 强制安装某个版本（升级检查用：它已经知道要装哪一版）
   static Future<bool> forceInstall(
     BuildContext context, {
@@ -152,7 +185,7 @@ class MiniappInstaller {
   }) async {
     final MiniappPackageService service = MiniappPackageService.instance;
     try {
-      await service.install(
+      final InstalledPackage installed = await service.install(
         appId: appId,
         version: version,
         packageUrl: packageUrl,
@@ -162,6 +195,7 @@ class MiniappInstaller {
       );
       await service.pruneOldVersions(appId);
       await IconCacheService.instance.ensure(appId: appId, url: iconUrl);
+      await _registerInstalled(installed, fallbackName: appName);
       return true;
     } on PackageException catch (e) {
       if (context.mounted) {

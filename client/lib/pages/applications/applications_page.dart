@@ -229,10 +229,12 @@ class _SummaryCard extends StatelessWidget {
     final ColorScheme scheme = Theme.of(context).colorScheme;
     final PermissionService permissions = PermissionService.instance;
 
+    // 只统计「这个应用真的会用到」的权限：声明过的 ∪ 调用过的。
     int granted = 0;
     int denied = 0;
     for (final RegisteredApp app in snapshot.apps) {
       for (final MiniappPermission p in MiniappPermission.values) {
+        if (!_isRelevant(permissions, app, p)) continue;
         final PermissionDecision d = permissions.decisionOf(app.id, p);
         if (d == PermissionDecision.granted) granted++;
         if (d == PermissionDecision.denied) denied++;
@@ -313,12 +315,14 @@ class _ApplicationTile extends StatelessWidget {
     final int granted = MiniappPermission.values
         .where(
           (MiniappPermission p) =>
+              _isRelevant(permissions, app, p) &&
               permissions.decisionOf(app.id, p) == PermissionDecision.granted,
         )
         .length;
     final int denied = MiniappPermission.values
         .where(
           (MiniappPermission p) =>
+              _isRelevant(permissions, app, p) &&
               permissions.decisionOf(app.id, p) == PermissionDecision.denied,
         )
         .length;
@@ -445,4 +449,18 @@ class _ErrorBody extends StatelessWidget {
       ),
     );
   }
+}
+
+/// 这个权限是否与该应用有关：声明过，或真的被调用过。
+///
+/// 应用管理页与权限页用同一条口径，否则两处数字对不上，用户会以为其中一处坏了。
+bool _isRelevant(
+  PermissionService permissions,
+  RegisteredApp app,
+  MiniappPermission permission,
+) {
+  if (app.permissionIds.any((String id) => MiniappPermission.byId(id) == permission)) {
+    return true;
+  }
+  return permissions.usageOf(app.id, permission).used;
 }

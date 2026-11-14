@@ -26,7 +26,7 @@ Uint8List makeZip(Map<String, String> files) {
 }
 
 String manifestJson({
-  String type = 'extension',
+  String type = 'module',
   String id = 'com.example.demo',
   String name = '示例',
   String version = '1.0.0',
@@ -45,12 +45,12 @@ void main() {
   group('manifest 解析', () {
     test('最小可用字段', () {
       final BundleManifest m = BundleManifest.parse(<String, dynamic>{
-        'type': 'extension',
+        'type': 'module',
         'id': 'com.example.a',
         'name': '甲',
         'version': '1.0.0',
       });
-      expect(m.type, BundleType.extension);
+      expect(m.type, BundleType.module);
       expect(m.id, 'com.example.a');
       // matches 缺省 = 全部页面
       expect(m.matches, <String>['*']);
@@ -106,7 +106,7 @@ void main() {
       ]) {
         expect(
           () => BundleManifest.parse(<String, dynamic>{
-            'type': 'extension',
+            'type': 'module',
             'id': bad,
             'name': 'x',
             'version': '1',
@@ -210,7 +210,7 @@ void main() {
 
     test('bundleMatchesUrl：本地 assets 只认通配全匹配', () {
       final BundleManifest all = BundleManifest.parse(<String, dynamic>{
-        'type': 'extension',
+        'type': 'module',
         'id': 'a',
         'name': 'a',
         'version': '1',
@@ -219,7 +219,7 @@ void main() {
       expect(bundleMatchesUrl(all, 'https://x/'), isTrue);
 
       final BundleManifest scoped = BundleManifest.parse(<String, dynamic>{
-        'type': 'extension',
+        'type': 'module',
         'id': 'b',
         'name': 'b',
         'version': '1',
@@ -352,7 +352,7 @@ void main() {
 
   group('注入脚本生成', () {
     BundlePayload payload({
-      BundleType type = BundleType.extension,
+      BundleType type = BundleType.module,
       String css = '',
       String js = '',
       List<Map<String, Object?>> bridge = const <Map<String, Object?>>[],

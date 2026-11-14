@@ -84,6 +84,20 @@ export function errorHandler(err, req, res, _next) {
     });
   }
   // multer 的错误：文件太大 / 字段不合法
+  // express.json() 的两种「客户端问题」：body 太大、body 不是合法 JSON。
+  // 不翻译的话它们会掉进最后的 500，日志里一堆不是服务端责任的「内部错误」。
+  if (err?.type === 'entity.too.large') {
+    return res.status(413).json({
+      ok: false,
+      error: { code: 'payload_too_large', message: '请求体太大' },
+    });
+  }
+  if (err instanceof SyntaxError && err?.status === 400 && 'body' in err) {
+    return res.status(400).json({
+      ok: false,
+      error: { code: 'bad_json', message: '请求体不是合法 JSON' },
+    });
+  }
   if (err?.code === 'LIMIT_FILE_SIZE') {
     return res.status(413).json({
       ok: false,
@@ -106,7 +120,7 @@ export function errorHandler(err, req, res, _next) {
   }
 
   // 兜底：**总是**记完整堆栈（服务端），但只回一句话（客户端）
-  console.error('[500]', err);
+  console.error(`[500]${req.id ? ` [${req.id}]` : ''}`, err);
   return res.status(500).json({
     ok: false,
     error: { code: 'internal', message: '服务器内部错误' },

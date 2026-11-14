@@ -13,6 +13,7 @@ import 'package:flutter/services.dart' show MethodChannel;
 import 'app.dart';
 import 'core/globals.dart';
 import 'core/run_log.dart';
+import 'data/models/miniapp_metadata.dart';
 import 'data/services/account_service.dart';
 import 'data/services/application_registry.dart';
 import 'data/services/download_service.dart';
@@ -26,6 +27,9 @@ Future<void> main() async {
   // 尽早接上异常钩子：之后的任何异常都会进日志缓冲区，
   // 用户一键导出就能看到。这是「release 包也能排障」的基石。
   RunLog.instance.installErrorHooks();
+
+  // 包里的 metadata.json 可能写 minFrameworkVersion；它要能和当前框架版本比。
+  MiniappMetadata.currentFramework = kFrameworkVersion;
 
   // 这个进程是「宿主」还是某个小程序开出来的「独立窗口」？
   //

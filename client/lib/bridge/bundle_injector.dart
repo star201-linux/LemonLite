@@ -1,15 +1,15 @@
 // lib/bridge/bundle_injector.dart
 //
-// 把「模块 / 扩展」包的内容变成可以注入 WebView 的 JS。
+// 把模块包的内容变成可以注入 WebView 的 JS。
 //
 // 注入位置与主题、SDK 一起排在 document-start / document-end 两个 UserScript 里：
-//   主题数据 → JS SDK → 模块/扩展
-// 放在 SDK 之后，是为了让扩展脚本一上来就能用 window.lemonlite.*。
+//   主题数据 → JS SDK → 模块
+// 放在 SDK 之后，是为了让模块脚本一上来就能用 window.lemonlite.*。
 //
 // 几个刻意的取舍：
-//   * 扩展的 JS 一律包进 IIFE —— 扩展作者不该能把变量漏到页面全局上互相污染
-//   * 扩展的 JS/CSS 用「建 <script>/<style> 再插入」的方式执行，而不是拼进主脚本：
-//     这样扩展代码自己抛错时，宿主框架仍然正常，错误落到 window.onerror 而不是崩掉注入
+//   * 模块的 JS 一律包进 IIFE —— 模块作者不该能把变量漏到页面全局上互相污染
+//   * 模块的 JS/CSS 用「建 <script>/<style> 再插入」的方式执行，而不是拼进主脚本：
+//     这样模块代码自己抛错时，宿主框架仍然正常，错误落到 window.onerror 而不是崩掉注入
 //   * 模块声明的桥接方法生成 `lemonlite.<name>()` 包装，脚本仍走同一条 callHandler 通道，
 //     不额外开后门
 
@@ -48,7 +48,7 @@ class BundleInjector {
     if (payloads.isEmpty) return '';
 
     final StringBuffer buffer = StringBuffer()
-      ..writeln('/* LemonLite 模块 / 扩展注入 */')
+      ..writeln('/* LemonLite 模块注入 */')
       ..writeln('(function () {')
       ..writeln("  'use strict';")
       ..write(_preamble);
@@ -115,7 +115,7 @@ class BundleInjector {
   /// 注入辅助函数。
   ///
   /// 为什么需要 `__inject`：runAt = documentStart 时页面往往还没解析出 `<head>`，
-  /// 直接 appendChild 会抛错，连带整个扩展脚本都不执行。
+  /// 直接 appendChild 会抛错，连带整个模块脚本都不执行。
   /// 这里统一兜底 —— 元素还没就绪就等 DOMContentLoaded。
   static const String _preamble = r'''
   function __inject(make) {
@@ -155,7 +155,7 @@ class BundleInjector {
 
   /// 页面里可以读的「当前生效了哪些包」，调试很方便
   static String buildRegistryScript(List<BundlePayload> payloads) {
-    // 一个 Chrome 扩展可能有多条 content_scripts 规则；页面清单仍按扩展去重。
+    // 一个模块可能有多条 contentScripts 规则；页面清单仍按模块去重。
     final Map<String, List<BundlePayload>> grouped =
         <String, List<BundlePayload>>{};
     for (final BundlePayload payload in payloads) {

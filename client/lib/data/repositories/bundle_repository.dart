@@ -1,6 +1,6 @@
 // lib/data/repositories/bundle_repository.dart
 //
-// 模块 / 扩展包的落盘与读取。
+// 模块与插件包的落盘与读取。
 //
 // 目录布局（<应用私有目录> = path_provider 的 documents 目录）：
 //   <docs>/lemonlite/extensions/<id>/lemonlite.json + inject.js + inject.css
@@ -72,7 +72,7 @@ class BundlePayload {
   /// 一个包里可以定义多条不同注入时机的规则；旧包沿用 manifest.runAt。
   final BundleRunAt? runAtOverride;
 
-  /// 同一扩展多条规则可能同时命中；样式节点必须分开，否则后一个会覆盖前一个。
+  /// 同一模块多条规则可能同时命中；样式节点必须分开，否则后一个会覆盖前一个。
   final String? injectionKey;
   BundleRunAt get runAt => runAtOverride ?? manifest.runAt;
 
@@ -109,7 +109,7 @@ class BundleRepository {
   Future<Directory> _bundleDir(BundleManifest manifest) async =>
       Directory(p.join((await _typeDir(manifest.type)).path, manifest.id));
 
-  /// 某个包落盘后的目录（插件读自己的 wasm 文件要用）。
+  /// 某个包落盘后的目录（模块读自己的脚本、插件读声明文件都要用）。
   /// 只读路径，不创建 —— 调用方自己判断是否存在。
   Future<Directory> directoryOf(BundleManifest manifest) => _bundleDir(manifest);
 
@@ -203,9 +203,6 @@ class BundleRepository {
     final Iterable<String> references = <String>[
       ...manifest.jsFiles,
       ...manifest.cssFiles,
-      // 插件声明的 wasm 模块同样必须真的在包里：装完才发现读不到
-      // 等于装了一个"声明有 wasm 能力但其实是空的"插件。
-      for (final PluginWasmModule module in manifest.wasmModules) module.file,
       for (final BundleContentScript rule
           in manifest.effectiveContentScripts) ...<String>[
         ...rule.jsFiles,
@@ -478,8 +475,8 @@ class BundleRepository {
     }
 
     throw const BundleException(
-      '包里找不到扩展清单',
-      detail: '需要 lemonlite.json（LemonLite 扩展格式）',
+      '包里找不到模块清单',
+      detail: '需要 lemonlite.json（LemonLite 模块格式）',
     );
   }
 
@@ -514,7 +511,7 @@ class BundleRepository {
       return roots.first;
     }
     throw BundleException(
-      '包里找不到扩展清单',
+      '包里找不到模块清单',
       detail: roots.isEmpty
           ? '需要 lemonlite.json'
           : '最外层有多个目录：${roots.join(" / ")}',

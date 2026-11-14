@@ -311,49 +311,6 @@
   step('setAllowScreenOff(true)', function () { return ll.setAllowScreenOff(true); },
     function (r) { return { status: 'ok', detail: 'allowScreenOff=' + r.allowScreenOff }; });
 
-  /* ------------------------- WASM（由插件提供，需先安装） ------------------------ */
-
-  step('wasm.list()', function () { return ll.wasm.list(); },
-    function (r) {
-      return { status: 'ok', detail: r.modules.map(function (m) { return m.name + '(' + m.bytes + 'B)'; }).join(', ') };
-    });
-
-  step('wasm.instantiate() + add(2,3)', function () {
-    return ll.wasm.instantiate('lemonlite').then(function (result) {
-      return {
-        exports: result.exports,
-        sum: result.instance.exports.add(2, 3),
-        fib: result.instance.exports.fib(20),
-        gcd: result.instance.exports.gcd(48, 18),
-        popcount: result.instance.exports.popcount(0xF0F0),
-        version: result.instance.exports.version()
-      };
-    });
-  }, function (v) {
-    var allRight = v.sum === 5 && v.fib === 6765 && v.gcd === 6 && v.popcount === 8 && v.version === 20250101;
-    return {
-      status: allRight ? 'ok' : 'failed',
-      detail: 'add=' + v.sum + ' fib=' + v.fib + ' gcd=' + v.gcd
-        + ' popcount=' + v.popcount + ' version=' + v.version
-        + ' exports=' + v.exports.length + '个'
-    };
-  });
-
-  step('wasm.call() 单行调用', function () { return ll.wasm.call('lemonlite', 'sum_to', 100); },
-    function (v) { return { status: v === 5050 ? 'ok' : 'failed', detail: 'sum_to(100)=' + v }; });
-
-  step('wasm.bytes() 长度', function () {
-    return ll.wasm.bytes('lemonlite').then(function (bytes) {
-      return { length: bytes.length, head: [bytes[0], bytes[1], bytes[2], bytes[3]] };
-    });
-  }, function (v) {
-    var magic = v.head.join(',') === '0,97,115,109';
-    return {
-      status: magic ? 'ok' : 'failed',
-      detail: v.length + ' 字节 · 头=' + v.head.join(',') + (magic ? '（\\0asm ✔）' : '（魔数不对！）')
-    };
-  });
-
   /* ------------------------- 中转后台（放在最后，先落盘报告） ------------------------- */
 
   step('runInBackground()', function () {

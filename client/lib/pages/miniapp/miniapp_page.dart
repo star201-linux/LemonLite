@@ -133,7 +133,7 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
   /// 小程序是否主动调用过 setTitle（调用过就不再被页面 <title> 覆盖）
   bool _titleOverridden = false;
 
-  /// 当前生效的模块 / 扩展内容（在 initState 时读好，WebView 只构建一次）
+  /// 当前生效的模块内容（在 initState 时读好，WebView 只构建一次）
   List<BundlePayload> _payloads = const <BundlePayload>[];
   Map<String, BundleBridgeMethod> _moduleMethods =
       <String, BundleBridgeMethod>{};
@@ -155,7 +155,7 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
     _loadBundles();
   }
 
-  /// 读取已启用的模块 / 扩展。
+  /// 读取已启用的模块。
   ///
   /// 放在 initState 而不是 build 里：WebView widget 只构建一次，
   /// 注入脚本必须在那一次构建时就齐备，所以必须提前拿到内容。
@@ -164,17 +164,14 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
       final BundleRepository repo = BundleRepository.instance;
       final Set<String> disabled = await repo.disabledIds();
       final List<BundleManifest> all = <BundleManifest>[];
-      // 只读会注入页面的两类；插件（plugin）是宿主能力，不参与注入 ——
+      // 只有模块会注入页面；插件（plugin）是宿主能力，不参与注入 ——
       // 把它也读进来只会多出一份空 payload。
-      for (final BundleType type in <BundleType>[
-        BundleType.extension,
-        BundleType.module,
-      ]) {
+      for (final BundleType type in <BundleType>[BundleType.module]) {
         all.addAll(await repo.scan(type));
       }
       // matches 为 "*" 的包对所有小程序生效；带具体模式的按当前入口地址过滤。
-      // 本地包这里是 file:// 地址 —— 扩展的 matches 模式通常写 http(s)，
-      // 所以本地包默认只吃 "*" 的扩展（这是合理的行为：本地包不该按域名匹配）。
+      // 本地包这里是 file:// 地址 —— 模块的 matches 模式通常写 http(s)，
+      // 所以本地包默认只吃 "*" 的模块（这是合理的行为：本地包不该按域名匹配）。
       final String? url = _session.fileUri;
       final List<BundleManifest> active = all
           .where((BundleManifest m) => !disabled.contains(m.id))
@@ -185,16 +182,16 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
       _moduleMethods = await repo.activeModuleMethods();
       lemonLog(
         'Miniapp',
-        '生效的模块/扩展：${_payloads.map((BundlePayload p) => p.label).join(", ")}',
+        '生效的模块：${_payloads.map((BundlePayload p) => p.label).join(", ")}',
       );
     } catch (e) {
       _bundleLoadFailed = true;
-      lemonLog('Miniapp', '读取模块/扩展失败：$e');
+      lemonLog('Miniapp', '读取模块失败：$e');
     }
     if (!mounted) return;
     // 读失败不该拦住小程序本体，但要让用户看得见（多半是包被手工改坏了）
     if (_bundleLoadFailed) {
-      AppTheme.showToast('部分模块/扩展未能加载', isError: true);
+      AppTheme.showToast('部分模块未能加载', isError: true);
     }
   }
 
@@ -265,9 +262,9 @@ class _MiniappSessionViewState extends State<MiniappSessionView> {
     );
   }
 
-  /// 注入顺序：[主题数据] → [MD3E 基础样式] → [JS SDK] → [模块/扩展] → [包清单]
+  /// 注入顺序：[主题数据] → [MD3E 基础样式] → [JS SDK] → [模块] → [包清单]
   ///
-  /// 扩展排在 SDK 之后，才能一上来就用 window.lemonlite.*；
+  /// 模块排在 SDK 之后，才能一上来就用 window.lemonlite.*；
   /// 清单单独最早注入，方便小程序在任何时候读 window.__LEMONLITE_BUNDLES__。
   ///
   /// MD3E 样式放在 SDK 之前：它只依赖 `--md-*` 变量（主题数据已经先注入），

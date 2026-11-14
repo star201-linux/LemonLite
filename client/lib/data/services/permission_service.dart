@@ -70,11 +70,26 @@ class MiniappUsage {
 /// 注册表里的一个小程序（兼容旧数据用；应用清单以应用管理为准）
 @immutable
 class KnownMiniapp {
-  const KnownMiniapp({required this.id, required this.name, this.lastOpenedAt});
+  const KnownMiniapp({
+    required this.id,
+    required this.name,
+    this.permissionIds = const <String>[],
+    this.lastOpenedAt,
+  });
 
   final String id;
   final String name;
+
+  /// 小程序自己在 metadata.json 里声明的权限 id（原始字符串）
+  final List<String> permissionIds;
+
   final DateTime? lastOpenedAt;
+
+  /// 能识别成受控权限的声明
+  List<MiniappPermission> get declaredPermissions => permissionIds
+      .map(MiniappPermission.byId)
+      .whereType<MiniappPermission>()
+      .toList(growable: false);
 
   /// 展示名：注册表里没记名字时退化成 id（总比空白强）
   String get displayName => name.trim().isEmpty ? id : name;
@@ -82,6 +97,7 @@ class KnownMiniapp {
   Map<String, dynamic> toJson() => <String, dynamic>{
     'id': id,
     'name': name,
+    if (permissionIds.isNotEmpty) 'permissions': permissionIds,
     if (lastOpenedAt != null) 'last': lastOpenedAt!.toIso8601String(),
   };
 
@@ -91,13 +107,24 @@ class KnownMiniapp {
     return KnownMiniapp(
       id: id,
       name: json['name']?.toString() ?? id,
+      permissionIds: (json['permissions'] is List)
+          ? (json['permissions'] as List)
+                .map((Object? v) => v?.toString().trim() ?? '')
+                .where((String v) => v.isNotEmpty)
+                .toList(growable: false)
+          : const <String>[],
       lastOpenedAt: DateTime.tryParse(json['last']?.toString() ?? ''),
     );
   }
 
-  KnownMiniapp copyWith({String? name, DateTime? lastOpenedAt}) => KnownMiniapp(
+  KnownMiniapp copyWith({
+    String? name,
+    List<String>? permissionIds,
+    DateTime? lastOpenedAt,
+  }) => KnownMiniapp(
     id: id,
     name: name ?? this.name,
+    permissionIds: permissionIds ?? this.permissionIds,
     lastOpenedAt: lastOpenedAt ?? this.lastOpenedAt,
   );
 }
@@ -156,23 +183,63 @@ class PermissionScanReport {
     return result;
   }
 
+  /// 被任意小程序声明过或使用过的权限（全局视图只列这些）
+  Set<MiniappPermission> get touchedPermissions {
+    final Set<MiniappPermission> result = <MiniappPermission>{
+      ...usedPermissions,
+    };
+    for (final KnownMiniapp app in miniapps) {
+      result.addAll(app.declaredPermissions);
+    }
+    return result;
+  }
+
   MiniappUsage usageOf(String appId, MiniappPermission permission) =>
       usage[appId]?[permission] ?? MiniappUsage.empty;
 
   PermissionDecision decisionOf(String appId, MiniappPermission permission) =>
       decisions[appId]?[permission] ?? permission.defaultDecision;
 
-  /// 某个小程序被用户拒绝的能力
-  List<MiniappPermission> deniedOf(String appId) => MiniappPermission.values
-      .where(
-        (MiniappPermission p) =>
-            decisionOf(appId, p) == PermissionDecision.denied,
-      )
+  /// 这个小程序**该被展示**的权限：声明过的 ∪ 实际申请过的。
+  ///
+  /// 为什么不是全部九项：Android 的权限页只列 AndroidManifest 里声明过的，
+  /// 用户一屏就能看完，也知道「它要什么」。把宿主支持的权限全摊开，
+  /// 等于让用户自己从九项里找那两项 —— 而且会让「没申请」看起来像
+  /// 「申请了但被拒绝」。
+  ///
+  /// 反过来，声明没写但运行时真的调用了（作者漏写 / 老包）也必须出现，
+  /// 否则用户没法给这个实际发生过的请求做决定。
+  List<MiniappPermission> relevantOf(String appId) {
+    final Set<MiniappPermission> set = <MiniappPermission>{};
+    final KnownMiniapp? app = appById(appId);
+    if (app != null) set.addAll(app.declaredPermissions);
+    for (final MiniappPermission p in MiniappPermission.values) {
+      if (usageOf(appId, p).used) set.add(p);
+    }
+    return MiniappPermission.values
+        .where(set.contains)
+        .toList(growable: false);
+  }
+
+  /// 声明过、但还没真正调用过的权限（UI 用来说明「已声明，尚未使用」）
+  Set<MiniappPermission> declaredOnlyOf(String appId) {
+    final KnownMiniapp? app = appById(appId);
+    if (app == null) return <MiniappPermission>{};
+    return app.declaredPermissions
+        .where((MiniappPermission p) => !usageOf(appId, p).used)
+        .toSet();
+  }
+
+  /// 某个小程序被用户拒绝的能力（只算相关权限）
+  List<MiniappPermission> deniedOf(String appId) => relevantOf(
+    appId,
+  ).where((MiniappPermission p) => decisionOf(appId, p) == PermissionDecision.denied)
       .toList(growable: false);
 
-  /// 还没问过用户的能力（调用时会弹窗）
-  List<MiniappPermission> undecidedOf(String appId) => MiniappPermission.values
-      .where((MiniappPermission p) => decisionOf(appId, p) == PermissionDecision.ask)
+  /// 还没问过用户的能力（调用时会弹窗；只算相关权限）
+  List<MiniappPermission> undecidedOf(String appId) => relevantOf(
+    appId,
+  ).where((MiniappPermission p) => decisionOf(appId, p) == PermissionDecision.ask)
       .toList(growable: false);
 
   /// 全局视角的三个计数（控制器顶部概览用）
@@ -292,6 +359,21 @@ class PermissionService extends ChangeNotifier {
     PermissionDecision decision,
   ) async {
     for (final MiniappPermission p in MiniappPermission.values) {
+      await setDecision(appId, p, decision);
+    }
+  }
+
+  /// 只对给定的一组权限做决定。
+  ///
+  /// 权限页的「全部允许」用这个而不是 [setAllDecisions]：对一个小程序
+  /// 只声明了两项权限的应用，把剩下七项也设成「允许」等于凭空授权 ——
+  /// 它以后临时多要一项（声明漏写）就会静默通过。
+  Future<void> setDecisions(
+    String appId,
+    Iterable<MiniappPermission> permissions,
+    PermissionDecision decision,
+  ) async {
+    for (final MiniappPermission p in permissions) {
       await setDecision(appId, p, decision);
     }
   }
@@ -524,6 +606,7 @@ class PermissionService extends ChangeNotifier {
       merged[app.id] = KnownMiniapp(
         id: app.id,
         name: app.displayName,
+        permissionIds: app.permissionIds,
         lastOpenedAt: app.lastOpenedAt,
       );
     }

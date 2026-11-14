@@ -86,6 +86,13 @@ class _AppDetailPageState extends State<AppDetailPage> {
   /// 本地缓存的图标路径
   String? _localIcon;
 
+  /// 这个小程序声明申请的权限。
+  ///
+  /// 装了包就读包里的 metadata.json（它是应用自己的声明，比市场数据可信），
+  /// 没装才退回市场数据 —— 详情页在「打开之前」也要能说清要什么权限。
+  List<MiniappPermission> get _declaredPermissions =>
+      _installed?.metadata?.declaredPermissions ?? widget.app.declaredPermissions;
+
   /// 是否正在读磁盘（首帧前）
   bool _loadingState = true;
 
@@ -255,7 +262,7 @@ class _AppDetailPageState extends State<AppDetailPage> {
           const SizedBox(height: 20),
           Text('申请的权限', style: textTheme.titleMedium),
           const SizedBox(height: 8),
-          _PermissionSummary(app: app),
+          _PermissionSummary(app: app, declared: _declaredPermissions),
 
           // ---------------- 标签 ----------------
           if (app.tags.isNotEmpty) ...<Widget>[
@@ -491,7 +498,7 @@ class _AppDetailPageState extends State<AppDetailPage> {
     await PermissionPromptService.instance.requestDeclared(
       appId: app.id,
       appName: app.name,
-      declared: app.declaredPermissions,
+      declared: _declaredPermissions,
     );
     if (!mounted) return;
 
@@ -585,7 +592,7 @@ class _AppDetailPageState extends State<AppDetailPage> {
         appId: app.id,
         title: app.name,
         iconUrl: app.icon,
-        declaredPermissions: app.declaredPermissions,
+        declaredPermissions: _declaredPermissions,
         // 已经装好的本地包：会话直接用 file:// 打开
         installedPackage: pkg,
       );
@@ -788,15 +795,17 @@ class _RegisteredAppDetailPageState extends State<_RegisteredAppDetailPage> {
 ///   * 声明了已退役的旧权限 → 说明它现在不需要授权（老数据里很常见，不是错误）
 ///   * id 真正写错了 → 明确指出，方便市场数据维护者发现
 class _PermissionSummary extends StatelessWidget {
-  const _PermissionSummary({required this.app});
+  const _PermissionSummary({required this.app, required this.declared});
 
   final AppItem app;
+
+  /// 已安装时以包里的 metadata.json 为准，否则用市场数据里的声明
+  final List<MiniappPermission> declared;
 
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme scheme = theme.colorScheme;
-    final List<MiniappPermission> declared = app.declaredPermissions;
     final List<String> retired = app.retiredPermissionIds;
     final List<String> unknown = app.unknownPermissionIds;
 

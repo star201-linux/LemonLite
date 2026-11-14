@@ -72,10 +72,15 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false"/>
     <uses-feature android:name="android.hardware.nfc" android:required="false"/>
 
+    <!-- allowBackup=false：token、账号资料、小程序沙箱都在应用私有目录里，
+         adb backup / 云备份会把它们整个拷走。小程序是「装好的代码」，
+         更不该跟着备份到另一台设备上。 -->
     <application
         android:label="轻柠"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:fullBackupContent="false">
         <activity
             android:name=".MainActivity"
             android:exported="true"

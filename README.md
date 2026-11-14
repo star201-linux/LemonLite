@@ -1,108 +1,120 @@
 # 轻柠 LemonLite
 
-Flutter + Android 的小程序宿主框架。跑小程序的方式是**下载 zip 包、
-解压、用本地 `file://` 打开**，而不是加载远程网页 —— 这样能校验
-SHA-256、能离线用、页面也不会随时变。
+Flutter + Android 的小程序宿主。小程序以 **zip 包**分发：下载 → 校验 SHA-256 → 解压 → 用本地 `file://` 打开。离线可用，版本可查，页面不会随时变。
 
 ```
-main/
-├── repo/                    ← 本仓库（git 根在这里）
-│   ├── client/              Flutter 客户端（Android）
-│   ├── server-node/         Node.js 服务端（纯 API）
-│   ├── docs/                开发技术文档 + 邮件通道配置
-│   ├── scripts/             本地出包脚本
-│   ├── dist/                构建产物 APK（不入库）
-│   └── build.md             构建说明（从这里开始）
-└── 证书信息.txt              签名证书的全部信息（不入库，在仓库外）
+repo/
+├── client/                Flutter 客户端（Android）
+├── server-node/           Node.js 服务端（纯 API + 管理面板）
+├── docs/                  小程序开发文档、邮件通道配置
+├── scripts/               本地出包脚本
+├── dist/                  构建产物 APK（不入库）
+└── build.md               构建、签名、部署
 ```
 
-## 功能一览
+## 功能
 
 | 能力 | 状态 |
 | --- | --- |
 | 应用市场（分页 / 分类 / 搜索 / 标签） | ✅ |
-| 小程序 zip 包下载、SHA-256 校验、解压、`file://` 运行 | ✅ |
-| **小程序更新检查**（启动时查全部 + 每次打开前查单个；应用管理小红点、详情页「更新 / 打开」双按钮） | ✅ |
-| **应用管理**（图标本地缓存、点进详情页、扳手进权限/数据、移除） | ✅ |
-| JSBridge（Storage / 网络 / 权限 / 原生能力） | ✅ |
-| **蓝牙**（BLE + 经典扫描、连接、GATT 读写、notify 订阅、RSSI/MTU、配对、原生事件）与 **NFC**（读卡 / 写 Text），调用前先弹权限确认 | ✅ |
-| **可替换的蓝牙/NFC 平台后端**（`BluetoothBackend` / `NfcBackend`，未来 iOS/桌面接同一契约） | ✅ |
-| **MD3E 样式拦截**（WebView 文档拦截 + DOM 拦截：小程序只写原生 HTML 也自动变成 MD3，跟随宿主主题；参考 m3.material.io） | ✅ |
-| **主页 MD3E 改版**（大标题 AppBar、Expressive 开场卡、药丸筛选、28dp 圆角卡片） | ✅ |
-| **下载管理**（网页下载交给系统下载器，存到 `Download/`，进度/打开/删除/重试） | ✅ |
-| **插件体系**（给宿主加能力；多平台声明，可导入 ZIP / 停用 / 卸载） | ✅ |
-| WebAssembly（由**插件**提供，不再内嵌进宿主） | ✅ |
+| 小程序 zip：下载、SHA-256 校验、解压、`file://` 运行 | ✅ |
+| **小程序包 `metadata.json`**（名称、版本、入口、声明权限，类似 AndroidManifest） | ✅ |
+| **更新检查**（启动查全部 + 打开前查单个；应用管理小红点、详情页「更新 / 打开」） | ✅ |
+| **应用管理**（本地图标缓存、详情页、扳手进权限 / 数据、移除） | ✅ |
+| **权限按声明展示**（只列 `metadata.json` 声明的 + 运行时真请求过的） | ✅ |
+| JSBridge：Storage / 网络 / 文件 / 下载 / 设备状态 / 蓝牙 / NFC | ✅ |
+| **蓝牙**（BLE + 经典扫描、连接、GATT 读写、notify、RSSI/MTU）与 **NFC**（读卡 / 写 Text） | ✅ |
+| **MD3E 样式拦截**（WebView 文档拦截 + DOM 拦截，只写原生 HTML 也自动变成 MD3） | ✅ |
+| **小程序独立窗口**（在系统最近任务里是一张独立卡片，宿主那张保持「轻柠」） | ✅ |
+| 下载管理（交给系统下载器，存 `Download/`） | ✅ |
+| **插件体系**（给宿主加能力，多平台声明，ZIP 导入 / 停用 / 卸载） | ✅ |
 | 后台运行（页面保活，后台期间 JS 定时器挂起） | ✅ |
-| **小程序独立窗口**（打开一个小程序 = 系统最近任务里多一张卡，显示小程序图标与名字；宿主那张卡保持「轻柠」不变，两张卡并行切换，同一个小程序只留一张卡） | ✅ |
-| 账号：注册 / 登录 / 改资料 / 改密码 / 多设备会话管理 | ✅ |
-| **服务端管理面板**（`/admin`：首次建管理员账号 / 应用上架与传包 / 多分类与标签 / 用户封禁 / 管理员管理 / 邮件通道） | ✅ |
-| **注册邮箱验证码**（服务端可切换自建 SMTP / 第三方通道） | ✅ |
-| **登录二次验证**（服务端开关，客户端自动跟随） | ✅ |
-| token 持久登录（默认永不过期，可随时撤销） | ✅ |
+| 账号：注册 / 登录 / 改资料 / 改密码 / 多设备会话 | ✅ |
+| 服务端管理面板（`/admin`：上架、传包、分类标签、用户、邮件通道） | ✅ |
+| 注册邮箱验证码 / 登录二次验证 | ✅ |
 | 动态取色（Material You）+ 深色模式 | ✅ |
-| 权限：摄像头 / 麦克风 / 定位 / 剪贴板 / 通知 / **蓝牙 / NFC** / 手机存储（小程序自己的目录免授权） | ✅ |
-| 页面转场、列表错峰入场、按压反馈、Tab 切换动效 | ✅ |
+| 量产加固（安全响应头、限流、请求超时、全局错误上报） | ✅ |
+
+## 插件与模块
+
+两者都叫 bundle、都是 zip + `lemonlite.json`，但**改的东西不一样**：
+
+| | 模块（module） | 插件（plugin） |
+| --- | --- | --- |
+| 作用对象 | **页面** | **宿主** |
+| 做什么 | 往匹配的小程序注入 JS / CSS | 给宿主增加一项能力，所有页面可用 |
+| 声明方式 | `matches` + `js` / `css` + `bridge` | `platforms` + `capabilities` |
+| 能否新增 API | 能，但是**声明式**的（`bridge` 组合宿主已有能力） | 能，能力由宿主版本实现 |
+| 多平台 | 不区分 | 必须声明，宿主只在匹配平台启用 |
+| 入口 | 开发者选项 → 模块 | 设置 → 插件 |
+
+- **模块**适合：给某类页面加样式、改标题、包一层调试工具、把几个已有 API 组合成业务快捷方式。
+- **插件**适合：新硬件 / 新平台能力，需要跟随宿主实现、单独升级或按平台裁剪。
+
+> 插件当前**不内置任何能力实现**：`capabilities` 只是声明，`lemonlite.plugins.has()` 会如实回答。
+> 不要把它当成「装上就能用」的扩展点 —— 真正的实现要随宿主版本落地。
+
+包格式见 [`client/docs/bundles/README.md`](client/docs/bundles/README.md)。
 
 ## 快速开始
 
-**只想装 App**：见仓库根目录 `dist/` 里的 APK（构建产物，不入库）。
+**只要装 App**：`dist/` 里的 APK（构建产物，不入库）。
 
-**要出测试包**：本机没有 Flutter SDK（或不想装）时用 GitHub Actions ——
-推送 `client/` 的改动会自动跑，也可以手动触发：
-
-```
-Actions → build-apk → Run workflow → 下载 Artifacts 里的 lemonlite-apk-<run>
-```
-
-有 Flutter 的机器上直接：
+**要出包**：没有 Flutter 环境就用 GitHub Actions（推 `client/` 自动跑，也可手动触发）；
+有环境就直接：
 
 ```bash
 ./scripts/build-apk.sh            # release，arm64，产物进 dist/
-./scripts/build-apk.sh debug      # debug 包
+./scripts/build-apk.sh debug      # debug
 ```
 
-> 没配 `client/android/key.properties` 时构建会回落到 debug 签名，
-> 装到已有正式签名的手机上需要先卸载旧版（签名不同，不能覆盖安装）。
+> 没配 `client/android/key.properties` 时会回落到 debug 签名；换签名安装需先卸载旧版。
 
 **要改客户端**：
 
 ```bash
-cd client
-flutter pub get
-flutter build apk --release
+cd client && flutter pub get && flutter build apk --release
 ```
 
-**要部署服务端**（Node.js）：
+**要部署服务端**：
 
 ```bash
 cd server-node
-cp .env.example .env     # 编辑 DB_* 与 MAIL_*（注册要发验证码，必配）
+cp .env.example .env     # DB_* 与 MAIL_*（注册发验证码，必配）
 npm install
-npm run init -- --seed   # 建库建表 + 基础分类/标签（默认没有任何小程序）
-npm start                # 启动（默认 3000）
+npm run init -- --seed   # 建库建表（默认没有任何小程序）
+npm start
 ```
 
-默认市场是**空的** —— 小程序由管理员在 `/admin` 面板里新建并上传 zip 后才出现。
-注册要邮箱验证码，**邮件通道不配就注册不了**。五种通道（自建 SMTP /
-QQ 邮箱 / Resend / SendGrid / 阿里云 DirectMail）都在
-[`docs/邮件通道配置.md`](docs/邮件通道配置.md) 里写清了步骤；
-只想先跑通流程可以把 `MAIL_DRIVER=console` 并开 `MAIL_DEV_ECHO_CODE=true`，
-验证码会直接打到服务端日志、并自动填进客户端输入框。
+市场默认是空的，管理员在 `/admin` 新建应用并上传 zip 后才会有内容。
+邮件通道不配就注册不了；想先跑通流程可把 `MAIL_DRIVER=console` 并开
+`MAIL_DEV_ECHO_CODE=true`，验证码会打到日志并自动填进客户端。
+
+## 开发小程序
+
+从 [`docs/开发文档.md`](docs/开发文档.md) 开始：包结构、`metadata.json`、
+权限声明、JSBridge、MD3E 样式接管、调试与上架。
 
 ## 文档
 
 | 文档 | 内容 |
 | --- | --- |
+| [`docs/开发文档.md`](docs/开发文档.md) | **写小程序看这个**：包结构、metadata、API、样式、上架 |
+| [`client/docs/bundles/README.md`](client/docs/bundles/README.md) | 模块 / 插件包格式 |
 | [`build.md`](build.md) | 构建、签名、部署、常见问题 |
-| [`docs/开发技术文档.md`](docs/开发技术文档.md) | 架构、设计取舍、踩坑记录 |
-| [`docs/邮件通道配置.md`](docs/邮件通道配置.md) | 五种邮件通道的配置步骤与排错 |
-| `../证书信息.txt`（仓库**外**的本地文件） | 签名证书的全部信息（含口令），只在本机保管 |
-| [`server-node/README.md`](server-node/README.md) | Node.js 服务端 |
+| [`docs/邮件通道配置.md`](docs/邮件通道配置.md) | 五种邮件通道的配置与排错 |
+| [`server-node/README.md`](server-node/README.md) | 服务端接口与运维 |
+
+## 开发者模式
+
+设置页最底部连点版本号 **8 次**（间隔不超过 2 秒）解锁。解锁后才会出现
+「开发者选项」：市场服务器地址、本地包调试、模块管理、运行日志。
 
 ## 测试
 
 ```bash
-cd server-node && npm test     # 邮件 MIME / SMTP 对话 / 验证码哈希，无需数据库
+cd client && flutter test          # 客户端
+cd server-node && npm test         # 邮件 MIME / SMTP / 验证码（无需数据库）
 ```
 
 ## 技术栈
@@ -114,7 +126,7 @@ cd server-node && npm test     # 邮件 MIME / SMTP 对话 / 验证码哈希，�
 | 服务端 | Node.js 20+，MySQL 8.0+ |
 | 客户端 HTTP | dio 5.7 |
 | 本地存储 | shared_preferences 2.3 |
-| 邮件 | 自建 SMTP（自带极简客户端，零依赖）/ Resend / SendGrid / 阿里云 |
+| 邮件 | 自建 SMTP（零依赖）/ Resend / SendGrid / 阿里云 |
 
 ## 许可
 

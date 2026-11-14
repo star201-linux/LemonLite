@@ -7,7 +7,7 @@ main/
 ├── repo/                    ← 本仓库
 │   ├── client/              Flutter 客户端（Android）
 │   ├── server-node/         Node.js 服务端（纯 API）
-│   ├── docs/                开发技术文档
+│   ├── docs/                小程序开发文档 + 邮件通道配置
 │   └── build.md             本文件
 └── 证书信息.txt              签名证书的全部信息（不入库，在仓库外）
 ```

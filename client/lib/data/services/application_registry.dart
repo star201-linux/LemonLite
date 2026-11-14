@@ -34,6 +34,7 @@ class RegisteredApp {
     this.icon,
     this.url,
     this.category,
+    this.permissionIds = const <String>[],
     this.firstSeenAt,
     this.lastOpenedAt,
   });
@@ -50,6 +51,12 @@ class RegisteredApp {
   /// 市场里的分类 id
   final String? category;
 
+  /// 小程序在 metadata.json 里声明的权限 id（原始字符串）。
+  ///
+  /// 存原始 id 而不是枚举：旧包可能声明了当前版本不认识的权限，
+  /// 直接丢掉会让「这个应用到底要过什么」永远查不出来。
+  final List<String> permissionIds;
+
   final DateTime? firstSeenAt;
   final DateTime? lastOpenedAt;
 
@@ -62,6 +69,7 @@ class RegisteredApp {
     if (icon != null) 'icon': icon,
     if (url != null) 'url': url,
     if (category != null) 'category': category,
+    if (permissionIds.isNotEmpty) 'permissions': permissionIds,
     if (firstSeenAt != null) 'first': firstSeenAt!.toIso8601String(),
     if (lastOpenedAt != null) 'last': lastOpenedAt!.toIso8601String(),
   };
@@ -75,6 +83,7 @@ class RegisteredApp {
       icon: _cleanOrNull(json['icon']),
       url: _cleanOrNull(json['url']),
       category: _cleanOrNull(json['category']),
+      permissionIds: _cleanList(json['permissions']),
       firstSeenAt: DateTime.tryParse(json['first']?.toString() ?? ''),
       lastOpenedAt: DateTime.tryParse(json['last']?.toString() ?? ''),
     );
@@ -90,6 +99,7 @@ class RegisteredApp {
     String? icon,
     String? url,
     String? category,
+    List<String>? permissionIds,
     DateTime? firstSeenAt,
     DateTime? lastOpenedAt,
   }) => RegisteredApp(
@@ -98,6 +108,7 @@ class RegisteredApp {
     icon: icon ?? this.icon,
     url: url ?? this.url,
     category: category ?? this.category,
+    permissionIds: permissionIds ?? this.permissionIds,
     firstSeenAt: firstSeenAt ?? this.firstSeenAt,
     lastOpenedAt: lastOpenedAt ?? this.lastOpenedAt,
   );
@@ -171,6 +182,7 @@ class ApplicationRegistry extends ChangeNotifier {
     String? icon,
     String? url,
     String? category,
+    List<String>? permissions,
     bool opened = false,
   }) async {
     final String id = appId.trim();
@@ -184,9 +196,13 @@ class ApplicationRegistry extends ChangeNotifier {
       final RegisteredApp existing = list[index];
       list[index] = existing.copyWith(
         name: name.trim().isEmpty ? existing.name : name.trim(),
-        icon: _clean(icon),
-        url: _clean(url),
-        category: _clean(category),
+        // 传 null = 这次没带图标信息，保留原值（安装完成时只补权限就是这种）
+        icon: icon == null ? null : _clean(icon),
+        url: url == null ? null : _clean(url),
+        category: category == null ? null : _clean(category),
+        permissionIds: permissions == null
+            ? existing.permissionIds
+            : _cleanList(permissions),
         firstSeenAt: existing.firstSeenAt ?? now,
         lastOpenedAt: opened ? now : existing.lastOpenedAt,
       );
@@ -198,6 +214,7 @@ class ApplicationRegistry extends ChangeNotifier {
           icon: _clean(icon),
           url: _clean(url),
           category: _clean(category),
+          permissionIds: _cleanList(permissions),
           firstSeenAt: now,
           lastOpenedAt: opened ? now : null,
         ),
@@ -218,7 +235,15 @@ class ApplicationRegistry extends ChangeNotifier {
     String? icon,
     String? url,
     String? category,
-  }) => record(appId: appId, name: name, icon: icon, url: url, category: category);
+    List<String>? permissions,
+  }) => record(
+    appId: appId,
+    name: name,
+    icon: icon,
+    url: url,
+    category: category,
+    permissions: permissions,
+  );
 
   /// 把目录扫描发现的、清单里还没有的 appId 补进来。
   ///
@@ -289,9 +314,13 @@ class ApplicationRegistry extends ChangeNotifier {
     // 当前版本
     'camera',
     'microphone',
-    'sdcard',
+    'geolocationFine',
+    'geolocationCoarse',
+    'clipboard',
+    'notifications',
     'bluetooth',
     'nfc',
+    'sdcard',
     // 历史 id（sdcard 的旧名字）：升级前写下的决定要能一起清掉
     'allFiles',
     // 历史版本（已不再是权限，但记录可能还在盘上）
@@ -382,4 +411,17 @@ class ApplicationRegistry extends ChangeNotifier {
     final String text = value?.trim() ?? '';
     return text.isEmpty ? null : text;
   }
+}
+
+/// 读权限声明：去重、去空、保序。
+///
+/// 放在顶层而不是某个类里：RegisteredApp 的反序列化与 ApplicationRegistry
+/// 的写入都要用，放两份等于以后改一处忘一处。
+List<String> _cleanList(Object? value) {
+  if (value is! List) return const <String>[];
+  return value
+      .map((Object? item) => item?.toString().trim() ?? '')
+      .where((String item) => item.isNotEmpty)
+      .toSet()
+      .toList(growable: false);
 }

@@ -59,14 +59,12 @@ class LemonJsSdk {
   /// 注入到页面的 SDK 源码。
   /// 用 raw string（r'''）以免 Dart 对 $ 做插值 —— JS 里的模板字符串才能正常书写。
   static const String source = r'''
-/* LemonLite JS SDK (0.1.5)
+/* LemonLite JS SDK (0.2.0)
  * 挂在 window.lemonlite 上；所有 API 均为异步，统一错误结构 { code, message }。
  *
  * 0.2 新增：音量 / 亮度、页面方向与熄屏标记、小程序专属文件目录（共享/私有
  *           两个作用域）、后台运行。
- * 0.1.5 新增：下载（lemonlite.download.*，交给系统下载器）；
- *           WebAssembly 改为**插件**提供（仍然挂在 lemonlite.wasm.* 上，
- *           但实现已经不属于宿主核心 —— 没装插件时调用会得到明确错误）。
+ * 0.1.5 新增：下载（lemonlite.download.*，交给系统下载器）。
  *
  * 大多数桥接能力不需要授权：它们要么只作用于小程序自己的命名空间与
  * 沙箱目录，要么是 Android 本来就不禁止应用自行调整的设备状态。
@@ -85,7 +83,7 @@ class LemonJsSdk {
   if (window.lemonlite && window.lemonlite.__installed) { return; }
 
   var HANDLER = 'lemonlite';
-  var SDK_VERSION = '0.1.5';
+  var SDK_VERSION = '0.2.0';
   var BRIDGE_TIMEOUT = 5000;
 
   /* ============================== 桥接调用 ============================== */
@@ -162,11 +160,11 @@ class LemonJsSdk {
     return null;
   }
 
-  /* =========================== 插件提供的 WASM =========================== */
+  /* ============================ 二进制编码 ============================ */
 
   /**
    * base64 → Uint8Array。
-   * 桥接只能传字符串（返回值要能 JSON 序列化），所以 wasm 二进制以 base64 过桥，
+   * 桥接只能传字符串（返回值要能 JSON 序列化），所以二进制以 base64 过桥，
    * 在这里还原。atob 在 Android WebView 里一直可用。
    */
   function base64ToBytes(base64) {
@@ -190,28 +188,6 @@ class LemonJsSdk {
       binary += String.fromCharCode(bytes[i] & 0xFF);
     }
     return btoa(binary);
-  }
-
-  /** 已编译模块缓存：同一个模块只编译一次 */
-  var wasmModuleCache = {};
-
-  /** 取模块的原始信息（含 base64 与导出清单） */
-  function wasmInfo(name) {
-    return invoke('wasmRead', { name: name });
-  }
-
-  /** 编译并缓存模块。注意 WebAssembly.compile 的结果可以反复 instantiate */
-  function wasmModule(name) {
-    if (wasmModuleCache[name]) { return Promise.resolve(wasmModuleCache[name]); }
-    if (typeof WebAssembly === 'undefined') {
-      return Promise.reject({ code: 10003, message: '当前 WebView 不支持 WebAssembly' });
-    }
-    return wasmInfo(name).then(function (info) {
-      return WebAssembly.compile(base64ToBytes(info.base64)).then(function (mod) {
-        wasmModuleCache[name] = mod;
-        return mod;
-      });
-    });
   }
 
   /* ============================== 主题 ============================== */
@@ -536,7 +512,7 @@ class LemonJsSdk {
      * 只支持 BLE（GATT）：扫描、连接、按服务/特征值读写。
      * 不支持经典蓝牙 SPP / A2DP —— 那类能力没有适合网页的通用读写语义。
      * 本版也没有「订阅通知」：JSBridge 只有请求/响应，没有服务端推送；
-     * 需要持续数据的特征值请用 read() 轮询（或由模块/扩展自行封装）。
+     * 需要持续数据的特征值请用 read() 轮询（或由模块自行封装）。
      */
     bluetooth: {
       /**
@@ -1067,101 +1043,32 @@ class LemonJsSdk {
     /**
      * 插件总览（当前设备）。
      *
-     * 插件和「扩展 / 模块」是两种东西：扩展/模块往页面注入 JS/CSS，
-     * 插件则是给**宿主**增加能力（例如 WebAssembly 运行时）。插件会声明
-     * 自己支持哪些平台，宿主只在自己的平台上启用它。
+     * 插件和「模块」是两种东西：模块往页面注入 JS/CSS，
+     * 插件则是给**宿主**增加能力。插件会声明自己支持哪些平台，
+     * 宿主只在自己的平台上启用它。
      *
-     * @returns {Promise<{platform:string, count:number, plugins:Array,
-     *                    wasm:{available:boolean, plugin?:string}}>}
+     * 注意：当前版本宿主还没有内置任何插件能力实现，这一栏主要用于
+     * 展示与能力探测，别把业务逻辑押在上面。
+     *
+     * @returns {Promise<{platform:string, count:number, plugins:Array}>}
      * 示例：const s = await lemonlite.plugins.list();
-     *       if (!s.wasm.available) console.warn('请先安装 WebAssembly 插件');
      */
     plugins: {
       /** 全部插件（含停用 / 平台不支持的，带 active 标记） */
       list: function () { return invoke('pluginsList'); },
 
       /**
-       * 这台设备上是否有一项能力可用。
-       * @param {string} capability 能力名，目前只有 'wasm'
+       * 这台设备上是否有一项能力可用（启用中 + 平台匹配 + 声明了它）。
+       * @param {string} capability 能力名，例如 'device.nfc'
        * @returns {Promise<boolean>}
        */
       has: function (capability) {
-        var name = capability === undefined ? 'wasm' : String(capability);
+        var name = String(capability || '');
+        if (!name) { return Promise.resolve(false); }
         return invoke('pluginsList').then(function (summary) {
-          if (name === 'wasm') { return !!(summary.wasm && summary.wasm.available); }
           return (summary.plugins || []).some(function (p) {
             return p.active && (p.capabilities || []).indexOf(name) >= 0;
           });
-        });
-      }
-    },
-
-    /* ------------------------------ WASM ------------------------------ */
-
-    /**
-     * 由**插件**提供的 WebAssembly 模块（设置 → 插件 → WebAssembly 运行时）。
-     *
-     * 从 0.1.5 起 wasm 不再打进宿主：模块在插件包里，插件的 manifest 声明
-     * `capabilities: ["wasm"]` 与模块文件。没安装/没启用插件时，
-     * 这里会返回明确错误（10003），`list()` 则返回空模块列表。
-     *
-     * 离线可用：模块字节来自插件包，不依赖网络，也不受 CSP 影响。
-     * 典型用法：
-     *   const { instance } = await lemonlite.wasm.instantiate('lemonlite');
-     *   console.log(instance.exports.add(2, 3));   // 5
-     *
-     * 也可以自己拿字节做别的事（例如传给别的 loader）：
-     *   const bytes = await lemonlite.wasm.bytes('lemonlite');
-     */
-    wasm: {
-      /** 列出可用模块：[{name, description, bytes, exports, hasMemory}] */
-      list: function () { return invoke('wasmList'); },
-
-      /** 模块详情（含 base64 原文），一般用不到，调试时有用 */
-      info: function (name) { return wasmInfo(name || ''); },
-
-      /** 模块字节（Uint8Array） */
-      bytes: function (name) {
-        return wasmInfo(name || '').then(function (info) {
-          return base64ToBytes(info.base64);
-        });
-      },
-
-      /** 编译好的 WebAssembly.Module（会缓存，重复调用不重新编译） */
-      module: function (name) { return wasmModule(name || ''); },
-
-      /**
-       * 实例化模块。
-       * @param {string} name 模块名
-       * @param {Object} [imports] 导入对象
-       * @returns {Promise<{name, instance, module, exports:string[]}>}
-       */
-      instantiate: function (name, imports) {
-        var key = name || '';
-        return wasmModule(key).then(function (mod) {
-          return WebAssembly.instantiate(mod, imports || {}).then(function (instance) {
-            return {
-              name: key,
-              module: mod,
-              instance: instance,
-              exports: Object.keys(instance.exports)
-            };
-          });
-        });
-      },
-
-      /**
-       * 便捷调用：实例化后直接调一个导出函数（同步返回结果）。
-       * 示例：const sum = await lemonlite.wasm.call('lemonlite', 'add', 2, 3);
-       */
-      call: function (name, fn) {
-        var args = Array.prototype.slice.call(arguments, 2);
-        return this.instantiate(name).then(function (result) {
-          var target = result.instance.exports[fn];
-          if (typeof target !== 'function') {
-            throw { code: 10001, message: 'wasm 模块 ' + name + ' 没有导出函数 ' + fn };
-          }
-          return target.apply(null, args);
         });
       }
     },

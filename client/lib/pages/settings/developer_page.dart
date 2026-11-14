@@ -372,7 +372,7 @@ class _DeveloperPageState extends State<DeveloperPage> {
           ]),
 
           // ---------------- 模块 ----------------
-          // 模块能声明新的 JSBridge API，仍属于开发者功能；普通页面扩展已移到设置首页。
+          // 模块能声明新的 JSBridge API，仍属于开发者功能。
           _section(context, '模块', <Widget>[
             ListTile(
               leading: const Icon(Icons.extension_outlined),

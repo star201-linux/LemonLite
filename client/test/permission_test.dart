@@ -11,12 +11,11 @@
 //   5. 文件沙箱的路径校验（越界一律拒绝）
 //   6. 桥接层**没有**权限闸门这件事本身（音量/亮度/文件不再弹窗）
 //   7. 权限改名（allFiles → sdcard）后的**旧数据兼容**：旧决定仍然生效
-//   8. WebAssembly 从"内置"改为"插件提供"之后：插件 manifest 与 wasm 载荷
+//   8. 插件 manifest：类型、平台、能力声明
 //
 // 约定：每个用例都从干净的 SharedPreferences 开始（setMockInitialValues 重置），
 // 这样用例之间不会通过持久化互相污染。
 
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -1131,21 +1130,14 @@ void main() {
   group('插件 manifest', () {
     Map<String, dynamic> pluginJson({
       List<String> platforms = const <String>['android', 'ios'],
-      List<String> capabilities = const <String>['wasm'],
-      List<Map<String, dynamic>> modules = const <Map<String, dynamic>>[
-        <String, dynamic>{
-          'name': 'lemonlite',
-          'file': 'modules/lemonlite.wasm',
-        },
-      ],
+      List<String> capabilities = const <String>['device.nfc'],
     }) => <String, dynamic>{
       'type': 'plugin',
-      'id': 'lemonlite.wasm',
-      'name': 'WebAssembly 运行时',
+      'id': 'com.example.nfc-helper',
+      'name': 'NFC 辅助',
       'version': '1.0.0',
       'platforms': platforms,
       'capabilities': capabilities,
-      'wasm': <String, dynamic>{'modules': modules},
     };
 
     test('type = plugin 被识别，且落到 plugins 目录', () {
@@ -1153,12 +1145,10 @@ void main() {
       expect(m.type, BundleType.plugin);
       expect(m.type.label, '插件');
       expect(m.type.directoryName, 'plugins');
-      expect(m.capabilities, <String>['wasm']);
-      expect(m.hasCapability('wasm'), isTrue);
+      expect(m.capabilities, <String>['device.nfc']);
+      expect(m.hasCapability('device.nfc'), isTrue);
       expect(m.hasCapability('camera'), isFalse);
       expect(m.platforms, <String>['android', 'ios']);
-      expect(m.wasmModules.single.name, 'lemonlite');
-      expect(m.wasmModules.single.file, 'modules/lemonlite.wasm');
     });
 
     test('平台匹配按当前平台判断，空列表 = 全平台', () {
@@ -1172,84 +1162,23 @@ void main() {
       expect(PluginService.currentPlatformId, 'android');
     });
 
-    test('插件必须声明能力', () {
+    test('能力声明可省略（当前宿主还没有内置能力实现）', () {
+      final BundleManifest m = BundleManifest.parse(
+        pluginJson(capabilities: const <String>[]),
+      );
+      expect(m.capabilities, isEmpty);
+    });
+
+    test('已移除的 extension 类型会被拒绝', () {
       expect(
-        () => BundleManifest.parse(pluginJson(capabilities: const <String>[])),
+        () => BundleManifest.parse(<String, dynamic>{
+          'type': 'extension',
+          'id': 'com.example.old',
+          'name': '旧扩展',
+          'version': '1.0.0',
+        }),
         throwsA(isA<BundleManifestException>()),
       );
-    });
-
-    test('声明了 wasm 能力却没有模块 → 拒绝', () {
-      expect(
-        () => BundleManifest.parse(
-          pluginJson(modules: const <Map<String, dynamic>>[]),
-        ),
-        throwsA(isA<BundleManifestException>()),
-      );
-    });
-
-    test('wasm 模块缺 name / file → 拒绝', () {
-      expect(
-        () => BundleManifest.parse(
-          pluginJson(
-            modules: <Map<String, dynamic>>[
-              <String, dynamic>{'name': 'x'},
-            ],
-          ),
-        ),
-        throwsA(isA<BundleManifestException>()),
-      );
-    });
-  });
-
-  group('随包附带的 wasm 插件载荷', () {
-    /// 插件包里的 wasm 路径（不再放在 assets/wasm 下 —— 它已经不是宿主的一部分了）
-    const String wasmPath =
-        'assets/plugins/lemonlite-wasm/modules/lemonlite.wasm';
-    const String manifestPath = 'assets/plugins/lemonlite-wasm/lemonlite.json';
-
-    test('插件包文件存在，且 pubspec 声明了它们', () {
-      expect(File(wasmPath).existsSync(), isTrue);
-      expect(File(manifestPath).existsSync(), isTrue);
-      final String pubspec = File('pubspec.yaml').readAsStringSync();
-      expect(pubspec.contains(wasmPath), isTrue);
-      expect(pubspec.contains(manifestPath), isTrue);
-      // 宿主不再内置 wasm：旧路径必须已经删掉
-      expect(File('assets/wasm/lemonlite.wasm').existsSync(), isFalse);
-    });
-
-    test('插件 manifest 声明的能力与模块和包内文件一致', () {
-      final Object? decoded = jsonDecode(File(manifestPath).readAsStringSync());
-      final BundleManifest manifest = BundleManifest.parse(
-        (decoded! as Map).map<String, dynamic>(
-          (Object? k, Object? v) => MapEntry<String, dynamic>(k.toString(), v),
-        ),
-      );
-      expect(manifest.type, BundleType.plugin);
-      expect(manifest.capabilities, contains('wasm'));
-      expect(manifest.wasmModules, isNotEmpty);
-      for (final PluginWasmModule module in manifest.wasmModules) {
-        final String path = 'assets/plugins/lemonlite-wasm/${module.file}';
-        expect(File(path).existsSync(), isTrue, reason: '$path 不存在');
-        expect(module.exports, contains('add'));
-        expect(module.exports.toSet().length, module.exports.length);
-      }
-    });
-
-    test('wasm 二进制头合法（\\0asm + 版本 1），导出符号名出现在二进制里', () {
-      final List<int> bytes = File(wasmPath).readAsBytesSync();
-      expect(bytes.length, greaterThan(8));
-      expect(bytes.sublist(0, 4), <int>[0x00, 0x61, 0x73, 0x6D]); // \0asm
-      expect(bytes[4], 1); // version = 1
-      expect(bytes[5], 0);
-      expect(bytes[6], 0);
-      expect(bytes[7], 0);
-
-      final String ascii = String.fromCharCodes(bytes);
-      for (final String symbol in <String>['add', 'fib', 'sum_to', 'clamp']) {
-        expect(ascii.contains(symbol), isTrue, reason: '二进制里找不到导出 $symbol');
-      }
-      expect(ascii.contains('memory'), isTrue);
     });
   });
 }

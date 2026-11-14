@@ -10,6 +10,7 @@ import { mkdir, readdir, rename, stat, unlink, writeFile } from 'node:fs/promise
 import { join, resolve, sep } from 'node:path';
 import { config } from '../config.js';
 import { ApiError } from './http.js';
+import { readMiniappMetadata } from './zip_meta.js';
 
 /** packages/ 根目录 */
 export function packagesRoot() {
@@ -97,6 +98,35 @@ export async function storePackage({ appId, version, buffer }) {
   if (!isZipBuffer(buffer)) {
     throw ApiError.badRequest('bad_package', '这个文件不是有效的 zip');
   }
+
+  // 包里带了 metadata.json 就当场校验：id 必须是这个应用，入口必须存在。
+  // 不在这里拦，用户会在「点打开」的那一刻才发现装了个坏的。
+  // 老包没有 metadata.json 时放行（服务端信息兜底），但把结果带回去，
+  // 管理面板可以据此提示「建议补上」。
+  const meta = readMiniappMetadata(buffer);
+  if (meta.error && meta.entry) {
+    throw ApiError.badRequest('bad_metadata', `包里的 metadata.json 有问题：${meta.error}`);
+  }
+  if (meta.metadata) {
+    const metaId = String(meta.metadata.id || '').trim();
+    const metaName = String(meta.metadata.name || '').trim();
+    if (!metaId || !metaName) {
+      throw ApiError.badRequest('bad_metadata', 'metadata.json 缺少 id 或 name');
+    }
+    if (metaId !== appId) {
+      throw ApiError.badRequest(
+        'metadata_mismatch',
+        `metadata.json 的 id（${metaId}）与这个应用（${appId}）不一致`,
+      );
+    }
+    if (!meta.entryExists) {
+      throw ApiError.badRequest(
+        'missing_entry',
+        `包里没有入口文件 ${meta.entry || 'index.html'}`,
+      );
+    }
+  }
+
   const sha256 = createHash('sha256').update(buffer).digest('hex');
   const { dir, file } = packagePath(appId, version);
   await mkdir(dir, { recursive: true });
@@ -108,6 +138,11 @@ export async function storePackage({ appId, version, buffer }) {
     bytes: buffer.length,
     relUrl: `packages/${appId}/${version}.zip`,
     file,
+    metadata: meta.metadata,
+    // 包声明的入口（已带上外层目录前缀）。写库时以它为准：
+    // 否则客户端按 metadata 打开、市场数据却指向另一个文件。
+    metadataEntry: meta.metadata ? meta.entry : null,
+    hasMetadata: Boolean(meta.metadata),
   };
 }
 

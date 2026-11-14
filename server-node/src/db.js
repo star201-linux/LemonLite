@@ -68,3 +68,17 @@ export async function ping() {
     conn.release();
   }
 }
+
+/**
+ * 关闭连接池。
+ *
+ * 优雅退出时必须调：容器发 SIGTERM 后，若还有连接没归还，
+ * MySQL 会保留一段时间的 sleep 会话，滚动发布时很快把连接数吃满。
+ */
+export async function closePool() {
+  try {
+    await pool.end();
+  } catch (e) {
+    console.error('[db] 关闭连接池失败（忽略）', e?.message || e);
+  }
+}
