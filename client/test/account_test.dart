@@ -262,7 +262,6 @@ void main() {
       expect(r.cooldown, 45, reason: '冷却时间要跟服务端走，不能写死 60');
       expect(r.expiresIn, 300);
       expect(r.driver, 'smtp');
-      expect(r.debugCode, isNull);
     });
 
     test('缺字段时用默认值，不抛异常', () {
@@ -270,14 +269,15 @@ void main() {
       expect(r.cooldown, 60);
       expect(r.expiresIn, 600);
       expect(r.email, '');
-      expect(r.debugCode, isNull);
     });
 
-    test('开发模式带回的 debugCode 会被解析出来', () {
+    test('即使服务端多给了 debugCode 也不会被当成字段（接口不该带验证码）', () {
       final EmailCodeSent r = EmailCodeSent.fromJson(<String, dynamic>{
         'debugCode': '123456',
       });
-      expect(r.debugCode, '123456');
+      // 模型里根本没有这个字段：验证码只在服务端日志里，客户端拿不到也不该拿
+      expect(r.email, '');
+      expect(r.cooldown, 60);
     });
   });
 

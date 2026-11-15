@@ -251,7 +251,8 @@ dart analyze lib/
 3. 发件域名的 SPF / DKIM 有没有生效：`dig txt 你的域名`
 4. 服务商控制台的发送记录（Resend / SendGrid / 阿里云都有）
 5. 用 `MAIL_DRIVER=console MAIL_DEV_ECHO_CODE=true` 跑一次 ——
-   能在响应里拿到 `debugCode` 就说明**应用逻辑没问题，问题在邮件通道**
+   服务端日志里出现 `[mail][dev] 注册验证码 123456 → …` 就说明
+   **应用逻辑没问题，问题在邮件通道**（接口响应里不会带验证码）
 
 ### 服务端返回 `Connection refused`，但配置看起来是对的
 

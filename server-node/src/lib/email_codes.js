@@ -59,6 +59,27 @@ export function hashCode(email, purpose, code) {
     .digest('hex');
 }
 
+/**
+ * 开发环境把验证码打到**服务端日志**。
+ *
+ * 只在 MAIL_DEV_ECHO_CODE=true 时生效，且**不再通过接口返回** ——
+ * 早先的做法是把 code 放进响应的 debugCode 字段，客户端再填进输入框。
+ * 那有两个问题：
+ *   1. 接口响应会经过代理、日志、抓包工具，等于把验证码又泄露一遍；
+ *   2. 用户看到「验证码自己出现在输入框里」会以为被谁动过手。
+ * 现在只落一行日志：本机开发时 `npm run dev` 的窗口里就能看到。
+ *
+ * 生产环境必须关掉（否则服务端日志里会长期留存可用的验证码）。
+ */
+export function logDevCode({ code, email, purpose = 'register' }) {
+  if (!config.mail.devEchoCode) return;
+  const tag = purpose === 'login' ? '登录' : '注册';
+  console.log(
+    `\x1b[35m[mail][dev]\x1b[0m ${tag}验证码 \x1b[1m${code}\x1b[0m → ${email}` +
+      '（MAIL_DEV_ECHO_CODE=true，仅开发环境）',
+  );
+}
+
 /** 常量时间比较两个十六进制摘要 */
 function digestEquals(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
@@ -72,7 +93,8 @@ function digestEquals(a, b) {
  * 签发一个验证码并写入数据库。
  *
  * 返回 { code, expiresAt } —— 明文 code 只在这里出现一次，
- * 调用方负责把它送进邮件，**不要**写进日志或响应（除非开了 devEchoCode）。
+ * 调用方负责把它送进邮件；**不要**写进接口响应，日志也只能经
+ * [logDevCode]（受 MAIL_DEV_ECHO_CODE 控制）。
  *
  * 限流失败抛 ApiError（429），调用方直接往外抛即可。
  */

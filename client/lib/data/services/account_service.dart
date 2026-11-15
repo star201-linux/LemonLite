@@ -112,7 +112,6 @@ class EmailCodeSent {
     this.cooldown = 60,
     this.expiresIn = 600,
     this.driver = '',
-    this.debugCode,
   });
 
   final String email;
@@ -126,18 +125,11 @@ class EmailCodeSent {
   /// 服务端用的邮件通道（smtp / resend / ...），只用于排查问题
   final String driver;
 
-  /// 仅当服务端开了 MAIL_DEV_ECHO_CODE 才有值：直接把码填进输入框，
-  /// 省得开发时每次都要去翻日志
-  final String? debugCode;
-
   factory EmailCodeSent.fromJson(Map<String, dynamic> json) => EmailCodeSent(
     email: (json['email'] ?? '').toString(),
     cooldown: (json['cooldown'] as num?)?.toInt() ?? 60,
     expiresIn: (json['expiresIn'] as num?)?.toInt() ?? 600,
     driver: (json['driver'] ?? '').toString(),
-    debugCode: (json['debugCode'] ?? '').toString().isEmpty
-        ? null
-        : json['debugCode'].toString(),
   );
 }
 

@@ -125,7 +125,8 @@ export const config = {
     codeMaxPerIpHour: envInt('MAIL_CODE_MAX_PER_IP', 30),
     // 单个验证码允许输错几次（超过就作废，必须重新获取）
     codeMaxAttempts: envInt('MAIL_CODE_MAX_ATTEMPTS', 5),
-    // 开发期把验证码塞进接口响应，省得去翻日志。生产必须 false。
+    // 开发期把验证码单独打一行到服务端日志（**不进接口响应**）。
+    // 只在 MAIL_DRIVER=console 之外还想看码时才需要；生产必须 false。
     devEchoCode: env('MAIL_DEV_ECHO_CODE', 'false') === 'true',
     // 第三方 API 的超时（毫秒）
     httpTimeoutMs: envInt('MAIL_HTTP_TIMEOUT_MS', 10_000),

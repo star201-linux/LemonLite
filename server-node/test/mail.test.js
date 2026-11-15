@@ -14,7 +14,8 @@ import net from 'node:net';
 import test from 'node:test';
 
 import { buildMessage, sendSmtp } from '../src/lib/smtp.js';
-import { hashCode, generateCode } from '../src/lib/email_codes.js';
+import { hashCode, generateCode, logDevCode } from '../src/lib/email_codes.js';
+import { config } from '../src/config.js';
 import { verificationMail } from '../src/lib/mail_templates.js';
 
 /** 解码一封信里的 base64 正文（取最后一个空行之后的块） */
@@ -220,5 +221,32 @@ test('SMTP：密码错了要抛错，而不是当作发送成功', async () => {
     );
   } finally {
     await fake.close();
+  }
+});
+
+// ---------------------------------------------------------------- 开发回显
+
+test('验证码只在开发开关打开时写服务端日志，且从不进入接口响应', () => {
+  // 这里断言的是「唯一的出口是日志」这件事：
+  // 早先它走的是响应里的 debugCode，客户端再把码填进输入框，
+  // 于是用户会看到「验证码自己出现了」。现在没有那条路了。
+  const lines = [];
+  const originalLog = console.log;
+  const previous = config.mail.devEchoCode;
+  console.log = (...args) => lines.push(args.join(' '));
+  try {
+    config.mail.devEchoCode = false;
+    logDevCode({ code: '123456', email: 'dev@example.com' });
+    assert.equal(lines.length, 0, '开关关着时一个字符都不该打');
+
+    config.mail.devEchoCode = true;
+    logDevCode({ code: '123456', email: 'dev@example.com', purpose: 'login' });
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /123456/);
+    assert.match(lines[0], /dev@example\.com/);
+    assert.match(lines[0], /登录验证码/);
+  } finally {
+    console.log = originalLog;
+    config.mail.devEchoCode = previous;
   }
 });

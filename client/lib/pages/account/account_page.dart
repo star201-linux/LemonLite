@@ -682,13 +682,6 @@ class _LoginPageState extends State<LoginPage> {
   bool _obscure = true;
   String? _error;
 
-  /// 服务端开发回显的验证码（只有开了 MAIL_DEV_ECHO_CODE 才有）。
-  ///
-  /// **不再自动填进输入框**：用户看到「验证码自己出现了」会怀疑是不是
-  /// 被谁填了。这里只把它显示出来，点一下「填入」才写进输入框 ——
-  /// 省事的同时让这件事发生在用户眼皮底下。
-  String? _devCode;
-
   /// 这台服务器是否要求登录验证码。
   /// 初值 false 只是「还没拉到配置」时的保守值 —— 拉不到也不会挡住登录，
   /// 真正的判定在服务端（会回 `code_required`，那时再把输入框展开）。
@@ -824,7 +817,6 @@ class _LoginPageState extends State<LoginPage> {
                           password: _password.text,
                         ),
                         onSent: (EmailCodeSent sent) {
-                          setState(() => _devCode = sent.debugCode);
                           AppTheme.showToast('验证码已发送到 ${sent.email}');
                         },
                         onError: (AccountException e) =>
@@ -833,15 +825,6 @@ class _LoginPageState extends State<LoginPage> {
                     },
                   ),
                 ],
-              ),
-            ],
-
-            // 开发模式回显：只提示，不替用户填
-            if (_codeRequired && _devCode != null) ...<Widget>[
-              const SizedBox(height: 8),
-              _DevCodeHint(
-                code: _devCode!,
-                onFill: () => setState(() => _code.text = _devCode!),
               ),
             ],
 
@@ -911,9 +894,6 @@ class _RegisterPageState extends State<RegisterPage> {
   bool _obscure = true;
   bool _busy = false;
   String? _error;
-
-  /// 服务端开发回显的验证码，只显示不自动填（见登录页同名字段说明）
-  String? _devCode;
 
   /// 服务端是否要求注册验证码（默认 true，拉到 /api/auth/config 后以其为准）。
   /// 内网部署可能根本发不出邮件，这时服务端会把它关掉，客户端得跟着变。
@@ -1072,7 +1052,6 @@ class _RegisterPageState extends State<RegisterPage> {
                       email: _emailText,
                     ),
                     onSent: (EmailCodeSent sent) {
-                      setState(() => _devCode = sent.debugCode);
                       AppTheme.showToast('验证码已发送，请查收 ${sent.email}');
                     },
                     onError: (AccountException e) =>
@@ -1080,14 +1059,6 @@ class _RegisterPageState extends State<RegisterPage> {
                   ),
                 ],
               ),
-              // 开发模式回显：只提示，不替用户填
-              if (_codeRequired && _devCode != null) ...<Widget>[
-                const SizedBox(height: 8),
-                _DevCodeHint(
-                  code: _devCode!,
-                  onFill: () => setState(() => _code.text = _devCode!),
-                ),
-              ],
               // 服务端邮件没配好时，注册一定失败 —— 提前说，别让用户白等
               if (!_mailReady) ...<Widget>[
                 const SizedBox(height: 8),
@@ -1432,46 +1403,6 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-// ================================================================ 开发模式回显
-
-/// 服务端开了 `MAIL_DEV_ECHO_CODE` 时把验证码显示出来。
-///
-/// 为什么不做成「自动填进输入框」：那样用户会以为自己没填过、怀疑验证码
-/// 被别人拿到了。这里摆明「这是服务端回显，只用于调试」，填不填由用户决定。
-class _DevCodeHint extends StatelessWidget {
-  const _DevCodeHint({required this.code, required this.onFill});
-
-  final String code;
-  final VoidCallback onFill;
-
-  @override
-  Widget build(BuildContext context) {
-    final ColorScheme scheme = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 6, 6, 6),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: <Widget>[
-          Icon(Icons.science_outlined, size: 18, color: scheme.onSurfaceVariant),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              '服务端调试验证码：$code',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
-            ),
-          ),
-          TextButton(onPressed: onFill, child: const Text('填入')),
-        ],
       ),
     );
   }

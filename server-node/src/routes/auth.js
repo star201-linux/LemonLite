@@ -44,6 +44,7 @@ import {
   consumeCode,
   discardCode,
   issueCode,
+  logDevCode,
   normalizeEmail,
 } from '../lib/email_codes.js';
 
@@ -207,8 +208,9 @@ authRouter.get(
  * 给注册页发一封带验证码的邮件。邮件通道由服务端配置决定（自建 SMTP /
  * Resend / SendGrid / 阿里云），客户端不需要也不应该知道用的是哪一种。
  *
- * 返回里**不含验证码**，唯一的例外是显式打开了 MAIL_DEV_ECHO_CODE 的
- * 开发环境（`debugCode`）—— 那样不用登录邮箱也能把注册流程跑通。
+ * 返回里**不含验证码**。开发时如果不想真发信，用 MAIL_DRIVER=console
+ * （整封信打到日志里），或者打开 MAIL_DEV_ECHO_CODE 让服务端单独打一行验证码。
+ * 两种方式都只在服务端日志里出现，**不会**通过接口返回给客户端。
  *
  * 这里有一个刻意的取舍：邮箱已注册时直接回 409 `email_taken`，
  * 而不是「假装发送成功」。这会泄露「这个邮箱注册过」，
@@ -267,6 +269,9 @@ authRouter.post(
       );
     }
 
+    // 开发环境把码打一行到服务端日志；接口响应始终不含验证码
+    logDevCode({ code, email, purpose });
+
     sendOk(res, {
       sent: true,
       email,
@@ -274,7 +279,6 @@ authRouter.post(
       cooldown: config.mail.codeCooldown,
       expiresIn: config.mail.codeTtl,
       driver: status.driver,
-      ...(config.mail.devEchoCode ? { debugCode: code } : {}),
     });
   }),
 );
@@ -416,6 +420,8 @@ authRouter.post(
       throw ApiError.unavailable('验证码邮件发送失败，请稍后再试');
     }
 
+    logDevCode({ code, email: row.email, purpose: 'login' });
+
     sendOk(res, {
       sent: true,
       // 打码：只用于确认「发到的是我以为的那个邮箱」
@@ -423,7 +429,6 @@ authRouter.post(
       cooldown: config.mail.codeCooldown,
       expiresIn: config.mail.codeTtl,
       driver: status.driver,
-      ...(config.mail.devEchoCode ? { debugCode: code } : {}),
     });
   }),
 );

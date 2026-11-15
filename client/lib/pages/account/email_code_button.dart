@@ -4,7 +4,10 @@
 //
 // 抽出来的理由不是省几行，而是**倒计时这件小事必须只有一份实现**：
 // 按钮自己维护冷却（秒数来自服务端响应），父页面只在拿到结果时
-// 做两件事 —— 填框（开发模式的 debugCode）和提示发到了哪个邮箱。
+// 做一件事 —— 提示发到了哪个邮箱。
+//
+// 验证码本身永远不会经过这里：接口响应里没有它，开发时要看码请去
+// 服务端日志（MAIL_DRIVER=console 或 MAIL_DEV_ECHO_CODE=true）。
 //
 // 固定宽度也是刻意的：按钮会在「获取验证码」和「42s 后重发」之间切换文案，
 // 自适应宽度会让旁边那个输入框跟着抖一下。
@@ -29,7 +32,7 @@ class EmailCodeButton extends StatefulWidget {
   /// 真正发码的动作（注册用 /api/auth/email-code，登录用 /api/auth/login-code）
   final Future<EmailCodeSent> Function() request;
 
-  /// 发送成功：父页面用来提示「发到 xxx」以及自动填入 debugCode
+  /// 发送成功：父页面用来提示「发到 xxx」
   final void Function(EmailCodeSent sent) onSent;
 
   /// 发送失败

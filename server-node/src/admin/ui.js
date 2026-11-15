@@ -380,7 +380,7 @@ export function renderAdminPage({ version }) {
         </div>
         <div class="check"><input id="register_code" type="checkbox" /><label for="register_code" style="margin:0">注册需要邮箱验证码</label></div>
         <div class="check"><input id="login_code" type="checkbox" /><label for="login_code" style="margin:0">登录需要邮箱验证码（两步验证）</label></div>
-        <div class="check"><input id="dev_echo" type="checkbox" /><label for="dev_echo" style="margin:0">开发模式：把验证码直接返回给客户端（生产必须关）</label></div>
+        <div class="check"><input id="dev_echo" type="checkbox" /><label for="dev_echo" style="margin:0">开发模式：把验证码打印到服务端日志（接口不返回；生产必须关）</label></div>
 
         <div class="actions">
           <button class="primary" type="submit">保存并立即生效</button>
