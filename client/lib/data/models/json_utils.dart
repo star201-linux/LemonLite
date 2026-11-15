@@ -135,6 +135,19 @@ String formatBytes(int bytes) {
   return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
 }
 
+/// 精确到分钟的时间：`2026-11-15 09:30`（本地时区）。
+///
+/// 与 [formatDateTimeLabel] 的分工：那个回答「多久以前」，适合列表里的
+/// 「上次同步」；公告要回答「哪天发的」，相对时间反而没用 ——
+/// 「3 天前」看不出这条是不是在某个版本发布之前。
+String formatDateTimeExact(DateTime? time) {
+  if (time == null) return '时间未知';
+  final DateTime local = time.toLocal();
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${local.year.toString().padLeft(4, '0')}-${two(local.month)}-${two(local.day)}'
+      ' ${two(local.hour)}:${two(local.minute)}';
+}
+
 /// 人性化时间展示：刚刚 / N 分钟前 / N 小时前 / N 天前 / yyyy-MM-dd
 String formatDateTimeLabel(DateTime? time) {
   if (time == null) return '未知';

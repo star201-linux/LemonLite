@@ -496,10 +496,14 @@ class AccountService extends ChangeNotifier {
         // 散在各处各写一遍的话，迟早会漏掉某个接口，用户就会看到
         // 「顶栏还显示已登录、点进去一直转圈」这种自相矛盾的状态。
         //
-        // `account_disabled`（被管理员封禁）走同一条路：对用户来说
-        // 「被踢下线」和「被停用」都是「这个号在这台机器上不能用了」，
-        // 区别只在提示语里，没必要让界面呈现成两种不同的破状态。
-        if (auth && (code == 'unauthorized' || code == 'account_disabled')) {
+        // `account_banned` / `account_disabled`（被管理员封禁或停用）走同一条路：
+        // 对用户来说「被踢下线」和「被封禁」都是「这个号在这台机器上不能用了」，
+        // 区别只在提示语里（封禁会带上原因与到期时间），
+        // 没必要让界面呈现成两种不同的破状态。
+        if (auth &&
+            (code == 'unauthorized' ||
+                code == 'account_banned' ||
+                code == 'account_disabled')) {
           unawaited(handleUnauthorized(message));
         }
         throw AccountException(code, message);

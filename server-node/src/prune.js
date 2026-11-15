@@ -15,6 +15,7 @@
 import { pool } from './db.js';
 import { pruneSessions } from './lib/auth.js';
 import { purgeDueDeletions } from './lib/account_deletion.js';
+import { liftExpiredBans } from './lib/ban.js';
 import { purgeExpiredCodes } from './lib/email_codes.js';
 import { readEnvFile } from './config.js';
 
@@ -26,6 +27,11 @@ const accounts = await purgeDueDeletions();
 console.log(
   accounts > 0 ? `已删除 ${accounts} 个注销到期账号` : '没有到期的注销申请',
 );
+
+// 到期的临时封禁：改回 active。即使这个脚本从没跑过，登录也不会被拦住
+// （resolveSession 自己会判断到期），这里只是让状态字段别一直停在 disabled。
+const lifted = await liftExpiredBans();
+console.log(lifted > 0 ? `已解封 ${lifted} 个到期账号` : '没有到期的封禁');
 
 const removed = await pruneSessions();
 console.log(

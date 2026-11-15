@@ -15,6 +15,7 @@ import {
   requestId,
   securityHeaders,
 } from './lib/security.js';
+import { announcementsRouter } from './routes/announcements.js';
 import { marketRouter } from './routes/market.js';
 import { authRouter } from './routes/auth.js';
 import { uploadRouter, userDataRouter } from './routes/upload.js';
@@ -23,6 +24,7 @@ import { adminRouter } from './routes/admin.js';
 import { adminCount, ensureAdminSecret } from './admin/auth.js';
 import { ensureSchema } from './lib/schema_guard.js';
 import { purgeDueDeletions } from './lib/account_deletion.js';
+import { liftExpiredBans } from './lib/ban.js';
 import { iconsRoot } from './lib/icon_store.js';
 import { describeMail, mailStatus } from './lib/mailer.js';
 
@@ -159,6 +161,8 @@ app.get('/api/health', async (_req, res, next) => {
 app.use('/api/market', packageRouter);
 app.use('/api/market', marketRouter);
 app.use('/api/auth', authRouter);
+// 公告：公开接口，未登录也要能看（「注册已关闭」这类通知就是给未登录用户看的）
+app.use('/api/announcements', announcementsRouter);
 app.use('/api/upload', uploadRouter);
 // 用户私有 JSON：前缀是 /api/user，**不是** /api/upload（见 upload.js 里的说明）
 app.use('/api/user', userDataRouter);
@@ -222,6 +226,17 @@ async function runDeletionPurge(reason) {
     }
   } catch (e) {
     console.error(`[account] 注销清理失败（${reason}）：${e.code || e.message}`);
+  }
+  // 顺手把到期的临时封禁改回 active。
+  // 不靠它保证正确性（resolveSession / 登录都会按到期时间放行），
+  // 只是让面板别再显示一个早就该解封的人。
+  try {
+    const lifted = await liftExpiredBans();
+    if (lifted > 0) {
+      console.log(`\x1b[32m✓\x1b[0m ${reason}清理：解封了 ${lifted} 个到期账号`);
+    }
+  } catch (e) {
+    console.error(`[account] 到期解封失败（${reason}）：${e.code || e.message}`);
   }
 }
 

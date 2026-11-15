@@ -48,8 +48,17 @@ CREATE TABLE IF NOT EXISTS users (
   -- 空串表示还没上传过头像，客户端用用户名首字画占位图。
   avatar_ver    VARCHAR(32)     NOT NULL DEFAULT '',
 
-  -- 账号状态：disabled 用于封禁，登录与鉴权都直接拒绝
+  -- 账号状态：disabled 表示被封禁（或被面板停用）
   status        ENUM('active','disabled') NOT NULL DEFAULT 'active',
+
+  -- 封禁：时长与原因。
+  --   banned_until  NULL + status=disabled → **永久**封禁
+  --                 有值                 → 到点自动放行（不用等清理任务）
+  --   ban_reason    可选，展示给用户（错误提示里带上）
+  -- 解封时三个字段（status / banned_until / ban_reason）必须一起清，
+  -- 否则会出现「已解封但仍显示封禁原因」的鬼状态。
+  banned_until  DATETIME(3)     NULL,
+  ban_reason    VARCHAR(255)    NOT NULL DEFAULT '',
 
   -- 注销申请（冷静期）：
   --   deletion_requested_at  用户点「注销账号」的时间
@@ -150,7 +159,7 @@ CREATE TABLE IF NOT EXISTS email_codes (
   KEY idx_codes_expiry (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- ============================================================ 3. 应用市场
+-- ============================================================ 4. 应用市场
 
 -- 分类（主页/搜索的筛选项）
 CREATE TABLE IF NOT EXISTS categories (
@@ -247,7 +256,30 @@ CREATE TABLE IF NOT EXISTS app_tags (
     REFERENCES tags (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- ============================================================ 4. 管理账号
+-- ============================================================ 5. 公告
+
+-- 站点公告：客户端每次启动拉最新一条弹窗，设置页里可翻历史。
+--
+-- 为什么 published_at 不等于 created_at：
+--   运营经常「提前写好、明天早上发」。把发布时间做成可编辑的独立字段，
+--   定时发布就是免费得到的 —— 客户端只查 `published_at <= now`，
+--   到点自动出现，不需要任何定时任务。
+-- 面板可以改发布时间（写错日期是常态），所以它必须可写，而不是只在插入时设一次。
+CREATE TABLE IF NOT EXISTS announcements (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  title        VARCHAR(200)    NOT NULL,
+  content      TEXT            NOT NULL,
+  -- 发布时间（UTC）。> now 的公告客户端看不到。
+  published_at DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  created_at   DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at   DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+                               ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  -- 列表与「最新一条」都按 (published_at DESC, id DESC) 取
+  KEY idx_announcements_pub (published_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- ============================================================ 6. 管理账号
 
 -- 面板账号和普通用户（users）**完全分开**：
 --   * 普通用户是市场里的「消费者」，管理账号是运维身份；
@@ -274,7 +306,7 @@ CREATE TABLE IF NOT EXISTS admin_users (
   UNIQUE KEY uk_admin_username (username)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- ============================================================ 5. 应用 ↔ 分类
+-- ============================================================ 7. 应用 ↔ 分类
 
 -- 一个应用可以挂在多个分类下。
 --

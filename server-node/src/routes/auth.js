@@ -42,6 +42,12 @@ import {
   requestDeletion,
 } from '../lib/account_deletion.js';
 import { config } from '../config.js';
+import { assertNotBanned } from '../lib/ban.js';
+import {
+  validateEmail,
+  validatePassword,
+  validateUsername,
+} from '../lib/validate.js';
 import { absoluteAvatarUrl, avatarVersion } from '../lib/userdata.js';
 import { MailError, mailStatus, sendMail } from '../lib/mailer.js';
 import { verificationMail } from '../lib/mail_templates.js';
@@ -57,63 +63,9 @@ import {
 export const authRouter = Router();
 
 // ---------------------------------------------------------------- 校验工具
-
-const USERNAME_MIN = 3;
-const USERNAME_MAX = 32;
-const PASSWORD_MIN = 8;
-const PASSWORD_MAX = 128;
-
-/**
- * 用户名规则：
- *   * 3~32 字符
- *   * 允许中文、字母、数字、下划线、连字符、点
- *   * 不允许纯数字（会和 id / 手机号混淆，也容易被扫号）
- *   * 前后空格会被 trim 掉
- */
-function validateUsername(raw) {
-  const name = String(raw ?? '').trim();
-  if (name.length < USERNAME_MIN || name.length > USERNAME_MAX) {
-    throw ApiError.badRequest(
-      'invalid_username',
-      `用户名需要 ${USERNAME_MIN}~${USERNAME_MAX} 个字符`,
-    );
-  }
-  if (!/^[\p{L}\p{N}_.-]+$/u.test(name)) {
-    throw ApiError.badRequest(
-      'invalid_username',
-      '用户名只能包含中文、字母、数字、下划线、连字符和点',
-    );
-  }
-  if (/^\d+$/.test(name)) {
-    throw ApiError.badRequest('invalid_username', '用户名不能是纯数字');
-  }
-  return name;
-}
-
-function validateEmail(raw) {
-  const email = String(raw ?? '').trim().toLowerCase();
-  // 宽松但足够：不追求 RFC 5322 全兼容（那种正则没人能维护），
-  // 只保证「有本地部分、有 @、域名里有至少一个点」。
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
-    throw ApiError.badRequest('invalid_email', '邮箱格式不正确');
-  }
-  if (email.length > 255) {
-    throw ApiError.badRequest('invalid_email', '邮箱过长');
-  }
-  return email;
-}
-
-function validatePassword(raw) {
-  const pw = String(raw ?? '');
-  if (pw.length < PASSWORD_MIN) {
-    throw ApiError.badRequest('weak_password', `密码至少 ${PASSWORD_MIN} 位`);
-  }
-  if (pw.length > PASSWORD_MAX) {
-    // 上限是为了防止 bcrypt 被超长输入拖慢（DoS）
-    throw ApiError.badRequest('invalid_password', '密码过长');
-  }
-  return pw;
-}
+//
+// 规则本体在 lib/validate.js：管理面板代改用户名 / 邮箱时用的是同一份，
+// 否则迟早出现「面板能存、客户端登不上」的数据。
 
 /**
  * 取客户端真实 IP。
@@ -408,9 +360,8 @@ authRouter.post(
       await burnPasswordTime(password);
       throw new ApiError(401, 'invalid_credentials', failMsg);
     }
-    if (row.status === 'disabled') {
-      throw ApiError.forbidden('account_disabled', '这个账号已被停用');
-    }
+    // 封禁：临时封禁到期后会在这里顺手解封（见 lib/ban.js）
+    await assertNotBanned(row);
     const ok = await verifyPassword(password, row.password_hash);
     if (!ok) throw new ApiError(401, 'invalid_credentials', failMsg);
 
@@ -487,9 +438,8 @@ authRouter.post(
       await burnPasswordTime(password);
       throw new ApiError(401, 'invalid_credentials', failMsg);
     }
-    if (row.status === 'disabled') {
-      throw ApiError.forbidden('account_disabled', '这个账号已被停用');
-    }
+    // 封禁：临时封禁到期后会在这里顺手解封（见 lib/ban.js）
+    await assertNotBanned(row);
 
     const ok = await verifyPassword(password, row.password_hash);
     if (!ok) throw new ApiError(401, 'invalid_credentials', failMsg);
@@ -551,9 +501,8 @@ authRouter.get(
     const id = currentUserId(req);
     const row = await queryOne('SELECT * FROM users WHERE id = ?', [id]);
     if (!row) throw ApiError.unauthorized('账号不存在或已注销');
-    if (row.status === 'disabled') {
-      throw ApiError.forbidden('account_disabled', '这个账号已被停用');
-    }
+    // 封禁：临时封禁到期后会在这里顺手解封（见 lib/ban.js）
+    await assertNotBanned(row);
     sendOk(res, toUserDto(req, row));
   }),
 );

@@ -6,9 +6,10 @@
 //   auth.js       首次建号 / 登录 / 会话 / 管理员账号管理
 //   apps.js       应用增删改、上下架、传包（多分类）
 //   taxonomy.js   分类与标签的增删改
-//   users.js      市场用户的封禁 / 改密 / 踢下线
+//   users.js      市场用户：详情 / 改资料 / 头像 / 封禁 / 改密 / 踢下线
 //   mail.js       邮件通道与验证码策略
 //   settings.js   站点策略（注销冷静期、市场分页）
+//   announcements.js 公告（标题 / 内容 / 发布时间）
 //   ui.js         整页 HTML（服务端模板字符串，无构建步骤）
 //
 // 三条安全底线：
@@ -33,6 +34,7 @@ import { appsRouter } from '../admin/apps.js';
 import { taxonomyRouter } from '../admin/taxonomy.js';
 import { usersRouter } from '../admin/users.js';
 import { mailRouter } from '../admin/mail.js';
+import { announcementsRouter, announcementStats } from '../admin/announcements.js';
 import { settingsRouter } from '../admin/settings.js';
 import { renderAdminPage } from '../admin/ui.js';
 
@@ -80,6 +82,7 @@ adminRouter.get(
       queryOne('SELECT COUNT(*) AS n FROM admin_users'),
     ]);
     const mail = mailStatus();
+    const announcement = await announcementStats();
     sendOk(res, {
       counts: {
         users: Number(users?.n ?? 0),
@@ -96,6 +99,7 @@ adminRouter.get(
         loginCode: config.auth.loginCode,
         tokenTtl: config.auth.sessionTtl,
       },
+      announcements: announcement,
       site: {
         deleteDelayDays: config.account.deleteDelayDays,
         marketPageSize: config.market.defaultPageSize,
@@ -113,3 +117,4 @@ adminRouter.use(taxonomyRouter);
 adminRouter.use(usersRouter);
 adminRouter.use(mailRouter);
 adminRouter.use(settingsRouter);
+adminRouter.use(announcementsRouter);

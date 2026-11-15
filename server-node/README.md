@@ -293,15 +293,32 @@ http://<本机IP>:<端口>/admin
 | POST | `/admin/api/apps/:id/package` | multipart 上传 zip（`file` / `version` / `entry`） |
 | GET | `/admin/api/apps/:id/packages` | 本机已有的版本包 |
 | DELETE | `/admin/api/apps/:id/package/:version` | 删某个版本包 |
-| GET | `/admin/api/users?q=` | 用户列表（可搜索） |
-| POST | `/admin/api/users/:id/status` | `{status: active\|disabled}` 封禁 / 解封 |
+| GET | `/admin/api/users?q=` | 用户列表（可搜索，含封禁与注销状态） |
+| GET | `/admin/api/users/:id` | 详情（资料 + 会话数 + userdata 占用） |
+| PUT | `/admin/api/users/:id` | `{username?, email?}` 面板代改资料 |
+| POST | `/admin/api/users/:id/avatar` | multipart 上传头像（`file`） |
+| DELETE | `/admin/api/users/:id/avatar` | 删除头像 |
+| POST | `/admin/api/users/:id/ban` | `{durationDays, reason?}` 封禁；`-1` = 永久 |
+| POST | `/admin/api/users/:id/unban` | 解封 |
+| POST | `/admin/api/users/:id/status` | `{status: active\|disabled}` 老接口：`disabled` = 永久封禁 |
 | POST | `/admin/api/users/:id/password` | 重置密码 |
 | POST | `/admin/api/users/:id/logout` | 踢掉该用户所有会话 |
+| GET | `/admin/api/announcements` | 公告列表（含待发布） |
+| POST | `/admin/api/announcements` | `{title, content, publishedAt?}` 新建 |
+| PUT | `/admin/api/announcements/:id` | 改标题 / 内容 / 发布时间 |
+| DELETE | `/admin/api/announcements/:id` | 删除 |
+
+公开接口（不需要登录）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/announcements?limit=20&offset=0` | 已发布的公告（`published_at <= now`），按发布时间倒序 |
+| GET | `/api/announcements/latest` | 最新一条；没有则 `announcement: null` |
 
 ## 运维
 
 ```bash
-npm run prune    # 清理过期 30 天以上的会话行 + 过期 1 天以上的验证码
+npm run prune    # 清理过期 30 天以上的会话行、过期 1 天以上的验证码，并解封到期账号
 ```
 
 建议 crontab：

@@ -10,8 +10,9 @@
 //
 // 它**不负责**灌种子数据（那是 init.js 的事），也绝不做 ALTER/删表。
 // 唯一的例外是 ensureUserColumns()：`CREATE TABLE IF NOT EXISTS` 不会给
-// 已经存在的表补列，而「注销冷静期」需要的两列是 0.8 才加的。那段 ALTER
-// 是幂等的（列已存在时吃 1060 错误码），并且只加 NULL 列、不改不删。
+// 已经存在的表补列，而 users 上的「注销冷静期」两列（0.8）与「封禁时长 /
+// 原因」两列（0.9）都是后加的。那段 ALTER 是幂等的（列已存在时吃 1060
+// 错误码），并且只加 NULL / 带默认值的空列、不改不删任何已有数据。
 
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -50,14 +51,18 @@ export async function backfillAppCategories(conn = pool) {
  * 幂等：列已存在时 MySQL 报 ER_DUP_FIELDNAME(1060)，直接当作成功。
  * 只加 NULL 列，不动任何已有数据，所以对生产库是安全的。
  */
-const USER_DELETION_COLUMNS = [
+const USER_ADDED_COLUMNS = [
+  // 注销冷静期（0.8）
   ['deletion_requested_at', 'DATETIME(3) NULL'],
   ['deletion_scheduled_at', 'DATETIME(3) NULL'],
+  // 封禁时长 + 原因（0.9）。NULL + status=disabled 表示永久封禁。
+  ['banned_until', 'DATETIME(3) NULL'],
+  ['ban_reason', "VARCHAR(255) NOT NULL DEFAULT ''"],
 ];
 
 export async function ensureUserColumns(conn = pool) {
   const added = [];
-  for (const [name, type] of USER_DELETION_COLUMNS) {
+  for (const [name, type] of USER_ADDED_COLUMNS) {
     try {
       await conn.query(`ALTER TABLE users ADD COLUMN ${name} ${type}`);
       added.push(name);

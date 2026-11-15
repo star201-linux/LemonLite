@@ -30,11 +30,14 @@ import 'core/globals.dart';
 import 'data/models/miniapp_permission.dart';
 import 'data/repositories/market_repository.dart';
 import 'data/services/account_service.dart';
+import 'data/services/announcement_service.dart';
 import 'data/services/market_cache_service.dart';
 import 'data/services/settings_service.dart';
 import 'data/services/update_service.dart';
 import 'pages/account/account_page.dart' show LoginPage;
+import 'data/models/announcement.dart';
 import 'pages/account/session_offline_dialog.dart';
+import 'pages/settings/announcement_dialog.dart';
 import 'pages/applications/applications_page.dart';
 import 'pages/home/home_controller.dart';
 import 'pages/home/home_page.dart';
@@ -66,6 +69,10 @@ class LemonLiteApp extends StatelessWidget {
         // 市场数据源（无状态，用 Provider 而不是 ChangeNotifierProvider）
         Provider<MarketRepository>(
           create: (BuildContext ctx) => MarketRepository(settings: settings),
+        ),
+        // 站点公告：启动弹窗与「设置 → 市场 → 公告」共用
+        Provider<AnnouncementService>(
+          create: (BuildContext ctx) => AnnouncementService(settings: settings),
         ),
         // 主页状态。放在 App 根部而不是 HomePage 内部，
         // 这样切到「设置」再切回来时列表、搜索词、分类筛选都还在。
@@ -148,6 +155,9 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   /// AccountService 已经做了幂等，这里再兜一层，避免叠出两个对话框。
   bool _offlineDialogOpen = false;
 
+  /// 公告弹窗是否正在显示（避免热重载 / 前后台切换时叠出第二个）
+  bool _announcementDialogOpen = false;
+
   /// 上一次校验登录态的时间。前后台来回切时用得上（见 [_checkSessionLater]）。
   DateTime _lastSessionCheck = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -183,6 +193,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       // 界面会一直显示「已登录」，点进账号页才露馅（而且是个转不完的圈）。
       unawaited(_checkSession());
       _maybeShowOfflineDialog();
+      // 启动公告：要等一帧，且排在「被下线」提示之后（见 _maybeShowAnnouncement）
+      unawaited(_maybeShowAnnouncement());
       // **打开 App 时检查所有已装小程序有没有新版本**
       UpdateService.instance.checkAll(
         repository: context.read<MarketRepository>(),
@@ -219,6 +231,29 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     if (now.difference(_lastSessionCheck) < const Duration(seconds: 20)) return;
     _lastSessionCheck = now;
     await AccountService.instance.validateSession();
+  }
+
+  /// 启动公告：每次启动都拉一次最新公告，有就弹。
+  ///
+  /// 为什么要等 500ms 而不是立刻弹：启动瞬间还可能有「账号已下线」的弹窗
+  ///（[ _maybeShowOfflineDialog ] 走的是同一个 post-frame）。
+  /// 两个对话框同时压上来时，用户是来解决问题的，不是来看公告的 ——
+  /// 所以让位给下线提示，这一次就先不弹公告了。
+  Future<void> _maybeShowAnnouncement() async {
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    if (!mounted || _announcementDialogOpen) return;
+    if (_offlineDialogOpen) return;
+    final Announcement? announcement = await context
+        .read<AnnouncementService>()
+        .fetchLatest();
+    if (!mounted || announcement == null) return;
+    if (_announcementDialogOpen || _offlineDialogOpen) return;
+    _announcementDialogOpen = true;
+    try {
+      await AnnouncementDialog.show(context, announcement: announcement);
+    } finally {
+      _announcementDialogOpen = false;
+    }
   }
 
   void _onAccountChanged() {

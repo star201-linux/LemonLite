@@ -24,6 +24,8 @@ import bcrypt from 'bcryptjs';
 import { config } from '../config.js';
 import { execute, queryOne } from '../db.js';
 import { ApiError } from './http.js';
+import { banBlocks } from './ban.js';
+import { parseSqlTime, toSqlTime } from './sql_time.js';
 
 const TOKEN_PREFIX = 'lmn_';
 
@@ -112,17 +114,6 @@ export function sessionTtlMs() {
 }
 
 /**
- * Date → MySQL DATETIME(3) 的 UTC 字符串。
- *
- * 为什么不用 Date 直接传参：mysql2 默认按**进程本地时区**格式化 Date，
- * 而读出来时又按 UTC 解析（见 resolveSession），时区不是 UTC 的机器上
- * 会凭空多出/少掉几小时。统一显式写 UTC 字符串，两边就只有一个时钟。
- */
-function toSqlTime(date) {
-  return new Date(date.getTime()).toISOString().slice(0, 23).replace('T', ' ');
-}
-
-/**
  * 校验 token，返回 { userId, session } 或 null。
  *
  * 只查一次库，且是主键查询。过期 / 撤销 / 不存在都返回 null ——
@@ -134,7 +125,8 @@ export async function resolveSession(token) {
 
   const row = await queryOne(
     `SELECT s.token_hash, s.user_id, s.expires_at, s.revoked,
-            u.username, u.status, u.deletion_scheduled_at
+            u.username, u.status, u.banned_until, u.ban_reason,
+            u.deletion_scheduled_at
        FROM login_sessions s
        JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = ?
@@ -143,7 +135,9 @@ export async function resolveSession(token) {
   );
   if (!row) return null;
   if (row.revoked) return null;
-  if (row.status !== 'active') return null;
+  // 封禁：`banBlocks` 而不是 `status !== 'active'` ——
+  // 临时封禁到期后即使清理任务还没跑，这里也必须放行（见 lib/ban.js）。
+  if (banBlocks(row)) return null;
 
   // 注销冷静期已到期但清理任务还没跑到：直接把这张票当作失效。
   // 清理是「最多晚 30 分钟」的事，但「到期后还能用」是不能接受的语义。
@@ -232,13 +226,6 @@ export async function listSessionHistory(userId, { limit = 100 } = {}) {
       LIMIT ?`,
     [userId, limit],
   );
-}
-
-/** 解析 'YYYY-MM-DD HH:mm:ss.SSS'（UTC）→ Date；非法返回 null */
-function parseSqlTime(value) {
-  if (!value) return null;
-  const d = new Date(`${String(value).replace(' ', 'T')}Z`);
-  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 /** 清理过期且已撤销 / 过期很久的行（运维脚本或定时任务调用） */

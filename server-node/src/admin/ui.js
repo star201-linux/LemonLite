@@ -4,12 +4,16 @@
 //
 // 为什么不引前端框架、不挂 CDN：
 //   * 这个面板要在**没有外网**的内网服务器上用 —— 任何外链都是单点故障；
-//   * 它一共就六屏（概览 / 应用 / 分类标签 / 用户 / 管理员 / 邮件），
+//   * 它一共就八屏（概览 / 应用 / 分类标签 / 用户 / 公告 / 管理员 / 邮件 / 站点），
 //     引入构建工具只会让「改一行文案」也要重新编译。
 // 所以这里是纯静态字符串，浏览器直接吃。
 //
-// 注意：内层 <script> 里**不用模板字符串**（反引号 + ${}），
-// 因为它们会被外层这个 JS 模板字符串先求值。内层一律用拼接。
+// 注意：内层 <script> 里**不用模板字符串**（反引号 + ${}），也不用反引号写注释 ——
+// 它们都会被外层这个 JS 模板字符串先求值：
+//   * 反引号会直接**截断**外层字符串（整页语法错误 → 面板白屏）；
+//   * ${...} 会被外层求值（轻则内容消失，重则抛异常）；
+//   * 单个反斜杠 + n 会被外层吃成真换行，写在 JS 单引号字符串里就是「未闭合字符串」。
+// 内层一律用字符串拼接；要换行得在源文件里写成两个反斜杠加 n（外层求值后剩反斜杠 + n）。
 //
 // 页面自己是「空壳」：加载后先请求 /api/session，返回
 //   { setup: true }        → 显示「创建第一个管理员」
@@ -48,6 +52,10 @@ export function renderAdminPage({ version }) {
     }
   }
   * { box-sizing: border-box; }
+  /* [hidden] 必须真的隐藏。浏览器默认样式里它是 display:none，
+     但作者样式（比如 .avatar-preview { display:flex }）会盖掉它 ——
+     结果就是一个「隐藏了但还占位、还显示 alt 文字」的破图。 */
+  [hidden] { display: none !important; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
@@ -125,6 +133,15 @@ export function renderAdminPage({ version }) {
   .modal-card { background: var(--surface); border-radius: 20px; padding: 20px; width: 100%;
     max-width: 660px; box-shadow: var(--shadow); }
   .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; flex-wrap: wrap; }
+  input[type=datetime-local] {
+    width: 100%; padding: 11px 12px; border-radius: 12px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); font-size: 14px; outline: none; font-family: inherit; }
+  .avatar-row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  .avatar-preview { width: 72px; height: 72px; border-radius: 50%; object-fit: cover;
+    background: var(--surface-2); border: 1px solid var(--border); display: flex;
+    align-items: center; justify-content: center; color: var(--muted); font-size: 12px; flex: 0 0 auto; }
+  .avatar-actions { display: flex; flex-direction: column; gap: 8px; flex: 1 1 220px; }
+  .divider-line { height: 1px; background: var(--border); margin: 18px 0; }
   .chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
   .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px;
     border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; }
@@ -193,6 +210,7 @@ export function renderAdminPage({ version }) {
       <button class="tab" data-tab="apps" aria-selected="false">应用</button>
       <button class="tab" data-tab="taxonomy" aria-selected="false">分类标签</button>
       <button class="tab" data-tab="users" aria-selected="false">用户</button>
+      <button class="tab" data-tab="announcements" aria-selected="false">公告</button>
       <button class="tab" data-tab="admins" aria-selected="false">管理员</button>
       <button class="tab" data-tab="mail" aria-selected="false">邮件</button>
       <button class="tab" data-tab="site" aria-selected="false">站点</button>
@@ -206,7 +224,7 @@ export function renderAdminPage({ version }) {
       <div class="card">
         <h2>当前策略</h2>
         <div id="policy"></div>
-        <p class="hint">策略项在「邮件」页底部改，改完立即生效。</p>
+        <p class="hint">邮件相关在「邮件」页改；注销冷静期与市场分页在「站点」页改。都立即生效。</p>
       </div>
     </div>
 
@@ -258,6 +276,18 @@ export function renderAdminPage({ version }) {
             <tbody></tbody>
           </table>
         </div>
+      </div>
+    </div>
+
+    <div id="tab-announcements" hidden>
+      <div class="card">
+        <div class="toolbar">
+          <span class="hint" style="flex:1 1 auto;margin:0">
+            客户端每次启动会弹最新一条；设置 → 市场 → 公告 里能翻历史。
+          </span>
+          <button class="primary" type="button" id="annNewBtn">新建公告</button>
+        </div>
+        <div id="annList"><p class="hint">加载中…</p></div>
       </div>
     </div>
 
@@ -487,6 +517,98 @@ export function renderAdminPage({ version }) {
   </div>
 </div>
 
+<!-- 用户详情 / 管理 -->
+<div class="modal" id="userModal" hidden>
+  <div class="modal-card">
+    <h2 id="userModalTitle">用户</h2>
+    <div class="kv"><span>注册时间</span><span id="u_created">—</span></div>
+    <div class="kv"><span>注册 IP</span><span id="u_ip">—</span></div>
+    <div class="kv"><span>登录会话</span><span id="u_sessions">—</span></div>
+    <div class="kv"><span>私有数据</span><span id="u_userdata">—</span></div>
+
+    <div class="divider-line"></div>
+
+    <h3>头像</h3>
+    <div class="avatar-row">
+      <img id="u_avatar" class="avatar-preview" alt="头像" hidden />
+      <div id="u_avatarEmpty" class="avatar-preview">无头像</div>
+      <div class="avatar-actions">
+        <input id="u_avatar_file" type="file" accept="image/png,image/jpeg,image/webp" />
+        <div class="item-actions">
+          <button class="ghost small" type="button" id="u_avatarUpload">上传头像</button>
+          <button class="ghost small danger" type="button" id="u_avatarDelete">删除头像</button>
+        </div>
+        <p class="hint" style="margin:0">PNG / JPEG / WebP，≤2MB。上传后客户端下次拉资料就会换。</p>
+      </div>
+    </div>
+
+    <div class="divider-line"></div>
+
+    <h3>资料</h3>
+    <div class="row">
+      <div class="field"><label for="u_username">用户名</label><input id="u_username" type="text" /></div>
+      <div class="field"><label for="u_email">注册邮箱</label><input id="u_email" type="text" /></div>
+    </div>
+    <div class="actions" style="margin-top:0">
+      <button class="ghost" type="button" id="u_saveProfile">保存资料</button>
+    </div>
+    <p class="hint">这里是管理员代改，不需要邮箱验证码；用户自己在客户端改邮箱仍要走验证。</p>
+
+    <div class="divider-line"></div>
+
+    <h3>封禁 <span id="u_banBadge" class="badge"></span></h3>
+    <p class="hint" id="u_banHint"></p>
+    <div class="row">
+      <div class="field">
+        <label for="u_ban_days">封禁时长（天，-1 = 永久）</label>
+        <input id="u_ban_days" type="number" value="7" />
+      </div>
+      <div class="field">
+        <label for="u_ban_reason">原因（可选）</label>
+        <input id="u_ban_reason" type="text" placeholder="如：发布违规内容" />
+      </div>
+    </div>
+    <div class="actions" style="margin-top:0">
+      <button class="primary" type="button" id="u_banBtn">封禁并踢下线</button>
+      <button class="ghost" type="button" id="u_unbanBtn">解除封禁</button>
+    </div>
+    <p class="hint">封禁会立刻撤销该用户全部登录会话。到期自动解封，不需要手工操作。</p>
+
+    <div class="divider-line"></div>
+
+    <h3>其它</h3>
+    <div class="item-actions">
+      <button class="ghost small" type="button" id="u_password">重置密码</button>
+      <button class="ghost small" type="button" id="u_logout">踢下线</button>
+      <button class="ghost small" type="button" id="u_restore">撤销注销申请</button>
+      <button class="ghost small danger" type="button" id="u_delete">删除账号</button>
+    </div>
+
+    <div class="modal-actions">
+      <button class="ghost" type="button" id="userClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 公告编辑 -->
+<div class="modal" id="annModal" hidden>
+  <div class="modal-card">
+    <h2 id="annModalTitle">新建公告</h2>
+    <div class="field"><label for="ann_title">标题</label><input id="ann_title" type="text" placeholder="如：v0.9 更新说明" /></div>
+    <div class="field"><label for="ann_content">内容</label><textarea id="ann_content" style="min-height:180px" placeholder="正文，支持换行"></textarea></div>
+    <div class="field">
+      <label for="ann_time">发布时间</label>
+      <input id="ann_time" type="datetime-local" />
+      <p class="hint">留空 = 立即发布。填未来时间就是定时发布：到点客户端自己就能拉到。</p>
+    </div>
+    <div class="modal-actions">
+      <button class="ghost" type="button" id="annCancel">取消</button>
+      <button class="ghost danger" type="button" id="annDelete" hidden>删除</button>
+      <button class="primary" type="button" id="annSave">保存</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 <script>
 (function () {
@@ -621,22 +743,32 @@ export function renderAdminPage({ version }) {
   });
 
   // ---------------- Tab
-  var TAB_NAMES = ['overview', 'apps', 'taxonomy', 'users', 'admins', 'mail'];
-  Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (btn) {
-    btn.addEventListener('click', function () {
-      Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (b) {
-        b.setAttribute('aria-selected', String(b === btn));
-      });
-      TAB_NAMES.forEach(function (name) {
-        $('tab-' + name).hidden = name !== btn.dataset.tab;
-      });
-      if (btn.dataset.tab === 'apps') loadApps();
-      if (btn.dataset.tab === 'taxonomy') loadMeta();
-      if (btn.dataset.tab === 'users') loadUsers();
-      if (btn.dataset.tab === 'admins') loadAdmins();
-      if (btn.dataset.tab === 'mail') loadMail();
-      if (btn.dataset.tab === 'site') loadSite();
+  //
+  // 面板名单**从 DOM 里读**，不再手写第二份数组。
+  // 之前那个手写数组漏了 'site'：点「站点」时循环只把名单里的七块设为隐藏，
+  // 而 tab-site 从来没被显式显示过 —— 于是整页空白。
+  // 用 DOM 当唯一来源之后，加一个 tab 就不会再漏（漏了也只是一块永远隐藏的 div，
+  // 而不是一个点进去什么都没有的按钮）。
+  var TAB_BUTTONS = Array.prototype.slice.call(document.querySelectorAll('.tab'));
+
+  function switchTab(name) {
+    TAB_BUTTONS.forEach(function (b) {
+      var selected = b.dataset.tab === name;
+      b.setAttribute('aria-selected', String(selected));
+      var panel = $('tab-' + b.dataset.tab);
+      if (panel) panel.hidden = !selected;
     });
+    if (name === 'apps') loadApps();
+    if (name === 'taxonomy') loadMeta();
+    if (name === 'users') loadUsers();
+    if (name === 'admins') loadAdmins();
+    if (name === 'mail') loadMail();
+    if (name === 'site') loadSite();
+    if (name === 'announcements') loadAnnouncements();
+  }
+
+  TAB_BUTTONS.forEach(function (btn) {
+    btn.addEventListener('click', function () { switchTab(btn.dataset.tab); });
   });
 
   // ---------------- 概览
@@ -650,6 +782,10 @@ export function renderAdminPage({ version }) {
         ['标签', data.counts.tags],
         ['管理员', data.counts.admins],
         ['活跃会话', data.counts.sessions],
+        ['公告', data.announcements
+          ? data.announcements.total + (data.announcements.pending > 0
+            ? '（' + data.announcements.pending + ' 待发布）' : '')
+          : '—'],
         ['24h 验证码', data.counts.codes24h]
       ];
       $('stats').innerHTML = stats.map(function (pair) {
@@ -1052,40 +1188,83 @@ export function renderAdminPage({ version }) {
   });
 
   // ================================================================ 用户
+  //
+  // 列表只回答「有哪些人、现在能不能登录」；所有改动都在详情弹窗里做。
+  // 之前在表格行里排了五个按钮，屏幕窄一点就换行成三排，
+  // 而且「封禁」这个动作根本没有地方填时长与原因。
+  var userCache = [];
+
+  // 时间戳 → 本地 'YYYY-MM-DD HH:mm'
+  function pad2(n) { return n < 10 ? '0' + n : String(n); }
+  function shortTime(iso) {
+    if (!iso) return '—';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '—';
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
+      ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  }
+  // ISO → datetime-local 输入框要的 'YYYY-MM-DDTHH:mm'（本地时间）
+  function toLocalInput(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
+      'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  }
+  /** datetime-local 的值（按浏览器本地时区解释）→ ISO(UTC) */
+  function fromLocalInput(value) {
+    if (!value) return '';
+    var d = new Date(value);
+    if (isNaN(d.getTime())) return '';
+    return d.toISOString();
+  }
+
+  function bytesLabel(n) {
+    var bytes = Number(n) || 0;
+    if (bytes <= 0) return '0 B';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (Math.round(bytes / 102.4) / 10) + ' KB';
+    return (Math.round(bytes / 104857.6) / 10) + ' MB';
+  }
+
+  /** 用户状态徽标：封禁（永久 / 到何时）/ 注销中 */
+  function userBadges(u) {
+    var html = '';
+    if (u.ban) {
+      html += '<span class="badge err">' +
+        (u.ban.permanent ? '永久封禁' : '封禁至 ' + shortTime(u.ban.until)) +
+        '</span>';
+    } else if (u.status === 'disabled') {
+      html += '<span class="badge err">已停用</span>';
+    } else {
+      html += '<span class="badge ok">正常</span>';
+    }
+    if (u.deletion) {
+      html += ' <span class="badge warn">注销中' +
+        (u.deletion.daysLeft > 0 ? ' · 剩 ' + u.deletion.daysLeft + ' 天' : ' · 待清理') +
+        '</span>';
+    }
+    return html;
+  }
+
   function loadUsers() {
     var q = $('userSearch').value.trim();
     return api('/users?q=' + encodeURIComponent(q)).then(function (data) {
+      userCache = data.users;
       var tbody = $('usersTable').querySelector('tbody');
       if (!data.users.length) {
         tbody.innerHTML = '<tr><td colspan="6" class="hint">没有匹配的用户</td></tr>';
         return;
       }
       tbody.innerHTML = data.users.map(function (u) {
-        var disabled = u.status === 'disabled';
-        var badging = disabled
-          ? '<span class="badge err">已封禁</span>'
-          : '<span class="badge ok">正常</span>';
-        if (u.deletion) {
-          badging += ' <span class="badge warn">注销中' +
-            (u.deletion.daysLeft > 0 ? ' · 剩 ' + u.deletion.daysLeft + ' 天' : ' · 待清理') +
-            '</span>';
-        }
         return '<tr>' +
           '<td>' + u.id + '</td>' +
           '<td>' + esc(u.username) + '</td>' +
           '<td>' + esc(u.email) + '</td>' +
-          '<td>' + badging + '</td>' +
-          '<td>' + esc(u.createdAt || '') + '</td>' +
-          '<td><div class="item-actions">' +
-            '<button class="ghost small" data-user="' + u.id + '" data-act="toggle" data-status="' +
-              (disabled ? 'active' : 'disabled') + '">' + (disabled ? '解封' : '封禁') + '</button>' +
-            '<button class="ghost small" data-user="' + u.id + '" data-act="password">改密码</button>' +
-            '<button class="ghost small" data-user="' + u.id + '" data-act="logout">踢下线</button>' +
-            (u.deletion
-              ? '<button class="ghost small" data-user="' + u.id + '" data-act="restore">撤销注销</button>'
-              : '') +
-            '<button class="ghost small danger" data-user="' + u.id + '" data-act="del">删除账号</button>' +
-          '</div></td>' +
+          '<td>' + userBadges(u) + '</td>' +
+          '<td>' + esc(shortTime(u.createdAt)) + '</td>' +
+          '<td><button class="ghost small" data-user="' + u.id +
+            '" data-act="manage">管理</button></td>' +
         '</tr>';
       }).join('');
     }).catch(function (err) { toast(err.message, true); });
@@ -1099,42 +1278,321 @@ export function renderAdminPage({ version }) {
   $('usersTable').addEventListener('click', function (e) {
     var btn = e.target.closest('button[data-user]');
     if (!btn) return;
-    var id = btn.dataset.user;
-    if (btn.dataset.act === 'toggle') {
-      api('/users/' + id + '/status', { method: 'POST', body: { status: btn.dataset.status } })
-        .then(function () {
-          toast(btn.dataset.status === 'disabled' ? '已封禁，并踢掉了所有登录' : '已解封');
-          return loadUsers();
-        })
-        .then(loadStatus)
-        .catch(function (err) { toast(err.message, true); });
+    if (btn.dataset.act === 'manage') openUserModal(btn.dataset.user);
+  });
+
+  // ---------------- 用户详情弹窗
+  var userDetail = null;
+
+  function openUserModal(id) {
+    api('/users/' + encodeURIComponent(id)).then(function (data) {
+      userDetail = data;
+      renderUserModal();
+      $('userModal').hidden = false;
+    }).catch(function (err) { toast(err.message, true); });
+  }
+
+  function closeUserModal() {
+    userDetail = null;
+    $('userModal').hidden = true;
+  }
+  $('userClose').addEventListener('click', closeUserModal);
+  $('userModal').addEventListener('click', function (e) {
+    if (e.target === $('userModal')) closeUserModal();
+  });
+
+  function renderUserModal() {
+    if (!userDetail) return;
+    var u = userDetail.user;
+    $('userModalTitle').textContent = u.username + ' · #' + u.id;
+    $('u_created').textContent = shortTime(u.createdAt);
+    $('u_ip').textContent = u.createdIp || '—';
+    $('u_sessions').textContent = userDetail.sessions.active + ' 个在线 / 共 ' +
+      userDetail.sessions.total + ' 次登录';
+    $('u_userdata').textContent = userDetail.userdata.exists
+      ? bytesLabel(userDetail.userdata.bytes) + ' · 更新于 ' + shortTime(userDetail.userdata.updatedAt)
+      : '还没有数据';
+
+    // 头像：有就让 img 显示，没有就显示占位块。
+    // avatarUrl 自带 ?v=<版本戳>，所以换头像后重新赋值一定会重新下载。
+    var img = $('u_avatar');
+    var empty = $('u_avatarEmpty');
+    if (u.avatarUrl) {
+      img.src = u.avatarUrl;
+      img.hidden = false;
+      empty.hidden = true;
+    } else {
+      img.removeAttribute('src');
+      img.hidden = true;
+      empty.hidden = false;
     }
-    if (btn.dataset.act === 'password') {
-      var pw = prompt('输入新密码（至少 8 位）。改完这个用户所有设备都要重新登录。');
-      if (!pw) return;
-      api('/users/' + id + '/password', { method: 'POST', body: { password: pw } })
-        .then(function () { toast('密码已重置'); })
-        .catch(function (err) { toast(err.message, true); });
+    $('u_avatarDelete').disabled = !u.avatarUrl;
+
+    $('u_username').value = u.username;
+    $('u_email').value = u.email;
+
+    var badge = $('u_banBadge');
+    if (u.ban) {
+      badge.textContent = u.ban.permanent ? '永久' :
+        (u.ban.daysLeft > 0 ? '剩 ' + u.ban.daysLeft + ' 天' : '即将到期');
+      badge.className = 'badge err';
+      $('u_banHint').textContent = '封禁至 ' + shortTime(u.ban.until) +
+        (u.ban.reason ? ' · 原因：' + u.ban.reason : '');
+      $('u_ban_days').value = u.ban.permanent ? -1 : Math.max(1, u.ban.daysLeft);
+      $('u_ban_reason').value = u.ban.reason || '';
+      $('u_banBtn').textContent = '修改封禁';
+      $('u_unbanBtn').disabled = false;
+    } else {
+      badge.textContent = u.status === 'disabled' ? '已停用' : '未封禁';
+      badge.className = 'badge ' + (u.status === 'disabled' ? 'err' : 'ok');
+      $('u_banHint').textContent = u.status === 'disabled'
+        ? '账号处于停用状态，但当前没有对应的封禁记录（可能是旧数据）。'
+        : '账号正常，可以登录。';
+      if (u.status !== 'disabled') {
+        $('u_ban_days').value = 7;
+        $('u_ban_reason').value = '';
+      }
+      $('u_banBtn').textContent = '封禁并踢下线';
+      $('u_unbanBtn').disabled = true;
     }
-    if (btn.dataset.act === 'logout') {
-      api('/users/' + id + '/logout', { method: 'POST', body: {} })
-        .then(function () { toast('已踢下线'); return loadStatus(); })
-        .catch(function (err) { toast(err.message, true); });
+    $('u_restore').hidden = !u.deletion;
+  }
+
+  /** 改动后重新拉详情：会话数、封禁状态都可能是别人刚改过的 */
+  function reloadUserModal() {
+    if (!userDetail) return null;
+    var id = userDetail.user.id;
+    return api('/users/' + id).then(function (data) {
+      userDetail = data;
+      renderUserModal();
+      return data;
+    });
+  }
+
+  $('u_saveProfile').addEventListener('click', function () {
+    if (!userDetail) return;
+    var id = userDetail.user.id;
+    var username = $('u_username').value.trim();
+    var email = $('u_email').value.trim();
+    api('/users/' + id, { method: 'PUT', body: { username: username, email: email } })
+      .then(function () {
+        toast('资料已保存');
+        return reloadUserModal();
+      })
+      .then(loadUsers)
+      .catch(function (err) { toast(err.message, true); });
+  });
+
+  $('u_avatarUpload').addEventListener('click', function () {
+    if (!userDetail) return;
+    var file = $('u_avatar_file').files[0];
+    if (!file) { toast('先选一张图片', true); return; }
+    var form = new FormData();
+    form.append('file', file);
+    $('u_avatarUpload').disabled = true;
+    postForm('/users/' + userDetail.user.id + '/avatar', form)
+      .then(function (data) {
+        $('u_avatar_file').value = '';
+        toast('头像已更新（' + bytesLabel(data.bytes) + '）');
+        return reloadUserModal();
+      })
+      .then(loadUsers)
+      .catch(function (err) { toast(err.message, true); })
+      .finally(function () { $('u_avatarUpload').disabled = false; });
+  });
+
+  $('u_avatarDelete').addEventListener('click', function () {
+    if (!userDetail) return;
+    if (!confirm('删除这个用户的头像？客户端会改回用户名首字占位图。')) return;
+    api('/users/' + userDetail.user.id + '/avatar', { method: 'DELETE' })
+      .then(function () {
+        toast('头像已删除');
+        return reloadUserModal();
+      })
+      .then(loadUsers)
+      .catch(function (err) { toast(err.message, true); });
+  });
+
+  $('u_banBtn').addEventListener('click', function () {
+    if (!userDetail) return;
+    var days = Number($('u_ban_days').value);
+    var reason = $('u_ban_reason').value.trim();
+    var label = days === -1 ? '永久封禁' : ('封禁 ' + days + ' 天');
+    if (!confirm('确定' + label + '「' + userDetail.user.username + '」？\\n' +
+      '该账号的所有登录会立刻失效。' + (days === -1 ? '永久封禁需要手工解封。' : ''))) return;
+    api('/users/' + userDetail.user.id + '/ban', {
+      method: 'POST',
+      body: { durationDays: days, reason: reason }
+    }).then(function (data) {
+      toast(label + '已生效' + (data && data.user && data.user.ban && data.user.ban.permanent
+        ? '' : '，到期自动解封'));
+      return reloadUserModal();
+    }).then(loadUsers).then(loadStatus)
+      .catch(function (err) { toast(err.message, true); });
+  });
+
+  $('u_unbanBtn').addEventListener('click', function () {
+    if (!userDetail) return;
+    api('/users/' + userDetail.user.id + '/unban', { method: 'POST', body: {} })
+      .then(function () {
+        toast('已解除封禁');
+        return reloadUserModal();
+      })
+      .then(loadUsers).then(loadStatus)
+      .catch(function (err) { toast(err.message, true); });
+  });
+
+  $('u_password').addEventListener('click', function () {
+    if (!userDetail) return;
+    var pw = prompt('输入新密码（至少 8 位）。改完这个用户所有设备都要重新登录。');
+    if (!pw) return;
+    api('/users/' + userDetail.user.id + '/password', { method: 'POST', body: { password: pw } })
+      .then(function () { toast('密码已重置'); return reloadUserModal(); })
+      .catch(function (err) { toast(err.message, true); });
+  });
+
+  $('u_logout').addEventListener('click', function () {
+    if (!userDetail) return;
+    api('/users/' + userDetail.user.id + '/logout', { method: 'POST', body: {} })
+      .then(function () { toast('已踢下线'); return reloadUserModal(); })
+      .then(loadStatus)
+      .catch(function (err) { toast(err.message, true); });
+  });
+
+  $('u_restore').addEventListener('click', function () {
+    if (!userDetail) return;
+    api('/users/' + userDetail.user.id + '/restore', { method: 'POST', body: {} })
+      .then(function () {
+        toast('已撤销注销申请');
+        return reloadUserModal();
+      })
+      .then(loadUsers)
+      .catch(function (err) { toast(err.message, true); });
+  });
+
+  $('u_delete').addEventListener('click', function () {
+    if (!userDetail) return;
+    // 面板删除**立即生效**，且不可恢复：连 userdata 目录一起删。
+    if (!confirm('立即删除「' + userDetail.user.username + '」？\\n' +
+      '账号、登录会话、私有数据和头像都会被永久删除，无法恢复。')) return;
+    api('/users/' + userDetail.user.id + '/delete', { method: 'POST', body: {} })
+      .then(function () {
+        toast('账号已删除');
+        closeUserModal();
+        return loadUsers();
+      })
+      .then(loadStatus)
+      .catch(function (err) { toast(err.message, true); });
+  });
+
+  // ================================================================ 公告
+  //
+  // 只有三样东西：标题、内容、发布时间。发布时间可改 ——
+  // 最常见的两个动作是「日期写错了」和「这条提前发」。
+  var annCache = [];
+  var editingAnn = null;
+
+  function loadAnnouncements() {
+    return api('/announcements').then(function (data) {
+      annCache = data.announcements;
+      renderAnnouncements();
+    }).catch(function (err) { toast(err.message, true); });
+  }
+
+  function renderAnnouncements() {
+    var box = $('annList');
+    if (!annCache.length) {
+      box.innerHTML = '<p class="hint">还没有公告。点「新建公告」发一条。</p>';
+      return;
     }
-    if (btn.dataset.act === 'restore') {
-      api('/users/' + id + '/restore', { method: 'POST', body: {} })
-        .then(function () { toast('已撤销注销申请'); return loadUsers(); })
-        .catch(function (err) { toast(err.message, true); });
-    }
-    if (btn.dataset.act === 'del') {
-      // 面板删除**立即生效**，且不可恢复：连 userdata 目录一起删。
-      // 所以要求手打用户名确认，而不是一个 confirm() 就能过。
-      if (!confirm('立即删除这个账号？账号、登录会话、私有数据和头像都会被永久删除，无法恢复。')) return;
-      api('/users/' + id + '/delete', { method: 'POST', body: {} })
-        .then(function () { toast('账号已删除'); return loadUsers(); })
-        .then(loadStatus)
-        .catch(function (err) { toast(err.message, true); });
-    }
+    box.innerHTML = annCache.map(function (a) {
+      var badge = a.pending
+        ? '<span class="badge warn">待发布</span>'
+        : '<span class="badge ok">已发布</span>';
+      var text = String(a.content || '');
+      var preview = text.length > 90 ? text.slice(0, 90) + '…' : text;
+      return '<div class="item">' +
+        '<div style="min-width:0;flex:1 1 320px">' +
+          '<div class="item-title">' + esc(a.title) + ' ' + badge + '</div>' +
+          '<div class="item-sub">发布 ' + shortTime(a.publishedAt) +
+            (a.updatedAt && a.updatedAt !== a.publishedAt
+              ? ' · 更新 ' + shortTime(a.updatedAt) : '') + '</div>' +
+          '<div class="item-sub" style="white-space:pre-wrap">' + esc(preview) + '</div>' +
+        '</div>' +
+        '<div class="item-actions">' +
+          '<button class="ghost small" data-ann="' + a.id + '" data-act="edit">编辑</button>' +
+          '<button class="ghost small danger" data-ann="' + a.id + '" data-act="del">删除</button>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  }
+
+  function openAnnModal(ann) {
+    editingAnn = ann || null;
+    $('annModalTitle').textContent = ann ? '编辑公告' : '新建公告';
+    $('ann_title').value = ann ? ann.title : '';
+    $('ann_content').value = ann ? ann.content : '';
+    // 新建时默认「现在」；编辑时回填当前发布时间（改时间只要在这个基础上调）
+    $('ann_time').value = toLocalInput(ann ? ann.publishedAt : new Date().toISOString());
+    $('annDelete').hidden = !ann;
+    $('annModal').hidden = false;
+  }
+
+  function closeAnnModal() {
+    editingAnn = null;
+    $('annModal').hidden = true;
+  }
+
+  $('annNewBtn').addEventListener('click', function () { openAnnModal(null); });
+  $('annCancel').addEventListener('click', closeAnnModal);
+  $('annModal').addEventListener('click', function (e) {
+    if (e.target === $('annModal')) closeAnnModal();
+  });
+
+  $('annList').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-ann]');
+    if (!btn) return;
+    var ann = annCache.find(function (a) { return String(a.id) === btn.dataset.ann; });
+    if (btn.dataset.act === 'edit') { openAnnModal(ann || null); return; }
+    if (btn.dataset.act === 'del' && ann) deleteAnnouncement(ann);
+  });
+
+  function deleteAnnouncement(ann) {
+    if (!confirm('删除公告「' + ann.title + '」？删了客户端就看不到它了。')) return;
+    api('/announcements/' + ann.id, { method: 'DELETE' })
+      .then(function () {
+        toast('已删除');
+        if (editingAnn && editingAnn.id === ann.id) closeAnnModal();
+        return loadAnnouncements();
+      })
+      .then(loadStatus)
+      .catch(function (err) { toast(err.message, true); });
+  }
+
+  $('annDelete').addEventListener('click', function () {
+    if (editingAnn) deleteAnnouncement(editingAnn);
+  });
+
+  $('annSave').addEventListener('click', function () {
+    var title = $('ann_title').value.trim();
+    var content = $('ann_content').value.trim();
+    if (!title) { toast('标题不能为空', true); return; }
+    if (!content) { toast('内容不能为空', true); return; }
+    var payload = {
+      title: title,
+      content: content,
+      // 留空 = 立即发布（服务端会把空值解释成「现在」）
+      publishedAt: fromLocalInput($('ann_time').value)
+    };
+    var request = editingAnn
+      ? api('/announcements/' + editingAnn.id, { method: 'PUT', body: payload })
+      : api('/announcements', { method: 'POST', body: payload });
+    request.then(function (data) {
+      closeAnnModal();
+      var ann = data && data.announcement;
+      toast(ann && ann.pending ? '已保存，到发布时间才会出现在客户端' : '已保存并发布');
+      return loadAnnouncements();
+    }).then(loadStatus).catch(function (err) { toast(err.message, true); });
   });
 
   // ================================================================ 管理员

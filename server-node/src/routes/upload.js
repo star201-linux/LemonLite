@@ -27,6 +27,7 @@ import { queryOne, execute } from '../db.js';
 import { ApiError, sendOk, wrap } from '../lib/http.js';
 import { currentUserId, requireAuth } from '../lib/auth.js';
 import { config } from '../config.js';
+import { imageMime, sniffImage } from '../lib/image.js';
 import {
   avatarBytes,
   avatarPath,
@@ -72,32 +73,6 @@ const upload = multer({
     return cb(null, true);
   },
 });
-
-/** 识别图片真实格式（看文件头，不看 Content-Type） */
-function sniffImage(buffer) {
-  if (!buffer || buffer.length < 12) return null;
-  // PNG: 89 50 4E 47 0D 0A 1A 0A
-  if (
-    buffer[0] === 0x89 &&
-    buffer[1] === 0x50 &&
-    buffer[2] === 0x4e &&
-    buffer[3] === 0x47
-  ) {
-    return 'png';
-  }
-  // JPEG: FF D8 FF
-  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
-    return 'jpeg';
-  }
-  // WebP: "RIFF" .... "WEBP"
-  if (
-    buffer.toString('ascii', 0, 4) === 'RIFF' &&
-    buffer.toString('ascii', 8, 12) === 'WEBP'
-  ) {
-    return 'webp';
-  }
-  return null;
-}
 
 // ================================================================ 头像
 
@@ -194,10 +169,7 @@ uploadRouter.get(
     const buffer = await readFile(file);
     // 不写死 Content-Type：文件可能是 PNG/JPEG/WebP（见上传处的说明）。
     // 按魔数给准确的类型，浏览器才能正确显示。
-    const kind = sniffImage(buffer) ?? 'png';
-    const mime =
-      kind === 'jpeg' ? 'image/jpeg' : kind === 'webp' ? 'image/webp' : 'image/png';
-    res.set('Content-Type', mime);
+    res.set('Content-Type', imageMime(sniffImage(buffer)));
     res.set('Content-Length', String(buffer.length));
     return res.end(buffer);
   }),

@@ -27,6 +27,7 @@ import '../account/account_page.dart';
 import '../download/download_page.dart';
 import '../permissions/permission_controller_page.dart';
 import '../storage/storage_page.dart';
+import 'announcements_page.dart';
 import 'bundles_page.dart';
 import 'developer_page.dart';
 import 'personalization_page.dart';
@@ -121,6 +122,17 @@ class _SettingsPageState extends State<SettingsPage> {
           // 可配置项，对普通用户没有意义，留着就是个「这里好像能改点什么」的暗示。
           // 未解锁时这一整行不渲染，做到字面意义上的「看不出任何开发者相关的东西」。
           _section(context, '市场', <Widget>[
+            // 公告放在最前面：它不需要开发者模式，普通用户就该能翻到。
+            // 启动弹窗只显示最新一条，关掉之后唯一的入口就是这里。
+            ListTile(
+              leading: const Icon(Icons.campaign_outlined),
+              title: const Text('公告'),
+              subtitle: const Text('查看历史公告'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () =>
+                  Navigator.of(context).push(AnnouncementsPage.route()),
+            ),
+            const Divider(height: 1, indent: 16, endIndent: 16),
             if (settings.developerMode) ...<Widget>[
               ListTile(
                 leading: const Icon(Icons.dns_outlined),

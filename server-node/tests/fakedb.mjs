@@ -16,9 +16,11 @@ export const state = {
   tags: [],
   appTags: [],
   emailCodes: [],
+  announcements: [],
   nextUserId: 1,
   nextTagId: 1,
   nextCodeId: 1,
+  nextAnnouncementId: 1,
 };
 
 export function reset() {
@@ -32,9 +34,11 @@ export function reset() {
   state.tags = [];
   state.appTags = [];
   state.emailCodes = [];
+  state.announcements = [];
   state.nextUserId = 1;
   state.nextTagId = 1;
   state.nextCodeId = 1;
+  state.nextAnnouncementId = 1;
 }
 
 /** GROUP_CONCAT(... SEPARATOR '\u0001') 的等价物 */
@@ -109,6 +113,16 @@ const norm = (s) => String(s).replace(/\s+/g, ' ').trim();
 export async function query(sql, params = []) {
   const q = norm(sql);
 
+  // 面板用户列表：WHERE (? = '' OR username LIKE ? OR email LIKE ?)
+  if (/FROM users\s+WHERE \(\? = '' OR username LIKE \? OR email LIKE \?\)/.test(q)) {
+    const kw = params[0] ? String(params[1]).replace(/%/g, '') : '';
+    const rows = kw
+      ? state.users.filter(
+          (u) => u.username.includes(kw) || u.email.includes(kw),
+        )
+      : state.users.slice();
+    return rows.sort((a, b) => b.id - a.id).slice(0, 100).map((u) => ({ ...u }));
+  }
   if (/FROM users WHERE username = \? LIMIT 1/.test(q)) {
     return state.users.filter((u) => u.username === params[0]).map((u) => ({ id: u.id }));
   }
@@ -176,6 +190,64 @@ export async function query(sql, params = []) {
       .map((c) => ({ ...c }));
   }
 
+  // ---- 会话计数（面板用户详情）
+  if (/SUM\(CASE WHEN revoked = 0 AND expires_at > UTC_TIMESTAMP\(3\)/.test(q)) {
+    const rows = state.sessions.filter((s) => s.user_id === params[0]);
+    return [{
+      active: rows.filter((s) => !s.revoked).length,
+      total: rows.length,
+    }];
+  }
+
+  // 到期的临时封禁（永久封禁的 banned_until 是 NULL，不能被这条放过）
+  if (/FROM users\s+WHERE status = 'disabled'\s+AND banned_until IS NOT NULL/.test(q)) {
+    const now = new Date().toISOString().slice(0, 23).replace('T', ' ');
+    return state.users
+      .filter(
+        (u) =>
+          u.status === 'disabled' &&
+          u.banned_until &&
+          String(u.banned_until) <= now,
+      )
+      .slice(0, Number(params[0]) || 200)
+      .map((u) => ({ id: u.id }));
+  }
+
+  // ---- 公告
+  if (/FROM announcements\s+WHERE published_at <= UTC_TIMESTAMP\(3\)/.test(q)) {
+    const now = new Date().toISOString().slice(0, 23).replace('T', ' ');
+    const live = state.announcements
+      .filter((a) => String(a.published_at) <= now)
+      .sort((a, b) =>
+        String(b.published_at).localeCompare(String(a.published_at)) || b.id - a.id,
+      );
+    if (/LIMIT 1$/.test(q)) return live.slice(0, 1).map((a) => ({ ...a }));
+    const limit = Number(params[0]) || 20;
+    const offset = Number(params[1]) || 0;
+    return live.slice(offset, offset + limit).map((a) => ({ ...a }));
+  }
+  if (/FROM announcements\s+ORDER BY published_at DESC/.test(q)) {
+    return state.announcements
+      .slice()
+      .sort((a, b) =>
+        String(b.published_at).localeCompare(String(a.published_at)) || b.id - a.id,
+      )
+      .slice(0, Number(params[0]) || 200)
+      .map((a) => ({ ...a }));
+  }
+  if (/COUNT\(\*\) AS total/.test(q) && /FROM announcements/.test(q)) {
+    const now = new Date().toISOString().slice(0, 23).replace('T', ' ');
+    return [{
+      total: state.announcements.length,
+      pending: state.announcements.filter((a) => String(a.published_at) > now).length,
+    }];
+  }
+  if (/FROM announcements WHERE id = \?/.test(q)) {
+    return state.announcements
+      .filter((a) => a.id === params[0])
+      .map((a) => ({ ...a }));
+  }
+
   // ---- sessions
   if (/FROM login_sessions s JOIN users u/.test(q)) {
     const s = state.sessions.find((x) => x.token_hash === params[0]);
@@ -186,6 +258,8 @@ export async function query(sql, params = []) {
       ...s,
       username: u.username,
       status: u.status,
+      banned_until: u.banned_until ?? null,
+      ban_reason: u.ban_reason ?? '',
       deletion_scheduled_at: u.deletion_scheduled_at ?? null,
     }];
   }
@@ -304,6 +378,8 @@ export async function execute(sql, params = []) {
       password_hash,
       avatar_ver: '',
       status: 'active',
+      banned_until: null,
+      ban_reason: '',
       created_at: new Date().toISOString().slice(0, 23).replace('T', ' '),
       created_ip: created_ip ?? '',
       updated_at: new Date().toISOString().slice(0, 23).replace('T', ' '),
@@ -395,6 +471,33 @@ export async function execute(sql, params = []) {
     if (u) u.avatar_ver = '';
     return { affectedRows: u ? 1 : 0 };
   }
+  // 封禁：UPDATE users SET status = 'disabled', banned_until = ?, ban_reason = ?
+  if (/^UPDATE users SET status = 'disabled', banned_until = \?/.test(q)) {
+    const u = state.users.find((x) => x.id === params[2]);
+    if (!u) return { affectedRows: 0 };
+    u.status = 'disabled';
+    u.banned_until = params[0];
+    u.ban_reason = params[1];
+    return { affectedRows: 1 };
+  }
+  // 解封：UPDATE users SET status = 'active', banned_until = NULL, ban_reason = ''
+  if (/^UPDATE users SET status = 'active', banned_until = NULL/.test(q)) {
+    const u = state.users.find((x) => x.id === params[0]);
+    if (!u) return { affectedRows: 0 };
+    u.status = 'active';
+    u.banned_until = null;
+    u.ban_reason = '';
+    return { affectedRows: 1 };
+  }
+  // 旧接口的停用：UPDATE users SET status = 'disabled', banned_until = NULL, ban_reason = ?
+  if (/^UPDATE users SET status = 'disabled', banned_until = NULL/.test(q)) {
+    const u = state.users.find((x) => x.id === params[1]);
+    if (!u) return { affectedRows: 0 };
+    u.status = 'disabled';
+    u.banned_until = null;
+    u.ban_reason = params[0];
+    return { affectedRows: 1 };
+  }
   if (/^UPDATE users SET deletion_requested_at = NULL/.test(q)) {
     const u = state.users.find((x) => x.id === params[0]);
     if (u) {
@@ -417,6 +520,39 @@ export async function execute(sql, params = []) {
       u[key] = params[i];
     });
     return { affectedRows: 1 };
+  }
+
+  // ---- 公告
+  if (/^INSERT INTO announcements/.test(q)) {
+    const [title, content, published_at] = params;
+    const now = new Date().toISOString().slice(0, 23).replace('T', ' ');
+    const row = {
+      id: state.nextAnnouncementId++,
+      title,
+      content,
+      published_at,
+      created_at: now,
+      updated_at: now,
+    };
+    state.announcements.push(row);
+    return { insertId: row.id, affectedRows: 1 };
+  }
+  if (/^UPDATE announcements SET/.test(q)) {
+    const id = params[params.length - 1];
+    const row = state.announcements.find((a) => a.id === id);
+    if (!row) return { affectedRows: 0 };
+    const sets = q.slice(q.indexOf('SET') + 3, q.indexOf('WHERE')).split(',');
+    sets.forEach((s, i) => {
+      const key = s.split('=')[0].trim();
+      row[key] = params[i];
+    });
+    row.updated_at = new Date().toISOString().slice(0, 23).replace('T', ' ');
+    return { affectedRows: 1 };
+  }
+  if (/^DELETE FROM announcements WHERE id = \?/.test(q)) {
+    const before = state.announcements.length;
+    state.announcements = state.announcements.filter((a) => a.id !== params[0]);
+    return { affectedRows: before - state.announcements.length };
   }
 
   // ---- email_codes

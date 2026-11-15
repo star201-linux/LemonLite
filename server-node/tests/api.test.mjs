@@ -63,6 +63,13 @@ const { marketRouter } = await import('../src/routes/market.js');
 const { authRouter } = await import('../src/routes/auth.js');
 const { uploadRouter, userDataRouter } = await import('../src/routes/upload.js');
 const { packageRouter } = await import('../src/routes/packages.js');
+const { announcementsRouter: publicAnnouncementsRouter } = await import(
+  '../src/routes/announcements.js'
+);
+const { usersRouter: adminUsersRouter } = await import('../src/admin/users.js');
+const { announcementsRouter: adminAnnouncementsRouter } = await import(
+  '../src/admin/announcements.js'
+);
 const cors = (await import('cors')).default;
 const multer = (await import('multer')).default;
 
@@ -78,6 +85,12 @@ function buildApp() {
   app.use('/api/auth', authRouter);
   app.use('/api/upload', uploadRouter);
   app.use('/api/user', userDataRouter);
+  app.use('/api/announcements', publicAnnouncementsRouter);
+  // 面板的两个路由直接挂上，**跳过 requireAdmin**：这一层测的是处理逻辑
+  // （校验、状态流转、SQL），管理登录本身是 cookie 签名那套，另有链路。
+  // 挂成 /admin 的前缀与线上一致（线上是 adminRouter 挂在 /admin 再 use 它们）。
+  app.use('/admin', adminUsersRouter);
+  app.use('/admin', adminAnnouncementsRouter);
   app.use(notFoundHandler);
   app.use(errorHandler);
   return app;
@@ -592,6 +605,245 @@ describe('注销账号与更换邮箱', () => {
     assert.equal(me.status, 401);
     // 行也真的没了
     assert.ok(!fakedb.state.users.some((u) => u.email === 'bind-new@example.com'));
+  });
+});
+
+// ================================================================ 封禁与面板资料
+
+describe('封禁时长与面板改资料', () => {
+  let id;
+  let token;
+
+  before(async () => {
+    const r = await api('POST', '/api/auth/register', {
+      body: { username: '被封的人', email: 'ban@b.com', password: 'password123' },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    id = r.json.data.user.id;
+    token = r.json.data.token;
+  });
+
+  test('面板能读到用户详情与统计', async () => {
+    const r = await api('GET', `/admin/api/users/${id}`);
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.data.user.email, 'ban@b.com');
+    assert.equal(r.json.data.user.ban, null);
+    assert.equal(r.json.data.sessions.active, 1);
+    assert.equal(r.json.data.userdata.exists, false);
+  });
+
+  test('封 7 天：登录被拒，提示里带到期时间与原因，旧 token 立刻失效', async () => {
+    const r = await api('POST', `/admin/api/users/${id}/ban`, {
+      body: { durationDays: 7, reason: '发广告' },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.data.user.ban.permanent, false);
+    assert.equal(r.json.data.user.ban.daysLeft, 7);
+    assert.equal(r.json.data.user.ban.reason, '发广告');
+
+    const login = await api('POST', '/api/auth/login', {
+      body: { account: 'ban@b.com', password: 'password123' },
+    });
+    assert.equal(login.status, 403);
+    assert.equal(login.json.error.code, 'account_banned');
+    assert.match(login.json.error.message, /发广告/);
+
+    // 已经登录的设备也要立刻失效
+    const me = await api('GET', '/api/auth/me', { token });
+    assert.equal(me.status, 401);
+  });
+
+  test('解除封禁后可以正常登录', async () => {
+    const r = await api('POST', `/admin/api/users/${id}/unban`, { body: {} });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.data.user.status, 'active');
+
+    const login = await api('POST', '/api/auth/login', {
+      body: { account: 'ban@b.com', password: 'password123' },
+    });
+    assert.equal(login.status, 200, JSON.stringify(login.json));
+    token = login.json.data.token;
+  });
+
+  test('-1 是永久封禁，且不会因为「到期」被放过', async () => {
+    const r = await api('POST', `/admin/api/users/${id}/ban`, {
+      body: { durationDays: -1 },
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.data.user.ban.permanent, true);
+    assert.equal(r.json.data.user.ban.until, null);
+
+    const scan = await api('GET', `/admin/api/users/${id}`);
+    assert.equal(scan.json.data.user.ban.permanent, true);
+
+    await api('POST', `/admin/api/users/${id}/unban`, { body: {} });
+  });
+
+  test('临时封禁到期后即使清理任务没跑，也能登录并顺手解封', async () => {
+    const user = fakedb.state.users.find((u) => u.id === id);
+    user.status = 'disabled';
+    user.banned_until = '2020-01-01 00:00:00.000';
+    user.ban_reason = '很久以前';
+
+    const login = await api('POST', '/api/auth/login', {
+      body: { account: 'ban@b.com', password: 'password123' },
+    });
+    assert.equal(login.status, 200, JSON.stringify(login.json));
+    // 登录链路顺手把状态改回 active，面板不会再显示「已封禁」
+    assert.equal(user.status, 'active');
+    assert.equal(user.ban_reason, '');
+    token = login.json.data.token;
+  });
+
+  test('非法时长被拒', async () => {
+    for (const days of [0, -2, 99999, 'abc']) {
+      const r = await api('POST', `/admin/api/users/${id}/ban`, {
+        body: { durationDays: days },
+      });
+      assert.equal(r.status, 400, `days=${days}`);
+      assert.equal(r.json.error.code, 'bad_duration');
+    }
+  });
+
+  test('面板可以改用户名与注册邮箱', async () => {
+    const r = await api('PUT', `/admin/api/users/${id}`, {
+      body: { username: '改名之后', email: 'renamed@b.com' },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.data.user.username, '改名之后');
+    assert.equal(r.json.data.user.email, 'renamed@b.com');
+
+    const login = await api('POST', '/api/auth/login', {
+      body: { account: 'renamed@b.com', password: 'password123' },
+    });
+    assert.equal(login.status, 200, JSON.stringify(login.json));
+  });
+
+  test('改成别人占用的用户名 / 邮箱 → 409', async () => {
+    const other = await api('POST', '/api/auth/register', {
+      body: { username: '占位的人', email: 'taken@b.com', password: 'password123' },
+    });
+    assert.equal(other.status, 200, JSON.stringify(other.json));
+
+    const byName = await api('PUT', `/admin/api/users/${id}`, {
+      body: { username: '占位的人' },
+    });
+    assert.equal(byName.status, 409);
+    assert.equal(byName.json.error.code, 'username_taken');
+
+    const byEmail = await api('PUT', `/admin/api/users/${id}`, {
+      body: { email: 'taken@b.com' },
+    });
+    assert.equal(byEmail.status, 409);
+    assert.equal(byEmail.json.error.code, 'email_taken');
+  });
+
+  test('面板资料校验和注册用同一套规则', async () => {
+    const r = await api('PUT', `/admin/api/users/${id}`, {
+      body: { username: '12' },
+    });
+    assert.equal(r.status, 400);
+    assert.equal(r.json.error.code, 'invalid_username');
+
+    const bad = await api('PUT', `/admin/api/users/${id}`, {
+      body: { email: 'not-an-email' },
+    });
+    assert.equal(bad.status, 400);
+    assert.equal(bad.json.error.code, 'invalid_email');
+  });
+});
+
+// ================================================================ 公告
+
+describe('公告', () => {
+  test('没有公告时 latest 返回 null（不是 404）', async () => {
+    const r = await api('GET', '/api/announcements/latest');
+    assert.equal(r.status, 200);
+    assert.equal(r.json.data.announcement, null);
+  });
+
+  test('未来时间发布的公告，客户端看不到', async () => {
+    const future = new Date(Date.now() + 86400_000).toISOString();
+    const created = await api('POST', '/admin/api/announcements', {
+      body: { title: '明天的公告', content: '明天才发', publishedAt: future },
+    });
+    assert.equal(created.status, 200, JSON.stringify(created.json));
+    assert.equal(created.json.data.announcement.pending, true);
+
+    const list = await api('GET', '/api/announcements');
+    assert.equal(list.json.data.announcements.length, 0);
+    const latest = await api('GET', '/api/announcements/latest');
+    assert.equal(latest.json.data.announcement, null);
+
+    // 面板能看到（否则定时发布的稿子在发出前就消失了）
+    const admin = await api('GET', '/admin/api/announcements');
+    assert.equal(admin.json.data.announcements.length, 1);
+  });
+
+  test('把发布时间改到现在，客户端立刻能拿到', async () => {
+    const admin = await api('GET', '/admin/api/announcements');
+    const ann = admin.json.data.announcements[0];
+
+    const r = await api('PUT', `/admin/api/announcements/${ann.id}`, {
+      body: { publishedAt: new Date().toISOString() },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.data.announcement.pending, false);
+
+    const latest = await api('GET', '/api/announcements/latest');
+    assert.equal(latest.json.data.announcement.title, '明天的公告');
+    // 时间统一以 ISO + Z 返回，客户端两边都能解析
+    assert.match(latest.json.data.announcement.publishedAt, /Z$/);
+  });
+
+  test('新公告排在最新，列表按发布时间倒序', async () => {
+    const r = await api('POST', '/admin/api/announcements', {
+      body: { title: '第二条', content: '内容 B' },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+
+    const list = await api('GET', '/api/announcements?limit=10');
+    assert.equal(list.json.data.announcements.length, 2);
+    assert.equal(list.json.data.announcements[0].title, '第二条');
+  });
+
+  test('标题与内容不能为空', async () => {
+    const noTitle = await api('POST', '/admin/api/announcements', {
+      body: { title: '  ', content: 'x' },
+    });
+    assert.equal(noTitle.status, 400);
+    assert.equal(noTitle.json.error.code, 'bad_title');
+
+    const noContent = await api('POST', '/admin/api/announcements', {
+      body: { title: '有标题', content: '' },
+    });
+    assert.equal(noContent.status, 400);
+    assert.equal(noContent.json.error.code, 'bad_content');
+  });
+
+  test('发布时间填了无法解析的东西 → 400，而不是悄悄改成「现在」', async () => {
+    const r = await api('POST', '/admin/api/announcements', {
+      body: { title: 'x', content: 'y', publishedAt: '不是时间' },
+    });
+    assert.equal(r.status, 400);
+    assert.equal(r.json.error.code, 'bad_time');
+  });
+
+  test('可以删除公告', async () => {
+    const admin = await api('GET', '/admin/api/announcements');
+    const ann = admin.json.data.announcements.find((a) => a.title === '第二条');
+
+    const del = await api('DELETE', `/admin/api/announcements/${ann.id}`);
+    assert.equal(del.status, 200);
+    assert.equal(del.json.data.deleted, true);
+
+    const after = await api('GET', '/api/announcements');
+    assert.ok(!after.json.data.announcements.some((a) => a.id === ann.id));
+  });
+
+  test('删除不存在的公告 → 404', async () => {
+    const r = await api('DELETE', '/admin/api/announcements/99999');
+    assert.equal(r.status, 404);
   });
 });
 
