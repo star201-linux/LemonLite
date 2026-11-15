@@ -17,6 +17,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../core/globals.dart';
+import 'market_cache_service.dart';
 import 'settings_service.dart';
 
 /// 登录后的用户资料（与服务端 /api/auth/me 的返回一一对应）
@@ -31,6 +32,7 @@ class AccountProfile {
     this.createdAt,
     this.createdIp = '',
     this.updatedAt,
+    this.deletion,
   });
 
   final int id;
@@ -46,6 +48,10 @@ class AccountProfile {
   final String? createdAt;
   final String createdIp;
   final String? updatedAt;
+
+  /// 注销申请状态：null = 账号正常。
+  /// 冷静期内这里会有排期时间，账号页据此显示「将于 X 删除」+ 撤销入口。
+  final AccountDeletion? deletion;
 
   bool get hasAvatar => avatarUrl.trim().isNotEmpty;
 
@@ -68,6 +74,14 @@ class AccountProfile {
     createdAt: json['createdAt']?.toString(),
     createdIp: (json['createdIp'] ?? '').toString(),
     updatedAt: json['updatedAt']?.toString(),
+    deletion: json['deletion'] is Map
+        ? AccountDeletion.fromJson(
+            (json['deletion'] as Map).map<String, dynamic>(
+              (Object? k, Object? v) =>
+                  MapEntry<String, dynamic>(k.toString(), v),
+            ),
+          )
+        : null,
   );
 
   AccountProfile copyWith({
@@ -75,6 +89,8 @@ class AccountProfile {
     String? email,
     String? avatarUrl,
     String? avatarVersion,
+    AccountDeletion? deletion,
+    bool clearDeletion = false,
   }) => AccountProfile(
     id: id,
     username: username ?? this.username,
@@ -84,6 +100,7 @@ class AccountProfile {
     createdAt: createdAt,
     createdIp: createdIp,
     updatedAt: updatedAt,
+    deletion: clearDeletion ? null : (deletion ?? this.deletion),
   );
 
   /// 落盘用。字段名与 /api/auth/me 保持一致，
@@ -97,6 +114,39 @@ class AccountProfile {
     'createdAt': createdAt,
     'createdIp': createdIp,
     'updatedAt': updatedAt,
+    'deletion': deletion?.toJson(),
+  };
+}
+
+/// 注销申请（冷静期）状态。
+@immutable
+class AccountDeletion {
+  const AccountDeletion({
+    this.requestedAt = '',
+    this.scheduledAt = '',
+    this.daysLeft = 0,
+  });
+
+  /// 申请时间（服务端 UTC 字符串，展示时只截断，不做时区换算）
+  final String requestedAt;
+
+  /// 真正删除的时间
+  final String scheduledAt;
+
+  /// 还剩几天（服务端算好的，避免客户端时钟不准算错）
+  final int daysLeft;
+
+  factory AccountDeletion.fromJson(Map<String, dynamic> json) =>
+      AccountDeletion(
+        requestedAt: (json['requestedAt'] ?? '').toString(),
+        scheduledAt: (json['scheduledAt'] ?? '').toString(),
+        daysLeft: (json['daysLeft'] as num?)?.toInt() ?? 0,
+      );
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'requestedAt': requestedAt,
+    'scheduledAt': scheduledAt,
+    'daysLeft': daysLeft,
   };
 }
 
@@ -148,6 +198,7 @@ class AuthServerConfig {
     this.codeCooldown = 60,
     this.codeTtl = 600,
     this.tokenTtl = 'never',
+    this.deleteDelayDays = 7,
   });
 
   /// 注册是否需要邮箱验证码
@@ -168,17 +219,22 @@ class AuthServerConfig {
   /// token 有效期：`never` 表示永不过期
   final String tokenTtl;
 
+  /// 注销账号的冷静期（天）。0 = 申请即删除。
+  final int deleteDelayDays;
+
   bool get tokenNeverExpires => tokenTtl == 'never';
 
-  factory AuthServerConfig.fromJson(Map<String, dynamic> json) => AuthServerConfig(
-    registerCode: json['registerCode'] != false,
-    loginCode: json['loginCode'] == true,
-    mailReady: json['mailReady'] != false,
-    mailDriver: (json['mailDriver'] ?? '').toString(),
-    codeCooldown: (json['codeCooldown'] as num?)?.toInt() ?? 60,
-    codeTtl: (json['codeTtl'] as num?)?.toInt() ?? 600,
-    tokenTtl: (json['tokenTtl'] ?? 'never').toString(),
-  );
+  factory AuthServerConfig.fromJson(Map<String, dynamic> json) =>
+      AuthServerConfig(
+        registerCode: json['registerCode'] != false,
+        loginCode: json['loginCode'] == true,
+        mailReady: json['mailReady'] != false,
+        mailDriver: (json['mailDriver'] ?? '').toString(),
+        codeCooldown: (json['codeCooldown'] as num?)?.toInt() ?? 60,
+        codeTtl: (json['codeTtl'] as num?)?.toInt() ?? 600,
+        tokenTtl: (json['tokenTtl'] ?? 'never').toString(),
+        deleteDelayDays: (json['deleteDelayDays'] as num?)?.toInt() ?? 7,
+      );
 }
 
 /// 一次登录会话（「我的登录设备」里的一行）
@@ -191,6 +247,9 @@ class AccountSession {
     this.lastSeenAt = '',
     this.ip = '',
     this.device = '',
+    this.active = true,
+    this.revoked = false,
+    this.expired = false,
   });
 
   /// 服务端给的不透明句柄（token 前 16 位），用于撤销这一条
@@ -201,6 +260,13 @@ class AccountSession {
   final String ip;
   final String device;
 
+  /// 这一条现在还能不能用（历史接口有，在线列表恒为 true）
+  final bool active;
+
+  /// 是主动撤销（退出登录 / 被踢）还是自然过期
+  final bool revoked;
+  final bool expired;
+
   factory AccountSession.fromJson(Map<String, dynamic> json) => AccountSession(
     id: (json['id'] ?? '').toString(),
     current: json['current'] == true,
@@ -208,6 +274,9 @@ class AccountSession {
     lastSeenAt: (json['lastSeenAt'] ?? '').toString(),
     ip: (json['ip'] ?? '').toString(),
     device: (json['device'] ?? '').toString(),
+    active: json['active'] != false,
+    revoked: json['revoked'] == true,
+    expired: json['expired'] == true,
   );
 }
 
@@ -329,7 +398,10 @@ class AccountService extends ChangeNotifier {
   /// 为什么校验要单独一个开关：启动阶段网络可能还没好，
   /// 没网就不该让 App 卡在「正在校验登录态」上。所以先本地认定「已登录」，
   /// 后台再静默校验；校验失败（401）才清掉 token。
-  Future<void> init(SettingsService settings, {bool withProfile = false}) async {
+  Future<void> init(
+    SettingsService settings, {
+    bool withProfile = false,
+  }) async {
     _settings = settings;
     _token = settings.readRaw(_kToken);
     // 先清掉内存里的旧值：init 可能被调用多次（测试、切服务器），
@@ -395,7 +467,8 @@ class AccountService extends ChangeNotifier {
       final Object? raw = res.data;
       final Map<String, dynamic>? json = raw is Map
           ? raw.map<String, dynamic>(
-              (Object? k, Object? v) => MapEntry<String, dynamic>(k.toString(), v),
+              (Object? k, Object? v) =>
+                  MapEntry<String, dynamic>(k.toString(), v),
             )
           : null;
 
@@ -431,7 +504,10 @@ class AccountService extends ChangeNotifier {
         }
         throw AccountException(code, message);
       }
-      throw AccountException('http_${res.statusCode}', '服务器返回 ${res.statusCode}');
+      throw AccountException(
+        'http_${res.statusCode}',
+        '服务器返回 ${res.statusCode}',
+      );
     } on DioException catch (e) {
       throw AccountException('network', _describeDio(e));
     }
@@ -491,10 +567,7 @@ class AccountService extends ChangeNotifier {
     final Map<String, dynamic> data = await _request(
       'POST',
       '/api/auth/login-code',
-      body: <String, dynamic>{
-        'account': account.trim(),
-        'password': password,
-      },
+      body: <String, dynamic>{'account': account.trim(), 'password': password},
       auth: false,
     );
     return EmailCodeSent.fromJson(data);
@@ -631,11 +704,14 @@ class AccountService extends ChangeNotifier {
     }
   }
 
-  /// 改用户名 / 邮箱
-  Future<void> updateProfile({String? username, String? email}) async {
+  /// 改用户名。
+  ///
+  /// 邮箱**不在这里改**：它是账号的根凭证，必须走
+  /// [sendChangeEmailCode] + [changeEmail]（当前密码 + 新邮箱验证码）。
+  /// 服务端的 PATCH /me 也会拒绝 email 字段，两边口径一致。
+  Future<void> updateProfile({String? username}) async {
     final Map<String, dynamic> body = <String, dynamic>{
       if (username != null) 'username': username.trim(),
-      if (email != null) 'email': email.trim(),
     };
     if (body.isEmpty) return;
 
@@ -649,11 +725,104 @@ class AccountService extends ChangeNotifier {
       if (user is Map) {
         _profile = AccountProfile.fromJson(
           user.map<String, dynamic>(
-            (Object? k, Object? v) => MapEntry<String, dynamic>(k.toString(), v),
+            (Object? k, Object? v) =>
+                MapEntry<String, dynamic>(k.toString(), v),
           ),
         );
         unawaited(_cacheProfile());
       }
+    });
+  }
+
+  // ---------------------------------------------------------------- 更换邮箱
+
+  /// 给**新邮箱**发换绑验证码。服务端会先核对当前密码再发信。
+  Future<EmailCodeSent> sendChangeEmailCode({
+    required String email,
+    required String password,
+  }) async {
+    final String target = email.trim();
+    if (!_emailPattern.hasMatch(target)) {
+      throw const AccountException('invalid_email', '邮箱格式不正确');
+    }
+    final Map<String, dynamic> data = await _request(
+      'POST',
+      '/api/auth/change-email/code',
+      body: <String, dynamic>{'email': target, 'password': password},
+    );
+    return EmailCodeSent.fromJson(data);
+  }
+
+  /// 换绑邮箱：当前密码 + 新邮箱收到的验证码。
+  ///
+  /// 成功后服务端会撤销**其它**设备的会话（邮箱变了，等于账号的根换了），
+  /// 当前设备保留。
+  Future<void> changeEmail({
+    required String email,
+    required String password,
+    required String code,
+  }) async {
+    await _guard(() async {
+      final Map<String, dynamic> data = await _request(
+        'POST',
+        '/api/auth/change-email',
+        body: <String, dynamic>{
+          'email': email.trim(),
+          'password': password,
+          'code': code.trim(),
+        },
+      );
+      final Object? user = data['user'];
+      if (user is Map) {
+        _profile = AccountProfile.fromJson(
+          user.map<String, dynamic>(
+            (Object? k, Object? v) =>
+                MapEntry<String, dynamic>(k.toString(), v),
+          ),
+        );
+        unawaited(_cacheProfile());
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------- 注销账号
+
+  /// 申请注销账号。
+  ///
+  /// 返回剩余冷静期（天）；服务端配置为 0 时返回 null（已立即删除）。
+  /// **无论哪种情况，本地登录态都会清掉**：账号已经在删除路径上，
+  /// 继续挂着登录态只会让界面自相矛盾。冷静期内想反悔，重新登录即可
+  ///（服务端允许登录，账号页会显示「将于 X 删除」和撤销入口）。
+  Future<AccountDeletion?> requestAccountDeletion({
+    required String password,
+  }) async {
+    AccountDeletion? deletion;
+    await _guard(() async {
+      final Map<String, dynamic> data = await _request(
+        'POST',
+        '/api/auth/delete',
+        body: <String, dynamic>{'password': password},
+      );
+      final Object? raw = data['deletion'];
+      if (raw is Map) {
+        deletion = AccountDeletion.fromJson(
+          raw.map<String, dynamic>(
+            (Object? k, Object? v) =>
+                MapEntry<String, dynamic>(k.toString(), v),
+          ),
+        );
+      }
+      await _clearAuth();
+    });
+    return deletion;
+  }
+
+  /// 撤销注销申请（冷静期内）。
+  Future<void> cancelAccountDeletion() async {
+    await _guard(() async {
+      await _request('POST', '/api/auth/delete/cancel');
+      _profile = _profile?.copyWith(clearDeletion: true);
+      unawaited(_cacheProfile());
     });
   }
 
@@ -695,7 +864,10 @@ class AccountService extends ChangeNotifier {
 
   /// 我的登录设备
   Future<List<AccountSession>> fetchSessions() async {
-    final Map<String, dynamic> data = await _request('GET', '/api/auth/sessions');
+    final Map<String, dynamic> data = await _request(
+      'GET',
+      '/api/auth/sessions',
+    );
     // 服务端返回的是数组，_request 会包成 {value: [...]}
     final Object? list = data['value'];
     if (list is! List) return const <AccountSession>[];
@@ -704,7 +876,8 @@ class AccountService extends ChangeNotifier {
         .map(
           (Map m) => AccountSession.fromJson(
             m.map<String, dynamic>(
-              (Object? k, Object? v) => MapEntry<String, dynamic>(k.toString(), v),
+              (Object? k, Object? v) =>
+                  MapEntry<String, dynamic>(k.toString(), v),
             ),
           ),
         )
@@ -714,6 +887,27 @@ class AccountService extends ChangeNotifier {
   /// 撤销某个设备
   Future<void> revokeSession(String id) async {
     await _request('DELETE', '/api/auth/sessions/$id');
+  }
+
+  /// 历史登录记录（含已撤销 / 已过期），用于「登录设备」二级页的历史分区。
+  Future<List<AccountSession>> fetchSessionHistory() async {
+    final Map<String, dynamic> data = await _request(
+      'GET',
+      '/api/auth/sessions/history',
+    );
+    final Object? list = data['value'];
+    if (list is! List) return const <AccountSession>[];
+    return list
+        .whereType<Map>()
+        .map(
+          (Map m) => AccountSession.fromJson(
+            m.map<String, dynamic>(
+              (Object? k, Object? v) =>
+                  MapEntry<String, dynamic>(k.toString(), v),
+            ),
+          ),
+        )
+        .toList(growable: false);
   }
 
   // ---------------------------------------------------------------- 头像
@@ -772,7 +966,8 @@ class AccountService extends ChangeNotifier {
       final Object? raw = res.data;
       final Map<String, dynamic>? json = raw is Map
           ? raw.map<String, dynamic>(
-              (Object? k, Object? v) => MapEntry<String, dynamic>(k.toString(), v),
+              (Object? k, Object? v) =>
+                  MapEntry<String, dynamic>(k.toString(), v),
             )
           : null;
       if (json == null || json['ok'] != true) {
@@ -908,6 +1103,11 @@ class AccountService extends ChangeNotifier {
     _token = null;
     _profile = null;
     await _settings?.removeMany(<String>[_kToken, _kProfile]);
+    // 退出登录 / 被踢 / 注销：市场缓存是上一个登录态留下的痕迹，一并清掉。
+    // 清缓存失败不该影响退出，所以不 await 它的结果。
+    unawaited(
+      MarketCacheService.maybeInstance?.clear() ?? Future<void>.value(),
+    );
     notifyListeners();
   }
 
@@ -920,7 +1120,8 @@ class AccountService extends ChangeNotifier {
       if (decoded is Map) {
         return AccountProfile.fromJson(
           decoded.map<String, dynamic>(
-            (Object? k, Object? v) => MapEntry<String, dynamic>(k.toString(), v),
+            (Object? k, Object? v) =>
+                MapEntry<String, dynamic>(k.toString(), v),
           ),
         );
       }

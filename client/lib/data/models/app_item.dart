@@ -43,6 +43,7 @@ class AppItem {
   final String id;
   final String name;
   final String description;
+
   /// 主分类 id（服务端 apps.category_id）。
   ///
   /// 保留它是因为客户端有些地方只认一个分类（比如搜索的 category 参数）；
@@ -117,7 +118,9 @@ class AppItem {
           .toList(growable: false),
       tags: asStringList(json['tags']),
       screenshots: asStringList(json['screenshots']),
-      permissions: asStringList(json['permissions'] ?? json['required_permissions']),
+      permissions: asStringList(
+        json['permissions'] ?? json['required_permissions'],
+      ),
       updatedAt: asDateTime(json['updated_at'] ?? json['updatedAt']),
     );
   }
@@ -187,7 +190,8 @@ class AppItem {
 
   /// 本地搜索用的拼接串（名称 / 作者 / 简介 / 分类 / 标签 / 版本）
   String get searchBlob =>
-      '$name $author $description $category $version ${tags.join(' ')}'.toLowerCase();
+      '$name $author $description $category $version ${tags.join(' ')}'
+          .toLowerCase();
 
   /// 把相对路径解析成绝对地址（index.json 允许 url / icon / screenshots 写相对路径）
   static String resolveUrl(String base, String path) {
@@ -206,29 +210,58 @@ class AppItem {
   /// 用服务器地址把内部所有相对地址解析成绝对地址。
   /// 放在 Repository 里调用，这样 UI 层拿到的永远是可直接使用的地址。
   AppItem resolveAgainst(String base) => AppItem(
-        id: id,
-        name: name,
-        description: description,
-        category: category,
-        version: version,
-        author: author,
-        // 包地址不动：服务端已经拼成绝对地址了（客户端要直接拿去下载）
-        packageUrl: packageUrl,
-        packageEntry: packageEntry,
-        packageSha256: packageSha256,
-        packageBytes: packageBytes,
-        icon: icon == null ? null : resolveUrl(base, icon!),
-        homepage: homepage,
-        size: size,
-        categories: categories,
-        tags: tags,
-        screenshots: screenshots
-            .map((String item) => resolveUrl(base, item))
-            .where((String item) => item.isNotEmpty)
-            .toList(growable: false),
-        permissions: permissions,
-        updatedAt: updatedAt,
-      );
+    id: id,
+    name: name,
+    description: description,
+    category: category,
+    version: version,
+    author: author,
+    // 包地址不动：服务端已经拼成绝对地址了（客户端要直接拿去下载）
+    packageUrl: packageUrl,
+    packageEntry: packageEntry,
+    packageSha256: packageSha256,
+    packageBytes: packageBytes,
+    icon: icon == null ? null : resolveUrl(base, icon!),
+    homepage: homepage,
+    size: size,
+    categories: categories,
+    tags: tags,
+    screenshots: screenshots
+        .map((String item) => resolveUrl(base, item))
+        .where((String item) => item.isNotEmpty)
+        .toList(growable: false),
+    permissions: permissions,
+    updatedAt: updatedAt,
+  );
+
+  /// 落盘用（主页 / 搜索的本地缓存）。
+  ///
+  /// 字段名与 [fromJson] 完全对称，所以 `fromJson(toJson())` 是恒等变换。
+  /// 注意这里写的是**已经解析过的绝对地址**（resolveAgainst 之后的对象）——
+  /// 缓存只在同一台服务器下有效，换了服务器整份缓存会被丢弃
+  ///（见 MarketCacheService 里的 server 字段）。
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'id': id,
+    'name': name,
+    'description': description,
+    'category': category,
+    'version': version,
+    'author': author,
+    'packageUrl': packageUrl,
+    'packageEntry': packageEntry,
+    'packageSha256': packageSha256,
+    'packageBytes': packageBytes,
+    'icon': icon,
+    'homepage': homepage,
+    'size': size,
+    'categories': categories
+        .map((AppCategory c) => <String, dynamic>{'id': c.id, 'name': c.name})
+        .toList(growable: false),
+    'tags': tags,
+    'screenshots': screenshots,
+    'permissions': permissions,
+    'updatedAt': updatedAt?.toIso8601String(),
+  };
 
   @override
   String toString() => 'AppItem($id, $name, $category)';

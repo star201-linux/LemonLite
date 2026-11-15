@@ -22,6 +22,7 @@ import { packageRouter } from './routes/packages.js';
 import { adminRouter } from './routes/admin.js';
 import { adminCount, ensureAdminSecret } from './admin/auth.js';
 import { ensureSchema } from './lib/schema_guard.js';
+import { purgeDueDeletions } from './lib/account_deletion.js';
 import { iconsRoot } from './lib/icon_store.js';
 import { describeMail, mailStatus } from './lib/mailer.js';
 
@@ -212,6 +213,34 @@ app.use(errorHandler);
 
 // ---------------------------------------------------------------- 启动
 
+/** 扫一遍到期的注销申请。失败只记日志：清理不该挡住服务启动。 */
+async function runDeletionPurge(reason) {
+  try {
+    const removed = await purgeDueDeletions();
+    if (removed > 0) {
+      console.log(`\x1b[32m✓\x1b[0m ${reason}清理：删除了 ${removed} 个注销到期账号`);
+    }
+  } catch (e) {
+    console.error(`[account] 注销清理失败（${reason}）：${e.code || e.message}`);
+  }
+}
+
+/**
+ * 递归排期而不是 setInterval：间隔来自 config，
+ * 面板改完 `ACCOUNT_PURGE_INTERVAL_MINUTES` 之后，下一次排期就会用新值。
+ * 间隔为 0 表示关掉定时清理（只靠启动时与 npm run prune）。
+ */
+function scheduleDeletionPurge() {
+  const minutes = Math.max(0, Number(config.account.purgeIntervalMinutes) || 0);
+  if (minutes === 0) return;
+  const timer = setTimeout(async () => {
+    await runDeletionPurge('定时');
+    scheduleDeletionPurge();
+  }, minutes * 60 * 1000);
+  // 不因这个定时器而阻止进程退出
+  timer.unref();
+}
+
 async function start() {
   try {
     await ping();
@@ -231,6 +260,11 @@ async function start() {
   }
   // 面板 cookie 的签名密钥：没有就生成一个写回 .env
   await ensureAdminSecret();
+
+  // 注销到期的账号：启动时先扫一次（进程停了两天也不会漏掉），
+  // 之后按配置的间隔递归排期。间隔读的是 config，管理面板改完下一次就生效。
+  await runDeletionPurge('启动');
+  scheduleDeletionPurge();
 
   // 反代 / 慢客户端保护：头 10 秒内必须收完，整个请求 30 秒内必须结束。
   // 不设的话，一个故意不读完 body 的连接会一直占着 socket。

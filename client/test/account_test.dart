@@ -153,7 +153,11 @@ void main() {
 
       expect(AccountService.instance.isLoggedIn, isFalse);
       expect(AccountService.instance.profile, isNull);
-      expect(settings.readRaw('account.token'), isNull, reason: '本地 token 要一起删');
+      expect(
+        settings.readRaw('account.token'),
+        isNull,
+        reason: '本地 token 要一起删',
+      );
       expect(settings.readRaw('account.profile'), isNull, reason: '资料缓存也要删');
 
       expect(AccountService.instance.hasOfflineNotice, isTrue);
@@ -232,7 +236,9 @@ void main() {
       expect(on.tokenNeverExpires, isTrue);
 
       // 服务端没给字段时：注册要验证码、登录不要（与 .env.example 默认一致）
-      final AuthServerConfig off = AuthServerConfig.fromJson(<String, dynamic>{});
+      final AuthServerConfig off = AuthServerConfig.fromJson(
+        <String, dynamic>{},
+      );
       expect(off.registerCode, isTrue);
       expect(off.loginCode, isFalse);
       expect(off.mailReady, isTrue);
@@ -241,8 +247,9 @@ void main() {
     });
 
     test('有限有效期时 tokenNeverExpires 为 false', () {
-      final AuthServerConfig cfg =
-          AuthServerConfig.fromJson(<String, dynamic>{'tokenTtl': '7d'});
+      final AuthServerConfig cfg = AuthServerConfig.fromJson(<String, dynamic>{
+        'tokenTtl': '7d',
+      });
       expect(cfg.tokenNeverExpires, isFalse);
     });
   });
@@ -300,10 +307,7 @@ void main() {
     });
 
     test('邮箱错误', () {
-      expect(
-        const AccountException('email_taken', '占用').isEmailError,
-        isTrue,
-      );
+      expect(const AccountException('email_taken', '占用').isEmailError, isTrue);
       expect(
         const AccountException('invalid_email', '格式').isEmailError,
         isTrue,
@@ -323,10 +327,7 @@ void main() {
           reason: '$code 应归为密码错误',
         );
       }
-      expect(
-        const AccountException('network', 'x').isPasswordError,
-        isFalse,
-      );
+      expect(const AccountException('network', 'x').isPasswordError, isFalse);
     });
 
     test('验证码错误', () {
@@ -471,6 +472,79 @@ void main() {
       const Size landscapePhone = Size(915, 412);
       expect(landscapePhone.width >= 600, isTrue, reason: '宽度确实超了');
       expect(landscapePhone.shortestSide >= 600, isFalse, reason: '最短边没超');
+    });
+  });
+
+  // ========================================================== 注销 / 历史会话
+
+  group('注销状态与历史会话', () {
+    test('profile 能解析注销排期，并能原样落盘', () {
+      final AccountProfile p = AccountProfile.fromJson(<String, dynamic>{
+        'id': 3,
+        'username': '待注销',
+        'email': 'bye@example.com',
+        'deletion': <String, dynamic>{
+          'requestedAt': '2026-11-01 08:00:00.000',
+          'scheduledAt': '2026-11-08 08:00:00.000',
+          'daysLeft': 7,
+          'due': false,
+        },
+      });
+      expect(p.deletion, isNotNull);
+      expect(p.deletion!.daysLeft, 7);
+      expect(p.deletion!.scheduledAt, '2026-11-08 08:00:00.000');
+
+      // toJson → fromJson 恒等（缓存依赖这一点）
+      final AccountProfile back = AccountProfile.fromJson(p.toJson());
+      expect(back.deletion!.daysLeft, 7);
+      expect(back.email, 'bye@example.com');
+    });
+
+    test('注销字段缺失时是 null（绝大多数账号）', () {
+      final AccountProfile p = AccountProfile.fromJson(<String, dynamic>{
+        'id': 1,
+        'username': 'a',
+        'email': 'a@b.com',
+      });
+      expect(p.deletion, isNull);
+    });
+
+    test('copyWith(clearDeletion: true) 能清掉注销状态', () {
+      final AccountProfile p = AccountProfile.fromJson(<String, dynamic>{
+        'id': 1,
+        'username': 'a',
+        'email': 'a@b.com',
+        'deletion': <String, dynamic>{'daysLeft': 3},
+      });
+      expect(p.deletion, isNotNull);
+      expect(p.copyWith(clearDeletion: true).deletion, isNull);
+    });
+
+    test('服务端策略带冷静期天数，缺省 7 天', () {
+      final AuthServerConfig cfg = AuthServerConfig.fromJson(<String, dynamic>{
+        'deleteDelayDays': 0,
+      });
+      expect(cfg.deleteDelayDays, 0);
+      expect(AuthServerConfig.fromJson(<String, dynamic>{}).deleteDelayDays, 7);
+    });
+
+    test('历史会话：active / revoked / expired 三个标记', () {
+      final AccountSession revoked = AccountSession.fromJson(<String, dynamic>{
+        'id': '0123456789abcdef',
+        'active': false,
+        'revoked': true,
+        'expired': false,
+      });
+      expect(revoked.active, isFalse);
+      expect(revoked.revoked, isTrue);
+      expect(revoked.expired, isFalse);
+
+      // 在线接口不返回 active，解析出来应当是「有效」
+      final AccountSession online = AccountSession.fromJson(<String, dynamic>{
+        'id': '0123456789abcdef',
+        'current': true,
+      });
+      expect(online.active, isTrue);
     });
   });
 

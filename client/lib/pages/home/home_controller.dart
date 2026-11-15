@@ -12,6 +12,8 @@
 //    让新地址立即生效（验收标准第 4 条）；
 // 3. 后续要给主页加单元测试时不需要 pump widget。
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../../core/globals.dart';
@@ -19,6 +21,7 @@ import '../../data/models/app_item.dart';
 import '../../data/models/category.dart';
 import '../../data/models/market_feed.dart';
 import '../../data/repositories/market_repository.dart';
+import '../../data/services/market_cache_service.dart';
 import '../../theme/app_theme.dart';
 
 enum HomeStatus {
@@ -36,9 +39,13 @@ enum HomeStatus {
 }
 
 class HomeController extends ChangeNotifier {
-  HomeController(this._repository);
+  HomeController(this._repository, {MarketCacheService? cache})
+    : _cache = cache ?? MarketCacheService.maybeInstance;
 
   final MarketRepository _repository;
+
+  /// 本地分页缓存。null = 还没初始化（单测里可以直接不传）
+  final MarketCacheService? _cache;
 
   HomeStatus _status = HomeStatus.initial;
 
@@ -63,6 +70,18 @@ class HomeController extends ChangeNotifier {
 
   /// 是否还有更多
   bool _hasMore = false;
+
+  /// 服务端实际使用的每页条数（第一次响应里的 meta.limit）。
+  /// 0 = 还不知道，此时请求不带 limit，让服务端用自己的默认值。
+  int _pageLimit = 0;
+
+  /// 当前列表是不是「从本地缓存恢复的」。
+  ///
+  /// 只用于页脚文案（「显示的是上次缓存」）—— 缓存会在随后的一次
+  /// 静默刷新里被服务端数据覆盖，所以它是个瞬时状态。
+  bool _fromCache = false;
+
+  bool get fromCache => _fromCache;
 
   HomeStatus get status => _status;
   String? get errorMessage => _errorMessage;
@@ -111,30 +130,56 @@ class HomeController extends ChangeNotifier {
   List<AppItem> get visibleApps {
     final String keyword = _query.trim().toLowerCase();
     if (keyword.isEmpty && _categoryId == AppCategory.allId) return _apps;
-    return _apps.where((AppItem app) {
-      if (_categoryId != AppCategory.allId && app.category != _categoryId) {
-        return false;
-      }
-      if (keyword.isEmpty) return true;
-      return app.searchBlob.contains(keyword);
-    }).toList(growable: false);
+    return _apps
+        .where((AppItem app) {
+          if (_categoryId != AppCategory.allId && app.category != _categoryId) {
+            return false;
+          }
+          if (keyword.isEmpty) return true;
+          return app.searchBlob.contains(keyword);
+        })
+        .toList(growable: false);
   }
 
   /// 有数据，但被筛选条件过滤空了（与「市场本身没数据」是两种提示）
   bool get isFilteredEmpty => hasData && visibleApps.isEmpty;
 
-  /// 首次进入时加载一次
+  /// 首次进入时加载一次。
+  ///
+  /// 顺序：**先给缓存（如果有）→ 再静默刷新**。
+  /// 这样冷启动看到的是上次的列表，而不是一屏加载圈；
+  /// 刷新成功后列表会就地替换，用户的滚动位置也不会被清掉
+  ///（因为列表长度通常不变，滚动位置由 ScrollPosition 自己保持）。
   Future<void> ensureLoaded() async {
-    if (_status == HomeStatus.initial) {
-      await load();
+    if (_status != HomeStatus.initial) return;
+
+    final CachedFeed? cached = _cache?.readFeed(_categoryId);
+    if (cached != null) {
+      _apps = cached.apps;
+      _categories = cached.categories;
+      _nextCursor = cached.nextCursor;
+      _hasMore = cached.hasMore;
+      _pageLimit = cached.limit;
+      _updatedAt = cached.savedAt;
+      _status = HomeStatus.ready;
+      _fromCache = true;
+      lemonLog('Home', '从缓存恢复 ${cached.apps.length} 个应用');
+      notifyListeners();
     }
+
+    await load(silent: _apps.isNotEmpty);
   }
 
   // ------------------------------------------------------------- 加载
 
   /// 加载 / 刷新第一页。下拉刷新与按钮重试都走这里。
-  Future<void> load() async {
-    _status = HomeStatus.loading;
+  ///
+  /// [silent] = true 时不切到 loading 态（列表里已经有缓存/旧数据时用），
+  /// 否则用户每次下拉刷新都会看到整屏闪一下。
+  Future<void> load({bool silent = false}) async {
+    if (!silent || _apps.isEmpty) {
+      _status = HomeStatus.loading;
+    }
     _errorMessage = null;
     _errorDetail = null;
     notifyListeners();
@@ -165,16 +210,22 @@ class HomeController extends ChangeNotifier {
 
   Future<void> _loadFirstPage() async {
     final MarketFeedPage page = await _repository.fetchFeed(
+      limit: _pageLimit > 0 ? _pageLimit : null,
       category: _categoryId,
     );
 
     // 分类只在第一页返回；后续页不带，所以这里要保留旧值。
     if (page.categories.isNotEmpty) _categories = page.categories;
+    // 服务端说了算的每页条数：后续页按同一个数请求，
+    // 否则会出现「第一页 20 条、第二页 50 条」的跳变。
+    if (page.limit > 0) _pageLimit = page.limit;
     _apps = page.apps;
     _nextCursor = page.nextCursor;
     _hasMore = page.hasMore && page.nextCursor != null;
     _updatedAt = DateTime.now();
     _status = HomeStatus.ready;
+    _fromCache = false;
+    unawaited(_saveCache());
 
     // 选中的分类在新数据里可能已经没了（市场改版 / 换了服务器）
     if (_categoryId != AppCategory.allId &&
@@ -193,6 +244,7 @@ class HomeController extends ChangeNotifier {
     notifyListeners();
     try {
       final MarketFeedPage page = await _repository.fetchFeed(
+        limit: _pageLimit > 0 ? _pageLimit : null,
         cursor: _nextCursor,
         category: _categoryId,
       );
@@ -206,6 +258,8 @@ class HomeController extends ChangeNotifier {
       ];
       _nextCursor = page.nextCursor;
       _hasMore = page.hasMore && page.nextCursor != null;
+      if (page.limit > 0) _pageLimit = page.limit;
+      unawaited(_saveCache());
     } on MarketException catch (e) {
       // 加载下一页失败不该把已有列表清空，只提示一句
       AppTheme.showToast(e.message, isError: true);
@@ -244,6 +298,29 @@ class HomeController extends ChangeNotifier {
     // 分类是**服务端筛的**（不会把全部应用拉下来再本地过滤），
     // 所以换分类必须重新请求第一页。
     _reloadFirstPage();
+  }
+
+  /// 把当前已加载的列表写进本地缓存（失败不影响任何功能）
+  Future<void> _saveCache() async {
+    final MarketCacheService? cache = _cache;
+    if (cache == null || _apps.isEmpty) return;
+    try {
+      await cache.saveFeed(
+        category: _categoryId,
+        apps: _apps,
+        categories: _categories,
+        nextCursor: _nextCursor,
+        hasMore: _hasMore,
+        limit: _pageLimit,
+      );
+    } catch (e) {
+      lemonLog('Home', '写缓存失败（忽略）：$e');
+    }
+  }
+
+  /// 清掉当前分类的缓存（手动刷新 / 换服务器时由外部调用）
+  Future<void> clearCache() async {
+    await _cache?.clear();
   }
 
   void clearFilters() {

@@ -8,6 +8,7 @@
 //   taxonomy.js   分类与标签的增删改
 //   users.js      市场用户的封禁 / 改密 / 踢下线
 //   mail.js       邮件通道与验证码策略
+//   settings.js   站点策略（注销冷静期、市场分页）
 //   ui.js         整页 HTML（服务端模板字符串，无构建步骤）
 //
 // 三条安全底线：
@@ -32,6 +33,7 @@ import { appsRouter } from '../admin/apps.js';
 import { taxonomyRouter } from '../admin/taxonomy.js';
 import { usersRouter } from '../admin/users.js';
 import { mailRouter } from '../admin/mail.js';
+import { settingsRouter } from '../admin/settings.js';
 import { renderAdminPage } from '../admin/ui.js';
 
 export const adminRouter = Router();
@@ -94,6 +96,11 @@ adminRouter.get(
         loginCode: config.auth.loginCode,
         tokenTtl: config.auth.sessionTtl,
       },
+      site: {
+        deleteDelayDays: config.account.deleteDelayDays,
+        marketPageSize: config.market.defaultPageSize,
+        marketMaxPage: config.market.maxPageSize,
+      },
       db: { ok: true },
       uptime: uptimeLabel(),
     });
@@ -105,3 +112,4 @@ adminRouter.use(appsRouter);
 adminRouter.use(taxonomyRouter);
 adminRouter.use(usersRouter);
 adminRouter.use(mailRouter);
+adminRouter.use(settingsRouter);

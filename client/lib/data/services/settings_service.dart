@@ -28,7 +28,9 @@ class SettingsService extends ChangeNotifier {
   static SettingsService get instance {
     final SettingsService? s = _instance;
     if (s == null) {
-      throw StateError('SettingsService 尚未初始化，请先在 main() 中 await SettingsService.init()');
+      throw StateError(
+        'SettingsService 尚未初始化，请先在 main() 中 await SettingsService.init()',
+      );
     }
     return s;
   }
@@ -110,14 +112,11 @@ class SettingsService extends ChangeNotifier {
   }
 
   Future<void> setThemeMode(ThemeMode mode) async {
-    await _prefs.setString(
-      _kThemeMode,
-      switch (mode) {
-        ThemeMode.light => 'light',
-        ThemeMode.dark => 'dark',
-        ThemeMode.system => 'system',
-      },
-    );
+    await _prefs.setString(_kThemeMode, switch (mode) {
+      ThemeMode.light => 'light',
+      ThemeMode.dark => 'dark',
+      ThemeMode.system => 'system',
+    });
     notifyListeners();
   }
 
@@ -205,7 +204,8 @@ class SettingsService extends ChangeNotifier {
   // ------------------------------------------------------- 通用原始读写
 
   String? readRaw(String key) => _prefs.getString(key);
-  Future<bool> writeRaw(String key, String value) => _prefs.setString(key, value);
+  Future<bool> writeRaw(String key, String value) =>
+      _prefs.setString(key, value);
   Future<bool> removeRaw(String key) => _prefs.remove(key);
 
   /// 批量删除。返回实际删掉的条数。
@@ -216,4 +216,12 @@ class SettingsService extends ChangeNotifier {
     }
     return removed;
   }
+
+  /// 列出所有以 [prefix] 开头的键。
+  ///
+  /// 缓存清理需要它：缓存键是「前缀 + 变量」，不可能事先枚举出来。
+  List<String> keysWithPrefix(String prefix) => _prefs
+      .getKeys()
+      .where((String key) => key.startsWith(prefix))
+      .toList(growable: false);
 }

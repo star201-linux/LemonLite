@@ -51,6 +51,15 @@ CREATE TABLE IF NOT EXISTS users (
   -- 账号状态：disabled 用于封禁，登录与鉴权都直接拒绝
   status        ENUM('active','disabled') NOT NULL DEFAULT 'active',
 
+  -- 注销申请（冷静期）：
+  --   deletion_requested_at  用户点「注销账号」的时间
+  --   deletion_scheduled_at  真正删除的时点 = 申请时间 + 面板设置的冷静期
+  -- 两者都为 NULL 表示账号正常。冷静期内**仍然可以登录** ——
+  -- 否则用户想撤销都进不来，那就不叫冷静期了。
+  -- 到期后由启动任务 / npm run prune 物理删除（连同 userdata/<id>/）。
+  deletion_requested_at DATETIME(3) NULL,
+  deletion_scheduled_at DATETIME(3) NULL,
+
   -- 注册时间 / 注册 IP（需求明确要求的两个字段）
   -- IPv6 最长 45 字符，VARCHAR(45) 够用；用字符串而不是 INT 是因为
   -- 将来可能记 IPv6 或经过代理的真实 IP。

@@ -10,6 +10,7 @@ import { Router } from 'express';
 import { execute, query, queryOne } from '../db.js';
 import { ApiError, sendOk, wrap } from '../lib/http.js';
 import { hashPassword, revokeAllSessions } from '../lib/auth.js';
+import { cancelDeletion, deletionInfo, purgeUser } from '../lib/account_deletion.js';
 
 export const usersRouter = Router();
 
@@ -25,7 +26,8 @@ usersRouter.get(
     const q = String(req.query.q ?? '').trim();
     const like = `%${q}%`;
     const rows = await query(
-      `SELECT id, username, email, status, created_at, created_ip
+      `SELECT id, username, email, status, created_at, created_ip,
+              deletion_requested_at, deletion_scheduled_at
          FROM users
         WHERE (? = '' OR username LIKE ? OR email LIKE ?)
         ORDER BY id DESC LIMIT 100`,
@@ -39,6 +41,7 @@ usersRouter.get(
         status: r.status,
         createdAt: r.created_at,
         createdIp: r.created_ip,
+        deletion: deletionInfo(r),
       })),
     });
   }),
@@ -78,6 +81,31 @@ usersRouter.post(
     // 改密码 = 把这个人从所有设备上踢下去（管理面板代改的场合尤其如此）
     await revokeAllSessions(id);
     sendOk(res, { id, updated: true });
+  }),
+);
+
+/** 立即删除（跳过冷静期）：用户写信要求、或者这个号在发垃圾内容时用 */
+usersRouter.post(
+  '/api/users/:id/delete',
+  wrap(async (req, res) => {
+    const id = userIdParam(req);
+    const row = await queryOne('SELECT id, username FROM users WHERE id = ?', [id]);
+    if (!row) throw ApiError.notFound('没有这个用户');
+    // purgeUser 内部会先撤销全部会话，再删 userdata/<id>/，最后删行
+    await purgeUser(id, { reason: `管理面板删除（${row.username}）` });
+    sendOk(res, { id, deleted: true });
+  }),
+);
+
+/** 撤销注销申请（用户反悔、或者误操作后由运营恢复） */
+usersRouter.post(
+  '/api/users/:id/restore',
+  wrap(async (req, res) => {
+    const id = userIdParam(req);
+    const row = await queryOne('SELECT id FROM users WHERE id = ?', [id]);
+    if (!row) throw ApiError.notFound('没有这个用户');
+    await cancelDeletion(id);
+    sendOk(res, { id, deletion: null });
   }),
 );
 

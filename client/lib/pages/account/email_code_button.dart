@@ -102,6 +102,12 @@ class _EmailCodeButtonState extends State<EmailCodeButton> {
       height: 56,
       child: OutlinedButton(
         onPressed: disabled ? null : _fire,
+        // 默认的 24dp 左右内边距会把「获取验证码」挤成两行
+        //（112 宽的按钮里只剩 64dp 放文字）。这里收窄到 6dp，
+        // 文案在按钮里始终只有一行 —— 也就不需要为两种状态分别量宽度。
+        style: OutlinedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+        ),
         child: _sending
             ? const SizedBox(
                 width: 16,

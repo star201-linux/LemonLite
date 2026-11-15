@@ -51,6 +51,10 @@ process.env.TOKEN_TTL = '7d';
 // 这批接口测试会全部卡在「请输入邮箱验证码」上（和被测逻辑无关）。
 process.env.AUTH_REGISTER_CODE = 'off';
 process.env.AUTH_LOGIN_CODE = 'off';
+// 邮件通道固定 console：换邮箱流程要发验证码，真实 SMTP 在 CI 里不存在。
+// 同时把冷静期钉成 7 天，避免本机 .env 里的值影响断言。
+process.env.MAIL_DRIVER = 'console';
+process.env.ACCOUNT_DELETE_DELAY_DAYS = '7';
 
 const { default: express } = await import('express');
 const { config } = await import('../src/config.js');
@@ -417,6 +421,177 @@ describe('账号系统', () => {
     assert.equal(used.json.data.username.available, false);
     const free = await api('GET', '/api/auth/check?username=还没人用');
     assert.equal(free.json.data.username.available, true);
+  });
+});
+
+// ================================================================ 注销 / 换邮箱
+
+describe('注销账号与更换邮箱', () => {
+  let token;
+  const email = 'bind-old@example.com';
+
+  test('注册一个专用账号', async () => {
+    const r = await api('POST', '/api/auth/register', {
+      body: { username: '换绑用户', email, password: 'password123' },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    token = r.json.data.token;
+  });
+
+  test('PATCH /me 不能再直接改邮箱', async () => {
+    const r = await api('PATCH', '/api/auth/me', {
+      token,
+      body: { email: 'sneaky@example.com' },
+    });
+    assert.equal(r.status, 400);
+    assert.equal(r.json.error.code, 'email_locked');
+  });
+
+  test('换邮箱验证码必须先验密码', async () => {
+    const r = await api('POST', '/api/auth/change-email/code', {
+      token,
+      body: { email: 'bind-new@example.com' },
+    });
+    assert.equal(r.status, 400);
+    assert.equal(r.json.error.code, 'password_required');
+  });
+
+  test('密码不对 → wrong_password', async () => {
+    const r = await api('POST', '/api/auth/change-email/code', {
+      token,
+      body: { email: 'bind-new@example.com', password: 'nope-nope' },
+    });
+    assert.equal(r.status, 400);
+    assert.equal(r.json.error.code, 'wrong_password');
+  });
+
+  test('新邮箱已被别人占用 → 409', async () => {
+    const r = await api('POST', '/api/auth/change-email/code', {
+      token,
+      body: { email: 'z@b.com', password: 'password123' },
+    });
+    assert.equal(r.status, 409);
+    assert.equal(r.json.error.code, 'email_taken');
+  });
+
+  let code;
+  test('发换绑验证码成功（码只出现在日志里）', async () => {
+    const lines = [];
+    const original = console.log;
+    const previous = config.mail.devEchoCode;
+    console.log = (...args) => lines.push(args.join(' '));
+    config.mail.devEchoCode = true;
+    try {
+      const r = await api('POST', '/api/auth/change-email/code', {
+        token,
+        body: { email: 'bind-new@example.com', password: 'password123' },
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      assert.equal(r.json.data.sent, true);
+      // 响应里永远不能有验证码
+      assert.equal(r.json.data.code, undefined);
+      assert.equal(r.json.data.debugCode, undefined);
+    } finally {
+      console.log = original;
+      config.mail.devEchoCode = previous;
+    }
+    const hit = lines.join('\n').match(/\b(\d{6})\b/);
+    assert.ok(hit, `日志里应该能拿到验证码：${lines.join(' | ')}`);
+    code = hit[1];
+  });
+
+  test('验证码不对 → invalid_code', async () => {
+    const r = await api('POST', '/api/auth/change-email', {
+      token,
+      body: {
+        email: 'bind-new@example.com',
+        password: 'password123',
+        code: '000000',
+      },
+    });
+    assert.equal(r.status, 400);
+    assert.equal(r.json.error.code, 'invalid_code');
+  });
+
+  test('密码 + 验证码正确 → 邮箱换绑，其它设备被踢', async () => {
+    // 先造一个「其它设备」的会话，才能验证「换绑会踢掉它们」
+    const other = await api('POST', '/api/auth/login', {
+      body: { account: 'bind-old@example.com', password: 'password123' },
+    });
+    assert.equal(other.status, 200);
+
+    const r = await api('POST', '/api/auth/change-email', {
+      token,
+      body: {
+        email: 'bind-new@example.com',
+        password: 'password123',
+        code,
+      },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.data.user.email, 'bind-new@example.com');
+    assert.equal(r.json.data.revokedOthers, true);
+
+    // 旧邮箱不能再登录，新邮箱可以
+    const oldLogin = await api('POST', '/api/auth/login', {
+      body: { account: 'bind-old@example.com', password: 'password123' },
+    });
+    assert.equal(oldLogin.status, 401);
+    const newLogin = await api('POST', '/api/auth/login', {
+      body: { account: 'bind-new@example.com', password: 'password123' },
+    });
+    assert.equal(newLogin.status, 200);
+  });
+
+  test('历史登录记录包含已撤销的会话', async () => {
+    const r = await api('GET', '/api/auth/sessions/history', { token });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.ok(r.json.data.length >= 2);
+    assert.ok(r.json.data.some((s) => s.revoked === true));
+    assert.ok(r.json.data.some((s) => s.active === true && s.current === true));
+    // 句柄不是完整 token
+    assert.ok(r.json.data.every((s) => s.id.length === 16));
+  });
+
+  test('申请注销 → 排期 daysLeft，账号仍可登录', async () => {
+    const r = await api('POST', '/api/auth/delete', {
+      token,
+      body: { password: 'password123' },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.data.deleted, false);
+    assert.equal(r.json.data.deletion.daysLeft, 7);
+    assert.ok(r.json.data.deletion.scheduledAt);
+
+    const me = await api('GET', '/api/auth/me', { token });
+    assert.equal(me.status, 200);
+    assert.equal(me.json.data.deletion.daysLeft, 7);
+  });
+
+  test('冷静期内可以撤销注销', async () => {
+    const r = await api('POST', '/api/auth/delete/cancel', { token, body: {} });
+    assert.equal(r.status, 200);
+    const me = await api('GET', '/api/auth/me', { token });
+    assert.equal(me.json.data.deletion, null);
+  });
+
+  test('冷静期为 0 时申请即删除，token 立刻失效', async () => {
+    const previous = config.account.deleteDelayDays;
+    config.account.deleteDelayDays = 0;
+    try {
+      const r = await api('POST', '/api/auth/delete', {
+        token,
+        body: { password: 'password123' },
+      });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      assert.equal(r.json.data.deleted, true);
+    } finally {
+      config.account.deleteDelayDays = previous;
+    }
+    const me = await api('GET', '/api/auth/me', { token });
+    assert.equal(me.status, 401);
+    // 行也真的没了
+    assert.ok(!fakedb.state.users.some((u) => u.email === 'bind-new@example.com'));
   });
 });
 

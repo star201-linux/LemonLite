@@ -9,6 +9,9 @@
 //   全是 `CREATE TABLE IF NOT EXISTS`，幂等、一次几毫秒，换来「升级不用记命令」。
 //
 // 它**不负责**灌种子数据（那是 init.js 的事），也绝不做 ALTER/删表。
+// 唯一的例外是 ensureUserColumns()：`CREATE TABLE IF NOT EXISTS` 不会给
+// 已经存在的表补列，而「注销冷静期」需要的两列是 0.8 才加的。那段 ALTER
+// 是幂等的（列已存在时吃 1060 错误码），并且只加 NULL 列、不改不删。
 
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -38,6 +41,35 @@ export async function backfillAppCategories(conn = pool) {
 }
 
 /**
+ * 给已存在的 users 表补「注销冷静期」两列。
+ *
+ * 为什么不能只写在 schema.sql 里：那里全是 `CREATE TABLE IF NOT EXISTS`，
+ * 表已经存在时整条语句直接跳过 —— 老库升级上来会缺这两列，
+ * 然后「申请注销」每次 500（Unknown column）。
+ *
+ * 幂等：列已存在时 MySQL 报 ER_DUP_FIELDNAME(1060)，直接当作成功。
+ * 只加 NULL 列，不动任何已有数据，所以对生产库是安全的。
+ */
+const USER_DELETION_COLUMNS = [
+  ['deletion_requested_at', 'DATETIME(3) NULL'],
+  ['deletion_scheduled_at', 'DATETIME(3) NULL'],
+];
+
+export async function ensureUserColumns(conn = pool) {
+  const added = [];
+  for (const [name, type] of USER_DELETION_COLUMNS) {
+    try {
+      await conn.query(`ALTER TABLE users ADD COLUMN ${name} ${type}`);
+      added.push(name);
+    } catch (e) {
+      // 1060 = Duplicate column name，其它错误交给调用方记录
+      if (e.code !== 'ER_DUP_FIELDNAME' && e.errno !== 1060) throw e;
+    }
+  }
+  return added;
+}
+
+/**
  * 幂等建表 + 回填。
  *
  * 失败不抛异常：数据库账号可能只有读写权限（没 CREATE），
@@ -61,6 +93,15 @@ export async function ensureSchema({ logger = console } = {}) {
       failed.push(e.code || e.message);
     }
   }
+
+  // 老库补列（新库这里已经是 no-op）
+  try {
+    const added = await ensureUserColumns();
+    if (added.length > 0) logger.log(`[schema] users 表补列：${added.join(', ')}`);
+  } catch (e) {
+    failed.push(e.code || e.message);
+  }
+
   if (failed.length > 0) {
     logger.warn(`! 表结构自检有 ${failed.length} 条没执行成功（${failed[0]}）`);
     logger.warn('  如果接口报「表不存在」，先跑一次：npm run init');

@@ -195,6 +195,7 @@ export function renderAdminPage({ version }) {
       <button class="tab" data-tab="users" aria-selected="false">用户</button>
       <button class="tab" data-tab="admins" aria-selected="false">管理员</button>
       <button class="tab" data-tab="mail" aria-selected="false">邮件</button>
+      <button class="tab" data-tab="site" aria-selected="false">站点</button>
     </div>
 
     <div id="tab-overview">
@@ -387,6 +388,51 @@ export function renderAdminPage({ version }) {
           <button class="ghost" type="button" id="reloadBtn">重新读取</button>
         </div>
         <p class="hint">保存会写入服务端 <code>.env</code> 并立即应用到内存，不需要重启。</p>
+      </form>
+    </div>
+
+    <div id="tab-site" hidden>
+      <form class="card" id="siteForm">
+        <h2>站点策略</h2>
+        <p class="hint">这些设置对所有用户生效，改完立即应用到内存，不需要重启。</p>
+
+        <h3>注销账号</h3>
+        <div class="row">
+          <div class="field">
+            <label for="site_delete_days">冷静期（天）</label>
+            <input id="site_delete_days" type="number" min="0" max="365" />
+          </div>
+          <div class="field">
+            <label for="site_purge_minutes">到期扫描间隔（分钟）</label>
+            <input id="site_purge_minutes" type="number" min="0" max="1440" />
+          </div>
+        </div>
+        <p class="hint">
+          用户在小程序里申请注销后，账号会进入冷静期：期间仍可登录并撤销，到期后自动删除
+          （账号行、登录会话、私有数据与头像）。填 <code>0</code> 表示申请即删除，请谨慎使用。
+          扫描间隔为 <code>0</code> 时只在服务启动与 <code>npm run prune</code> 时清理。
+        </p>
+
+        <h3>市场分页</h3>
+        <div class="row">
+          <div class="field">
+            <label for="site_page_size">每页条数</label>
+            <input id="site_page_size" type="number" min="5" max="200" />
+          </div>
+          <div class="field">
+            <label for="site_max_page">每页上限</label>
+            <input id="site_max_page" type="number" min="5" max="200" />
+          </div>
+        </div>
+        <p class="hint">
+          客户端主页与搜索页都按这个条数分段加载；每页上限用来挡住
+          <code>?limit=999999</code> 这种请求。客户端不传 <code>limit</code> 时用「每页条数」。
+        </p>
+
+        <div class="actions">
+          <button class="primary" type="submit">保存并立即生效</button>
+          <button class="ghost" type="button" id="siteReloadBtn">重新读取</button>
+        </div>
       </form>
     </div>
   </section>
@@ -589,6 +635,7 @@ export function renderAdminPage({ version }) {
       if (btn.dataset.tab === 'users') loadUsers();
       if (btn.dataset.tab === 'admins') loadAdmins();
       if (btn.dataset.tab === 'mail') loadMail();
+      if (btn.dataset.tab === 'site') loadSite();
     });
   });
 
@@ -614,6 +661,10 @@ export function renderAdminPage({ version }) {
         ['注册验证码', data.auth.registerCode ? '需要' : '不需要'],
         ['登录验证码', data.auth.loginCode ? '需要' : '不需要'],
         ['token', data.auth.tokenTtl === 'never' ? '永不过期' : data.auth.tokenTtl],
+        ['注销冷静期', data.site
+          ? (data.site.deleteDelayDays === 0 ? '立即删除' : data.site.deleteDelayDays + ' 天')
+          : '—'],
+        ['市场每页', data.site ? data.site.marketPageSize + ' 条（上限 ' + data.site.marketMaxPage + '）' : '—'],
         ['数据库', data.db.ok ? '正常' : '异常']
       ].map(function (pair) {
         return '<div class="kv"><span>' + pair[0] + '</span><span>' + pair[1] + '</span></div>';
@@ -1011,17 +1062,29 @@ export function renderAdminPage({ version }) {
       }
       tbody.innerHTML = data.users.map(function (u) {
         var disabled = u.status === 'disabled';
+        var badging = disabled
+          ? '<span class="badge err">已封禁</span>'
+          : '<span class="badge ok">正常</span>';
+        if (u.deletion) {
+          badging += ' <span class="badge warn">注销中' +
+            (u.deletion.daysLeft > 0 ? ' · 剩 ' + u.deletion.daysLeft + ' 天' : ' · 待清理') +
+            '</span>';
+        }
         return '<tr>' +
           '<td>' + u.id + '</td>' +
           '<td>' + esc(u.username) + '</td>' +
           '<td>' + esc(u.email) + '</td>' +
-          '<td>' + (disabled ? '<span class="badge err">已封禁</span>' : '<span class="badge ok">正常</span>') + '</td>' +
+          '<td>' + badging + '</td>' +
           '<td>' + esc(u.createdAt || '') + '</td>' +
           '<td><div class="item-actions">' +
             '<button class="ghost small" data-user="' + u.id + '" data-act="toggle" data-status="' +
               (disabled ? 'active' : 'disabled') + '">' + (disabled ? '解封' : '封禁') + '</button>' +
             '<button class="ghost small" data-user="' + u.id + '" data-act="password">改密码</button>' +
             '<button class="ghost small" data-user="' + u.id + '" data-act="logout">踢下线</button>' +
+            (u.deletion
+              ? '<button class="ghost small" data-user="' + u.id + '" data-act="restore">撤销注销</button>'
+              : '') +
+            '<button class="ghost small danger" data-user="' + u.id + '" data-act="del">删除账号</button>' +
           '</div></td>' +
         '</tr>';
       }).join('');
@@ -1056,6 +1119,20 @@ export function renderAdminPage({ version }) {
     if (btn.dataset.act === 'logout') {
       api('/users/' + id + '/logout', { method: 'POST', body: {} })
         .then(function () { toast('已踢下线'); return loadStatus(); })
+        .catch(function (err) { toast(err.message, true); });
+    }
+    if (btn.dataset.act === 'restore') {
+      api('/users/' + id + '/restore', { method: 'POST', body: {} })
+        .then(function () { toast('已撤销注销申请'); return loadUsers(); })
+        .catch(function (err) { toast(err.message, true); });
+    }
+    if (btn.dataset.act === 'del') {
+      // 面板删除**立即生效**，且不可恢复：连 userdata 目录一起删。
+      // 所以要求手打用户名确认，而不是一个 confirm() 就能过。
+      if (!confirm('立即删除这个账号？账号、登录会话、私有数据和头像都会被永久删除，无法恢复。')) return;
+      api('/users/' + id + '/delete', { method: 'POST', body: {} })
+        .then(function () { toast('账号已删除'); return loadUsers(); })
+        .then(loadStatus)
         .catch(function (err) { toast(err.message, true); });
     }
   });
@@ -1239,6 +1316,34 @@ export function renderAdminPage({ version }) {
   });
 
   $('reloadBtn').addEventListener('click', function () { loadMail(); });
+
+  // ================================================================ 站点
+  function loadSite() {
+    return api('/site').then(function (site) {
+      $('site_delete_days').value = site.deleteDelayDays;
+      $('site_purge_minutes').value = site.purgeIntervalMinutes;
+      $('site_page_size').value = site.marketPageSize;
+      $('site_max_page').value = site.marketMaxPage;
+    }).catch(function (err) { toast(err.message, true); });
+  }
+
+  $('siteForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    api('/site', {
+      method: 'PUT',
+      body: {
+        deleteDelayDays: Number($('site_delete_days').value),
+        purgeIntervalMinutes: Number($('site_purge_minutes').value),
+        marketPageSize: Number($('site_page_size').value) || 20,
+        marketMaxPage: Number($('site_max_page').value) || 50
+      }
+    }).then(function (result) {
+      toast('已保存，立即生效');
+      return loadSite();
+    }).then(loadStatus).catch(function (err) { toast(err.message, true); });
+  });
+
+  $('siteReloadBtn').addEventListener('click', function () { loadSite(); });
 
   $('testBtn').addEventListener('click', function () {
     var to = $('test_to').value.trim();

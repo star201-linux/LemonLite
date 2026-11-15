@@ -21,13 +21,19 @@ function escapeHtml(text) {
  * @param {object} opts
  * @param {string} opts.code       验证码
  * @param {number} opts.ttlSeconds 有效期（秒）
- * @param {string} [opts.purpose]  register / reset
+ * @param {string} [opts.purpose]  register / login / change_email / reset
  * @param {string} [opts.brand]    品牌名
  */
 export function verificationMail({ code, ttlSeconds, purpose = 'register', brand = 'LemonLite' }) {
   const minutes = Math.max(1, Math.round(ttlSeconds / 60));
   const action =
-    purpose === 'login' ? '登录账号' : purpose === 'reset' ? '重置密码' : '注册账号';
+    purpose === 'login'
+      ? '登录账号'
+      : purpose === 'change_email'
+        ? '更换绑定邮箱'
+        : purpose === 'reset'
+          ? '重置密码'
+          : '注册账号';
   const subject = `${code} 是你的 ${brand} 验证码（${minutes} 分钟内有效）`;
 
   const text = [

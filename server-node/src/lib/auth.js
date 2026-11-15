@@ -134,7 +134,7 @@ export async function resolveSession(token) {
 
   const row = await queryOne(
     `SELECT s.token_hash, s.user_id, s.expires_at, s.revoked,
-            u.username, u.status
+            u.username, u.status, u.deletion_scheduled_at
        FROM login_sessions s
        JOIN users u ON u.id = s.user_id
       WHERE s.token_hash = ?
@@ -144,6 +144,11 @@ export async function resolveSession(token) {
   if (!row) return null;
   if (row.revoked) return null;
   if (row.status !== 'active') return null;
+
+  // 注销冷静期已到期但清理任务还没跑到：直接把这张票当作失效。
+  // 清理是「最多晚 30 分钟」的事，但「到期后还能用」是不能接受的语义。
+  const deletionDue = parseSqlTime(row.deletion_scheduled_at);
+  if (deletionDue && deletionDue.getTime() <= Date.now()) return null;
 
   // 过期判断放在 JS 里而不是 SQL 的 `expires_at > NOW()`：
   // 数据库时区与应用服务器时区可能不一致，用 JS 的 Date 比较
@@ -205,6 +210,35 @@ export async function listSessions(userId) {
       LIMIT 50`,
     [userId],
   );
+}
+
+/**
+ * 历史登录记录：已撤销 + 已过期 + 仍然有效的**全部**会话。
+ *
+ * 为什么「历史」里也包含当前有效的：客户端把它分成「当前 / 其它在线 /
+ * 历史」三组显示，分组的依据是 active/revoked/expired 三个标记 ——
+ * 让服务端一次给全，客户端就不必再发两次请求，也不会出现
+ * 「在线列表刚刷新、历史列表还是旧的」这种不一致。
+ *
+ * 不返回 token，只返回前 16 位句柄（与 /sessions 一致）。
+ */
+export async function listSessionHistory(userId, { limit = 100 } = {}) {
+  const { query } = await import('../db.js');
+  return query(
+    `SELECT token_hash, created_at, last_seen_at, expires_at, login_ip, device, revoked
+       FROM login_sessions
+      WHERE user_id = ?
+      ORDER BY last_seen_at DESC
+      LIMIT ?`,
+    [userId, limit],
+  );
+}
+
+/** 解析 'YYYY-MM-DD HH:mm:ss.SSS'（UTC）→ Date；非法返回 null */
+function parseSqlTime(value) {
+  if (!value) return null;
+  const d = new Date(`${String(value).replace(' ', 'T')}Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 /** 清理过期且已撤销 / 过期很久的行（运维脚本或定时任务调用） */

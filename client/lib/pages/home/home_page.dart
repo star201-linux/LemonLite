@@ -402,10 +402,13 @@ class _HomePageState extends State<HomePage> {
   /// 注意这里说「已加载」而不是「共」：服务端分页时客户端**不知道总数**，
   /// 谎报一个数字比不报更糟。
   String _footerLabel(HomeController controller, int visible) {
+    // 缓存状态是瞬时的：静默刷新完成后 fromCache 会变回 false，
+    // 所以这里只是给「刚打开、还没联网」的那几秒一个解释。
+    final String suffix = controller.fromCache ? '（本地缓存）' : '';
     if (controller.hasMore) {
-      return '已加载 $visible 个，继续下滑加载更多';
+      return '已加载 $visible 个，继续下滑加载更多$suffix';
     }
-    return '共 $visible 个应用';
+    return '共 $visible 个应用$suffix';
   }
 }
 
@@ -458,11 +461,7 @@ class _LoadMoreTriggerState extends State<_LoadMoreTrigger> {
     return const Padding(
       padding: EdgeInsets.symmetric(vertical: 16),
       child: Center(
-        child: SizedBox(
-          width: 20,
-          height: 20,
-          child: M3ELoadingIndicator(),
-        ),
+        child: SizedBox(width: 20, height: 20, child: M3ELoadingIndicator()),
       ),
     );
   }

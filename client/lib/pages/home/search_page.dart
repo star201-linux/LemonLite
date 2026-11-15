@@ -19,6 +19,7 @@ import 'package:provider/provider.dart';
 import '../../data/models/app_item.dart';
 import '../../data/models/market_feed.dart';
 import '../../data/repositories/market_repository.dart';
+import '../../data/services/market_cache_service.dart';
 import '../../theme/motion.dart';
 import '../detail/app_detail_page.dart';
 import 'widgets/app_card.dart';
@@ -33,7 +34,8 @@ class SearchPage extends StatefulWidget {
 
   static Route<void> route({String initialQuery = ''}) =>
       MaterialPageRoute<void>(
-        builder: (BuildContext context) => SearchPage(initialQuery: initialQuery),
+        builder: (BuildContext context) =>
+            SearchPage(initialQuery: initialQuery),
       );
 
   @override
@@ -41,8 +43,9 @@ class SearchPage extends StatefulWidget {
 }
 
 class _SearchPageState extends State<SearchPage> {
-  late final TextEditingController _input =
-      TextEditingController(text: widget.initialQuery);
+  late final TextEditingController _input = TextEditingController(
+    text: widget.initialQuery,
+  );
 
   /// 输入防抖：每敲一个字都发请求会把服务端打满，
   /// 也会让「正在输入」时的列表疯狂跳动。
@@ -60,6 +63,9 @@ class _SearchPageState extends State<SearchPage> {
   /// 是否加载中 / 是否还有更多
   bool _loading = false;
   bool _loadingMore = false;
+
+  /// 当前结果是不是缓存（页脚会注明「本地缓存」，让用户知道还没联网刷新完）
+  bool _fromCache = false;
 
   String? _error;
 
@@ -97,23 +103,60 @@ class _SearchPageState extends State<SearchPage> {
 
   Future<void> _load() async {
     final int seq = ++_requestSeq;
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
+    final String query = _input.text;
+    final String tag = _activeTag;
 
+    // ---- 1. 先看缓存：同一组「关键词 + 标签」的结果直接铺上，
+    //         用户不会为了一次网络往返看一屏转圈。
+    final CachedSearch? cached = MarketCacheService.maybeInstance?.readSearch(
+      query: query,
+      tag: tag,
+    );
+    if (cached != null && cached.apps.isNotEmpty) {
+      setState(() {
+        _page = MarketSearchPage(
+          apps: cached.apps,
+          tags: cached.tags,
+          total: cached.total,
+          hasMore: cached.hasMore,
+          query: cached.query,
+          activeTag: cached.tag,
+          limit: cached.limit,
+        );
+        _loading = false;
+        _error = null;
+        _fromCache = true;
+      });
+    } else {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
+
+    // ---- 2. 再走网络（静默刷新：缓存已经在屏幕上时不再闪 loading）
     try {
-      final MarketSearchPage page = await context.read<MarketRepository>().search(
-        query: _input.text,
-        tag: _activeTag,
-      );
+      // 首屏不带 limit：让服务端按面板配置决定每页条数。
+      // 后续页才用响应里返回的 limit（见 _loadMore）。
+      final MarketSearchPage page = await context
+          .read<MarketRepository>()
+          .search(query: query, tag: tag);
       if (!mounted || seq != _requestSeq) return; // 丢弃过期响应
       setState(() {
         _page = page;
         _loading = false;
+        _fromCache = false;
       });
+      unawaited(_saveCache(page));
     } on MarketException catch (e) {
       if (!mounted || seq != _requestSeq) return;
+      // 有缓存时网络失败不该把结果清掉：提示一句，列表继续用缓存
+      if (cached != null && cached.apps.isNotEmpty) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('刷新失败，显示的是本地缓存：${e.message}')));
+        return;
+      }
       setState(() {
         _error = e.message;
         _loading = false;
@@ -127,6 +170,24 @@ class _SearchPageState extends State<SearchPage> {
     }
   }
 
+  Future<void> _saveCache(MarketSearchPage page) async {
+    final MarketCacheService? cache = MarketCacheService.maybeInstance;
+    if (cache == null || page.apps.isEmpty) return;
+    try {
+      await cache.saveSearch(
+        query: page.query.isEmpty ? _input.text : page.query,
+        tag: _activeTag,
+        apps: page.apps,
+        tags: page.tags,
+        total: page.total,
+        hasMore: page.hasMore,
+        limit: page.limit,
+      );
+    } catch (_) {
+      // 缓存只是加速，失败不影响搜索
+    }
+  }
+
   /// 加载下一页
   Future<void> _loadMore() async {
     final MarketSearchPage? page = _page;
@@ -135,27 +196,34 @@ class _SearchPageState extends State<SearchPage> {
 
     setState(() => _loadingMore = true);
     try {
-      final MarketSearchPage next = await context.read<MarketRepository>().search(
-        query: _input.text,
-        tag: _activeTag,
-        offset: (page.apps.length),
-      );
+      final MarketSearchPage next = await context
+          .read<MarketRepository>()
+          .search(
+            query: _input.text,
+            tag: _activeTag,
+            limit: page.limit > 0 ? page.limit : null,
+            offset: (page.apps.length),
+          );
       if (!mounted) return;
+      final MarketSearchPage merged = MarketSearchPage(
+        apps: <AppItem>[...page.apps, ...next.apps],
+        tags: next.tags,
+        total: next.total,
+        hasMore: next.hasMore,
+        query: next.query,
+        activeTag: next.activeTag,
+        limit: next.limit > 0 ? next.limit : page.limit,
+      );
       setState(() {
-        _page = MarketSearchPage(
-          apps: <AppItem>[...page.apps, ...next.apps],
-          tags: next.tags,
-          total: next.total,
-          hasMore: next.hasMore,
-          query: next.query,
-          activeTag: next.activeTag,
-        );
+        _page = merged;
+        _fromCache = false;
       });
+      unawaited(_saveCache(merged));
     } on MarketException catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message)),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(e.message)));
     } finally {
       if (mounted) setState(() => _loadingMore = false);
     }
@@ -191,7 +259,9 @@ class _SearchPageState extends State<SearchPage> {
           onChanged: _onChanged,
           onSubmitted: (String _) => _load(),
           elevation: const WidgetStatePropertyAll<double>(0),
-          backgroundColor: WidgetStatePropertyAll<Color>(scheme.surfaceContainerHigh),
+          backgroundColor: WidgetStatePropertyAll<Color>(
+            scheme.surfaceContainerHigh,
+          ),
         ),
         actions: <Widget>[
           IconButton(
@@ -221,7 +291,9 @@ class _SearchPageState extends State<SearchPage> {
     // 已经选了标签：显示全量（否则用户被自己选中的标签锁死，
     // 只能先点「全部」才能换 —— 很别扭）
     if (_activeTag.isNotEmpty) {
-      return _allTags.isNotEmpty ? _allTags : (page?.tags ?? const <MarketTag>[]);
+      return _allTags.isNotEmpty
+          ? _allTags
+          : (page?.tags ?? const <MarketTag>[]);
     }
     // 没选标签：优先显示「命中结果里的标签」，没有就用全量
     if (page != null && page.tags.isNotEmpty) return page.tags;
@@ -264,18 +336,16 @@ class _SearchPageState extends State<SearchPage> {
       return const LoadingView(message: '正在搜索…');
     }
     if (_error != null) {
-      return ErrorView(
-        title: '搜索失败',
-        message: _error!,
-        onRetry: _load,
-      );
+      return ErrorView(title: '搜索失败', message: _error!, onRetry: _load);
     }
 
     final MarketSearchPage? page = _page;
     if (page == null || page.apps.isEmpty) {
       return EmptyView(
         icon: Icons.search_off,
-        title: _input.text.trim().isEmpty && _activeTag.isEmpty ? '输入关键词开始搜索' : '没有匹配的应用',
+        title: _input.text.trim().isEmpty && _activeTag.isEmpty
+            ? '输入关键词开始搜索'
+            : '没有匹配的应用',
         message: _input.text.trim().isEmpty && _activeTag.isEmpty
             ? '可以搜应用名、作者，或者点上面的标签'
             : '换个关键词，或者取消标签筛选试试',
@@ -313,10 +383,10 @@ class _SearchPageState extends State<SearchPage> {
                     : Text(
                         page.hasMore
                             ? '继续下滑加载更多'
-                            : '共 ${page.total} 个结果',
+                            : '共 ${page.total} 个结果${_fromCache ? '（本地缓存）' : ''}',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Theme.of(context).colorScheme.onSurfaceVariant,
-                            ),
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
                       ),
               ),
             );

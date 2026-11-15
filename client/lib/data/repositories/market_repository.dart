@@ -122,19 +122,25 @@ class MarketRepository {
   ///
   /// [cursor] 传上一页返回的 nextCursor；null 表示从第一页开始。
   /// [category] 传分类 id，'' 或 'all' 表示全部。
+  ///
+  /// [limit] 为 null 时**不传这个参数**：由服务端按面板配置的每页条数决定。
+  /// 客户端不再写死 20 —— 写死会让「服务端调大每页条数」在 App 上完全没用，
+  /// 而且第一页 20 条、后续页却按服务端默认 50 条拉，会出现不一致的跳变。
   Future<MarketFeedPage> fetchFeed({
-    int limit = 20,
+    int? limit,
     String? cursor,
     String category = '',
   }) async {
     final String base = _settings.serverUrl;
-    final StringBuffer url = StringBuffer('$base/api/market/feed?limit=$limit');
-    if (cursor != null && cursor.isNotEmpty) {
-      url.write('&cursor=${Uri.encodeQueryComponent(cursor)}');
-    }
-    if (category.isNotEmpty && category != 'all') {
-      url.write('&category=${Uri.encodeQueryComponent(category)}');
-    }
+    final List<String> query = <String>[
+      if (limit != null && limit > 0) 'limit=$limit',
+      if (cursor != null && cursor.isNotEmpty)
+        'cursor=${Uri.encodeQueryComponent(cursor)}',
+      if (category.isNotEmpty && category != 'all')
+        'category=${Uri.encodeQueryComponent(category)}',
+    ];
+    final StringBuffer url = StringBuffer('$base/api/market/feed');
+    if (query.isNotEmpty) url.write('?${query.join('&')}');
 
     try {
       final Response<dynamic> res = await _dio.get<dynamic>(
@@ -164,22 +170,22 @@ class MarketRepository {
     String query = '',
     String tag = '',
     String category = '',
-    int limit = 20,
+    int? limit,
     int offset = 0,
   }) async {
     final String base = _settings.serverUrl;
+    final List<String> params = <String>[
+      if (limit != null && limit > 0) 'limit=$limit',
+      'offset=$offset',
+      if (query.trim().isNotEmpty)
+        'q=${Uri.encodeQueryComponent(query.trim())}',
+      if (tag.trim().isNotEmpty) 'tag=${Uri.encodeQueryComponent(tag.trim())}',
+      if (category.isNotEmpty && category != 'all')
+        'category=${Uri.encodeQueryComponent(category)}',
+    ];
     final StringBuffer url = StringBuffer(
-      '$base/api/market/search?limit=$limit&offset=$offset',
+      '$base/api/market/search?${params.join('&')}',
     );
-    if (query.trim().isNotEmpty) {
-      url.write('&q=${Uri.encodeQueryComponent(query.trim())}');
-    }
-    if (tag.trim().isNotEmpty) {
-      url.write('&tag=${Uri.encodeQueryComponent(tag.trim())}');
-    }
-    if (category.isNotEmpty && category != 'all') {
-      url.write('&category=${Uri.encodeQueryComponent(category)}');
-    }
 
     try {
       final Response<dynamic> res = await _dio.get<dynamic>(

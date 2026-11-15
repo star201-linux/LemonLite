@@ -16,8 +16,14 @@ import { execute, query, queryOne } from '../db.js';
 import { config } from '../config.js';
 import { ApiError } from './http.js';
 
-/** 允许的用途：注册、登录二次验证、（将来）重置密码 */
-export const PURPOSES = Object.freeze(['register', 'login', 'reset']);
+/**
+ * 允许的用途：
+ *   register     注册
+ *   login        登录二次验证
+ *   change_email 更换绑定邮箱（验证码发到**新**邮箱）
+ *   reset        重置密码（暂未开放，表结构先留着）
+ */
+export const PURPOSES = Object.freeze(['register', 'login', 'change_email', 'reset']);
 
 /**
  * Date → MySQL DATETIME(3) 字符串（UTC）。
@@ -73,7 +79,14 @@ export function hashCode(email, purpose, code) {
  */
 export function logDevCode({ code, email, purpose = 'register' }) {
   if (!config.mail.devEchoCode) return;
-  const tag = purpose === 'login' ? '登录' : '注册';
+  const tag =
+    purpose === 'login'
+      ? '登录'
+      : purpose === 'change_email'
+        ? '更换邮箱'
+        : purpose === 'reset'
+          ? '重置密码'
+          : '注册';
   console.log(
     `\x1b[35m[mail][dev]\x1b[0m ${tag}验证码 \x1b[1m${code}\x1b[0m → ${email}` +
       '（MAIL_DEV_ECHO_CODE=true，仅开发环境）',

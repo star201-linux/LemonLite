@@ -21,6 +21,7 @@ class MarketFeedPage {
     this.categories = const <AppCategory>[],
     this.nextCursor,
     this.hasMore = false,
+    this.limit = 0,
   });
 
   final List<AppItem> apps;
@@ -32,6 +33,13 @@ class MarketFeedPage {
   final String? nextCursor;
 
   final bool hasMore;
+
+  /// 服务端**实际使用**的每页条数（`meta.limit`）。
+  ///
+  /// 客户端不写死 20：条数由服务端面板配置决定，请求时带上它，
+  /// 翻页才不会出现「第一页 50 条、第二页 20 条」这种不一致。
+  /// 0 表示服务端没给（老版本），由调用方保留旧值。
+  final int limit;
 
   factory MarketFeedPage.fromJson(
     Map<String, dynamic> data,
@@ -55,6 +63,7 @@ class MarketFeedPage {
       categories: categories,
       nextCursor: cursor is String && cursor.isNotEmpty ? cursor : null,
       hasMore: meta['hasMore'] == true,
+      limit: asInt(meta['limit']),
     );
   }
 }
@@ -90,6 +99,7 @@ class MarketSearchPage {
     this.hasMore = false,
     this.query = '',
     this.activeTag = '',
+    this.limit = 0,
   });
 
   final List<AppItem> apps;
@@ -105,6 +115,9 @@ class MarketSearchPage {
   final String query;
   final String activeTag;
 
+  /// 服务端实际使用的每页条数（见 [MarketFeedPage.limit]）
+  final int limit;
+
   factory MarketSearchPage.fromJson(
     Map<String, dynamic> data,
     Map<String, dynamic> meta,
@@ -116,10 +129,9 @@ class MarketSearchPage {
         .map((AppItem app) => app.resolveAgainst(base))
         .toList(growable: false);
 
-    final List<MarketTag> tags = asMapList(data['tags'])
-        .map(MarketTag.fromJson)
-        .whereType<MarketTag>()
-        .toList(growable: false);
+    final List<MarketTag> tags = asMapList(
+      data['tags'],
+    ).map(MarketTag.fromJson).whereType<MarketTag>().toList(growable: false);
 
     final Map<String, dynamic> q = asMap(data['query']) ?? <String, dynamic>{};
 
@@ -130,6 +142,7 @@ class MarketSearchPage {
       hasMore: meta['hasMore'] == true,
       query: asString(q['q']),
       activeTag: asString(q['tag']),
+      limit: asInt(meta['limit']),
     );
   }
 }

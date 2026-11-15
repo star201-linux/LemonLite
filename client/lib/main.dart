@@ -17,6 +17,7 @@ import 'data/models/miniapp_metadata.dart';
 import 'data/services/account_service.dart';
 import 'data/services/application_registry.dart';
 import 'data/services/download_service.dart';
+import 'data/services/market_cache_service.dart';
 import 'data/services/permission_service.dart';
 import 'data/services/settings_service.dart';
 import 'pages/miniapp/miniapp_window.dart';
@@ -48,6 +49,9 @@ Future<void> main() async {
   }
 
   final SettingsService settings = await SettingsService.init();
+  // 市场本地缓存（主页 / 搜索的分页快照）。放在 SettingsService 之后：
+  // 它本身只是 SharedPreferences 之上的一层，没有异步初始化成本。
+  MarketCacheService.init(settings);
   // 权限服务必须在任何小程序页面之前就绪：桥接层每次调用都会查它，
   // 而它是同步单例（没有异步初始化成本），所以直接 init 不用 await。
   PermissionService.init();
@@ -70,12 +74,14 @@ Future<void> main() async {
   // 查不到（非 Android / 通道未注册）就静默跳过 —— 那些环境本来也没有这个概念。
   try {
     const MethodChannel probe = MethodChannel('lemonlite/native');
-    final Object? suffix = await probe.invokeMethod<Object?>('getWebviewPreflight');
+    final Object? suffix = await probe.invokeMethod<Object?>(
+      'getWebviewPreflight',
+    );
     if (suffix == true) {
       lemonLogError(
         'main',
         'WebView 数据目录锁冲突：本进程已切换到独立数据目录，'
-        'WebView 的 cookies/localStorage 会是空的（小程序 storage 不受影响）',
+            'WebView 的 cookies/localStorage 会是空的（小程序 storage 不受影响）',
       );
     }
   } catch (_) {

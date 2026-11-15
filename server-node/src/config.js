@@ -186,6 +186,19 @@ export const config = {
     sessionTtlMs: envInt('ADMIN_SESSION_HOURS', 24 * 7) * 3600 * 1000,
   },
 
+  // ---------------------------------------------------------------- 注销账号
+  account: {
+    // 用户在客户端申请注销后的冷静期（天）。
+    //   0  → 立即删除（不推荐：手滑点错就没救了）
+    //   7  → 默认。期间账号仍能登录，登录后可以撤销；
+    //        到期由启动任务 / 定时任务 / npm run prune 物理删除。
+    // 管理面板「站点」页可以改这个值，改完对**新的**申请生效
+    // （已经排期的注销不会因为改配置而提前/推迟 —— 那会让「还有几天」变得不可信）。
+    deleteDelayDays: Math.max(0, envInt('ACCOUNT_DELETE_DELAY_DAYS', 7)),
+    // 到期清理的扫描间隔（分钟）。0 = 只靠 npm run prune 与启动时清理。
+    purgeIntervalMinutes: Math.max(0, envInt('ACCOUNT_PURGE_INTERVAL_MINUTES', 30)),
+  },
+
   market: {
     // 分段加载的每页条数上限。客户端传更大的值会被夹到这个上限 ——
     // 不设上限的话一个 `?limit=999999` 就能把整个应用表拉出来。
@@ -240,6 +253,10 @@ export function describeConfig() {
   );
   lines.push(`小程序包 ${config.packages.dir}/<appId>/<version>.zip`);
   lines.push(`小程序图标 ${config.icons.dir}/<appId>.<png|jpg|webp|gif>`);
+  lines.push(
+    `注销   冷静期 ${config.account.deleteDelayDays} 天` +
+      (config.account.deleteDelayDays === 0 ? '（申请即删除）' : '（期间可撤销）'),
+  );
   // 邮件通道是「部署后最容易配漏」的一项，启动时就把它摊开说清楚
   lines.push(
     `邮件   ${config.mail.driver}` +

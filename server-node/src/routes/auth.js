@@ -29,12 +29,18 @@ import {
   createSession,
   currentUserId,
   hashPassword,
+  listSessionHistory,
   listSessions,
   requireAuth,
   revokeAllSessions,
   revokeSession,
   verifyPassword,
 } from '../lib/auth.js';
+import {
+  cancelDeletion,
+  deletionInfo,
+  requestDeletion,
+} from '../lib/account_deletion.js';
 import { config } from '../config.js';
 import { absoluteAvatarUrl, avatarVersion } from '../lib/userdata.js';
 import { MailError, mailStatus, sendMail } from '../lib/mailer.js';
@@ -151,6 +157,10 @@ function toUserDto(req, row) {
     createdAt: row.created_at,
     createdIp: row.created_ip,
     updatedAt: row.updated_at,
+    // 注销冷静期状态：没申请过就是 null。
+    // 放在 DTO 里而不是单开一个接口，是因为客户端在**登录**时就要知道
+    // 「这个号已经被申请注销了，还剩 N 天」，好直接给出撤销入口。
+    deletion: deletionInfo(row),
   };
 }
 
@@ -195,6 +205,9 @@ authRouter.get(
       codeTtl: config.mail.codeTtl,
       // never = 永不过期（客户端可以据此不做任何「到期前刷新」的逻辑）
       tokenTtl: config.auth.sessionTtl,
+      // 注销冷静期（天）。客户端的注销确认页要如实告诉用户「N 天后生效」，
+      // 写死在客户端就会和服务端配置慢慢对不上。
+      deleteDelayDays: config.account.deleteDelayDays,
     });
   }),
 );
@@ -231,6 +244,14 @@ authRouter.post(
       // 登录验证码必须走 /api/auth/login-code：它要先核对密码，
       // 否则就成了「只要知道别人邮箱就能给他发信」的轰炸工具。
       throw ApiError.badRequest('bad_request', '登录验证码请用 /api/auth/login-code');
+    }
+    if (purpose === 'change_email') {
+      // 换邮箱要发到**新**邮箱，且必须先验证当前密码，
+      // 这两件事都只能在这个账号已登录的情况下做。
+      throw ApiError.badRequest(
+        'bad_request',
+        '更换邮箱的验证码请用 /api/auth/change-email/code',
+      );
     }
 
     const status = mailStatus();
@@ -566,14 +587,15 @@ authRouter.patch(
     }
 
     if (req.body?.email !== undefined) {
-      const email = validateEmail(req.body.email);
-      const dup = await queryOne(
-        'SELECT id FROM users WHERE email = ? AND id <> ? LIMIT 1',
-        [email, id],
+      // 邮箱是账号的根凭证（找回密码、登录验证码都靠它），
+      // 所以它不能像用户名那样随手改 —— 必须走 POST /api/auth/change-email：
+      // 验证当前密码 + 给**新**邮箱发一封验证码。
+      // 这里明确拒绝，而不是悄悄忽略：客户端旧版本如果还在提交 email，
+      // 静默忽略会让用户以为改成功了。
+      throw ApiError.badRequest(
+        'email_locked',
+        '邮箱已与账号绑定，请通过「更换邮箱」完成验证后修改',
       );
-      if (dup) throw ApiError.conflict('email_taken', '这个邮箱已注册过');
-      sets.push('email = ?');
-      params.push(email);
     }
 
     if (sets.length === 0) {
@@ -631,6 +653,193 @@ authRouter.post(
   }),
 );
 
+// ================================================================ 更换邮箱
+//
+// 邮箱和账号是**强绑定**的：它是登录凭据的一部分，也是找回密码的唯一入口。
+// 所以它不能像用户名那样在「编辑资料」里随手改 —— 那样一个被偷走的 token
+// 就能把账号的根换掉，原主人再也找不回来。
+//
+// 两步走：
+//   1. POST /change-email/code  校验当前密码 → 给**新**邮箱发验证码
+//   2. POST /change-email       密码 + 验证码 → 换绑，并踢掉其它设备
+
+/**
+ * POST /api/auth/change-email/code
+ * body: { email, password }
+ *
+ * 为什么必须先验密码：这个接口会给任意邮箱发信。不验密码的话，
+ * 任何拿到 token 的人都能拿它当「邮件轰炸机」，也能探测某个邮箱是否已注册。
+ */
+authRouter.post(
+  '/change-email/code',
+  requireAuth,
+  wrap(async (req, res) => {
+    const id = currentUserId(req);
+    const password = String(req.body?.password ?? '');
+    const email = validateEmail(req.body?.email);
+
+    const row = await queryOne('SELECT * FROM users WHERE id = ?', [id]);
+    if (!row) throw ApiError.unauthorized('账号不存在');
+    if (!password) {
+      throw ApiError.badRequest('password_required', '请输入当前密码');
+    }
+    const ok = await verifyPassword(password, row.password_hash);
+    if (!ok) throw ApiError.badRequest('wrong_password', '当前密码不正确');
+
+    if (normalizeEmail(row.email) === normalizeEmail(email)) {
+      throw ApiError.badRequest('same_email', '新邮箱和当前邮箱相同');
+    }
+    const dup = await queryOne(
+      'SELECT id FROM users WHERE email = ? AND id <> ? LIMIT 1',
+      [email, id],
+    );
+    if (dup) throw ApiError.conflict('email_taken', '这个邮箱已被其他账号使用');
+
+    const status = mailStatus();
+    if (!status.ready) {
+      throw ApiError.unavailable(`服务端邮件通道未配置：${status.reason}`);
+    }
+
+    const { id: codeId, code } = await issueCode({
+      email: normalizeEmail(email),
+      purpose: 'change_email',
+      ip: clientIp(req),
+    });
+
+    const template = verificationMail({
+      code,
+      ttlSeconds: config.mail.codeTtl,
+      purpose: 'change_email',
+    });
+    try {
+      await sendMail({ to: email, ...template });
+    } catch (e) {
+      await discardCode(codeId);
+      const reason = e instanceof MailError ? e.message : String(e);
+      console.error(`\x1b[31m[mail] 换绑验证码发送失败\x1b[0m ${email}：${reason}`);
+      throw ApiError.unavailable('验证码邮件发送失败，请稍后再试');
+    }
+
+    logDevCode({ code, email, purpose: 'change_email' });
+
+    sendOk(res, {
+      sent: true,
+      // 打码：确认「发到的是我以为的那个新邮箱」
+      email: maskEmail(email),
+      cooldown: config.mail.codeCooldown,
+      expiresIn: config.mail.codeTtl,
+      driver: status.driver,
+    });
+  }),
+);
+
+/**
+ * POST /api/auth/change-email
+ * body: { email, password, code }
+ *
+ * 密码**再验一次**：中间可能隔了几分钟（用户去收信），
+ * 不能假设「拿到验证码请求时就一定还是本人」。
+ *
+ * 换绑成功踢掉其它设备：邮箱变了，说明账号的根换了，
+ * 留在旧设备上的登录态应该重新确认一次身份。
+ */
+authRouter.post(
+  '/change-email',
+  requireAuth,
+  wrap(async (req, res) => {
+    const id = currentUserId(req);
+    const password = String(req.body?.password ?? '');
+    const email = validateEmail(req.body?.email);
+    const code = String(req.body?.code ?? '').trim();
+
+    const row = await queryOne('SELECT * FROM users WHERE id = ?', [id]);
+    if (!row) throw ApiError.unauthorized('账号不存在');
+    if (!password) {
+      throw ApiError.badRequest('password_required', '请输入当前密码');
+    }
+    const ok = await verifyPassword(password, row.password_hash);
+    if (!ok) throw ApiError.badRequest('wrong_password', '当前密码不正确');
+
+    if (normalizeEmail(row.email) === normalizeEmail(email)) {
+      throw ApiError.badRequest('same_email', '新邮箱和当前邮箱相同');
+    }
+    const dup = await queryOne(
+      'SELECT id FROM users WHERE email = ? AND id <> ? LIMIT 1',
+      [email, id],
+    );
+    if (dup) throw ApiError.conflict('email_taken', '这个邮箱已被其他账号使用');
+
+    if (!/^\d{4,8}$/.test(code)) {
+      throw ApiError.badRequest('code_required', '请输入新邮箱收到的验证码');
+    }
+    // 所有校验都过了才核销 —— 让用户改个邮箱重试时不用重新收码
+    await consumeCode({
+      email: normalizeEmail(email),
+      purpose: 'change_email',
+      code,
+    });
+
+    await execute('UPDATE users SET email = ? WHERE id = ?', [email, id]);
+    await revokeAllSessions(id, { except: req.auth.tokenHash });
+
+    const fresh = await queryOne('SELECT * FROM users WHERE id = ?', [id]);
+    if (!fresh) throw ApiError.unauthorized('账号不存在');
+    sendOk(res, { user: toUserDto(req, fresh), revokedOthers: true });
+  }),
+);
+
+// ================================================================ 注销账号
+
+/**
+ * POST /api/auth/delete
+ * body: { password }
+ *
+ * 申请注销。账号**不会立刻消失**：按面板设置的冷静期排期，
+ * 到期由后台任务物理删除；期间用户仍可登录并撤销。
+ *
+ * 为什么要密码：注销是破坏性操作，光有 token 不够 ——
+ * 手机被人顺手拿走、或者 token 被拷走，都不该能一键抹掉账号。
+ */
+authRouter.post(
+  '/delete',
+  requireAuth,
+  wrap(async (req, res) => {
+    const id = currentUserId(req);
+    const password = String(req.body?.password ?? '');
+    const row = await queryOne('SELECT * FROM users WHERE id = ?', [id]);
+    if (!row) throw ApiError.unauthorized('账号不存在');
+
+    if (!password) {
+      throw ApiError.badRequest('password_required', '请输入当前密码');
+    }
+    const ok = await verifyPassword(password, row.password_hash);
+    if (!ok) throw ApiError.badRequest('wrong_password', '当前密码不正确');
+
+    const result = await requestDeletion(id);
+    if (result.immediate) {
+      sendOk(res, { deleted: true, deletion: null });
+      return;
+    }
+
+    // 其它设备先踢掉：账号已经进入删除队列，没必要让它们继续挂着。
+    // 当前会话保留 —— 客户端拿到响应后会自己退出登录，
+    // 而如果它中途崩了，用户还能用这个 token 回来撤销。
+    await revokeAllSessions(id, { except: req.auth.tokenHash });
+    sendOk(res, { deleted: false, deletion: result.deletion });
+  }),
+);
+
+/** POST /api/auth/delete/cancel —— 冷静期内撤销注销申请 */
+authRouter.post(
+  '/delete/cancel',
+  requireAuth,
+  wrap(async (req, res) => {
+    const id = currentUserId(req);
+    await cancelDeletion(id);
+    sendOk(res, { deletion: null });
+  }),
+);
+
 // ================================================================ 会话管理
 
 /**
@@ -656,6 +865,48 @@ authRouter.get(
         ip: r.login_ip,
         device: r.device,
       })),
+    );
+  }),
+);
+
+/**
+ * GET /api/auth/sessions/history
+ *
+ * 「登录设备」二级页的历史分区：返回**全部**会话记录（含已撤销、已过期），
+ * 每条带 active / revoked / expired 三个标记，客户端据此分三组展示：
+ *   当前设备 / 其它在线 / 历史登录
+ *
+ * 为什么不合并进 /sessions：那个接口的返回是「当前有效设备」，
+ * 语义干净（撤销列表里只该出现能踢的设备）。历史记录是审计信息，
+ * 混在一起会让「踢下线」的按钮出现在一堆已经失效的行上。
+ */
+authRouter.get(
+  '/sessions/history',
+  requireAuth,
+  wrap(async (req, res) => {
+    const rows = await listSessionHistory(currentUserId(req));
+    const now = Date.now();
+    sendOk(
+      res,
+      rows.map((r) => {
+        const expires = new Date(
+          `${String(r.expires_at).replace(' ', 'T')}Z`,
+        ).getTime();
+        const expired = Number.isFinite(expires) && expires <= now;
+        return {
+          id: r.token_hash.slice(0, 16),
+          current: r.token_hash === req.auth.tokenHash,
+          // active = 「这一条现在还能用」；客户端不需要自己再算一遍
+          active: !r.revoked && !expired,
+          revoked: Boolean(r.revoked),
+          expired,
+          createdAt: r.created_at,
+          lastSeenAt: r.last_seen_at,
+          expiresAt: r.expires_at,
+          ip: r.login_ip,
+          device: r.device,
+        };
+      }),
     );
   }),
 );

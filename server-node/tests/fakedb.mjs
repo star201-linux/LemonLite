@@ -15,8 +15,10 @@ export const state = {
   apps: [],
   tags: [],
   appTags: [],
+  emailCodes: [],
   nextUserId: 1,
   nextTagId: 1,
+  nextCodeId: 1,
 };
 
 export function reset() {
@@ -29,8 +31,10 @@ export function reset() {
   state.apps = [];
   state.tags = [];
   state.appTags = [];
+  state.emailCodes = [];
   state.nextUserId = 1;
   state.nextTagId = 1;
+  state.nextCodeId = 1;
 }
 
 /** GROUP_CONCAT(... SEPARATOR '\u0001') 的等价物 */
@@ -132,13 +136,74 @@ export async function query(sql, params = []) {
     return state.users.filter((u) => u.id === params[0]).map((u) => ({ ...u }));
   }
 
+  // ---- email_codes
+  //
+  // 顺序：先判最具体的（带 purpose / ip / consumed 的），再判泛化的，
+  // 否则一条 COUNT 会被「取最近一条」的分支吃掉。
+  if (/FROM email_codes\s+WHERE email = \? AND purpose = \? AND created_at >= \?/.test(q)) {
+    return [
+      {
+        n: state.emailCodes.filter(
+          (c) =>
+            c.email === params[0] &&
+            c.purpose === params[1] &&
+            String(c.created_at) >= String(params[2]),
+        ).length,
+      },
+    ];
+  }
+  if (/FROM email_codes\s+WHERE ip = \? AND created_at >= \?/.test(q)) {
+    return [
+      {
+        n: state.emailCodes.filter(
+          (c) => c.ip === params[0] && String(c.created_at) >= String(params[1]),
+        ).length,
+      },
+    ];
+  }
+  if (/FROM email_codes\s+WHERE email = \? AND purpose = \? AND consumed = 0/.test(q)) {
+    return state.emailCodes
+      .filter((c) => c.email === params[0] && c.purpose === params[1] && !c.consumed)
+      .sort((a, b) => b.id - a.id)
+      .slice(0, 1)
+      .map((c) => ({ ...c }));
+  }
+  if (/FROM email_codes\s+WHERE email = \? AND purpose = \?/.test(q)) {
+    return state.emailCodes
+      .filter((c) => c.email === params[0] && c.purpose === params[1])
+      .sort((a, b) => b.id - a.id)
+      .slice(0, 1)
+      .map((c) => ({ ...c }));
+  }
+
   // ---- sessions
   if (/FROM login_sessions s JOIN users u/.test(q)) {
     const s = state.sessions.find((x) => x.token_hash === params[0]);
     if (!s) return [];
     const u = state.users.find((x) => x.id === s.user_id);
     if (!u) return [];
-    return [{ ...s, username: u.username, status: u.status }];
+    return [{
+      ...s,
+      username: u.username,
+      status: u.status,
+      deletion_scheduled_at: u.deletion_scheduled_at ?? null,
+    }];
+  }
+  // 注销到期清理：SELECT id FROM users WHERE deletion_scheduled_at <= UTC_TIMESTAMP
+  if (/FROM users\s+WHERE deletion_scheduled_at IS NOT NULL/.test(q)) {
+    const now = new Date().toISOString().slice(0, 23).replace('T', ' ');
+    return state.users
+      .filter((u) => u.deletion_scheduled_at && String(u.deletion_scheduled_at) <= now)
+      .slice(0, Number(params[0]) || 50)
+      .map((u) => ({ id: u.id }));
+  }
+  // 历史会话：FROM login_sessions WHERE user_id = ? ORDER BY ...
+  if (/FROM login_sessions\s+WHERE user_id = \?\s+ORDER BY last_seen_at/.test(q)) {
+    return state.sessions
+      .filter((s) => s.user_id === params[0])
+      .sort((a, b) => String(b.last_seen_at).localeCompare(String(a.last_seen_at)))
+      .slice(0, Number(params[1]) || 100)
+      .map((s) => ({ ...s }));
   }
   if (/FROM login_sessions\s+WHERE user_id = \? AND revoked = 0 AND expires_at > UTC_TIMESTAMP/.test(q)) {
     return state.sessions
@@ -330,6 +395,14 @@ export async function execute(sql, params = []) {
     if (u) u.avatar_ver = '';
     return { affectedRows: u ? 1 : 0 };
   }
+  if (/^UPDATE users SET deletion_requested_at = NULL/.test(q)) {
+    const u = state.users.find((x) => x.id === params[0]);
+    if (u) {
+      u.deletion_requested_at = null;
+      u.deletion_scheduled_at = null;
+    }
+    return { affectedRows: u ? 1 : 0 };
+  }
   if (/^UPDATE users SET password_hash = \?/.test(q)) {
     const u = state.users.find((x) => x.id === params[1]);
     if (u) u.password_hash = params[0];
@@ -346,7 +419,57 @@ export async function execute(sql, params = []) {
     return { affectedRows: 1 };
   }
 
+  // ---- email_codes
+  if (/^INSERT INTO email_codes/.test(q)) {
+    const [email, purpose, code_hash, ip, created_at, expires_at] = params;
+    const row = {
+      id: state.nextCodeId++,
+      email,
+      purpose,
+      code_hash,
+      ip: ip ?? '',
+      attempts: 0,
+      consumed: 0,
+      created_at,
+      expires_at,
+    };
+    state.emailCodes.push(row);
+    return { insertId: row.id, affectedRows: 1 };
+  }
+  if (/^UPDATE email_codes SET consumed = 1\s+WHERE email = \? AND purpose = \? AND consumed = 0/.test(q)) {
+    let n = 0;
+    for (const c of state.emailCodes) {
+      if (c.email === params[0] && c.purpose === params[1] && !c.consumed) {
+        c.consumed = 1;
+        n++;
+      }
+    }
+    return { affectedRows: n };
+  }
+  if (/^UPDATE email_codes SET attempts = attempts \+ 1 WHERE id = \?/.test(q)) {
+    const c = state.emailCodes.find((x) => x.id === params[0]);
+    if (c) c.attempts += 1;
+    return { affectedRows: c ? 1 : 0 };
+  }
+  if (/^UPDATE email_codes SET consumed = 1 WHERE id = \?/.test(q)) {
+    const c = state.emailCodes.find((x) => x.id === params[0]);
+    if (c) c.consumed = 1;
+    return { affectedRows: c ? 1 : 0 };
+  }
+  if (/^DELETE FROM email_codes WHERE id = \?/.test(q)) {
+    const before = state.emailCodes.length;
+    state.emailCodes = state.emailCodes.filter((c) => c.id !== params[0]);
+    return { affectedRows: before - state.emailCodes.length };
+  }
+
   if (/^DELETE FROM login_sessions/.test(q)) return { affectedRows: 0 };
+
+  if (/^DELETE FROM users WHERE id = \?/.test(q)) {
+    const before = state.users.length;
+    state.users = state.users.filter((u) => u.id !== params[0]);
+    state.sessions = state.sessions.filter((s) => s.user_id !== params[0]);
+    return { affectedRows: before - state.users.length };
+  }
 
   throw new Error(`fakedb: 未实现的写入 → ${q.slice(0, 120)}`);
 }

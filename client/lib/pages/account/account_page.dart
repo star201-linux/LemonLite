@@ -6,11 +6,14 @@
 //   未登录时这一页只显示「登录 / 注册」两个入口，返回键直接回设置；
 //   市场浏览、小程序运行、权限管理、存储管理全都不需要账号。
 //
-// 登录后这一页变成四块：
-//   1. 资料（头像 / 用户名 / 邮箱，可改）
+// 登录后这一页分成几块：
+//   1. 资料（头像 / 用户名 / 邮箱 —— 邮箱只能走独立页换绑）
 //   2. 安全（改密码）
-//   3. 登录设备（会话列表，可逐个踢掉 / 全部退出）
+//   3. 登录设备（二级页：当前 / 其它在线 / 历史登录）
 //   4. 退出登录
+//   5. 注销账号（冷静期 + 可撤销）
+//
+// 被申请注销的账号会在顶部出现一条横幅：说明还有几天删除，并给撤销入口。
 
 import 'dart:typed_data';
 
@@ -21,14 +24,18 @@ import 'package:provider/provider.dart';
 import '../../data/services/account_service.dart';
 import '../../theme/app_theme.dart';
 import 'avatar_cropper.dart';
+import 'change_email_page.dart';
+import 'delete_account_page.dart';
 import 'email_code_button.dart';
+import 'session_list_page.dart';
 import '../../theme/loading.dart';
 
 class AccountPage extends StatelessWidget {
   const AccountPage({super.key});
 
-  static Route<void> route() =>
-      MaterialPageRoute<void>(builder: (BuildContext context) => const AccountPage());
+  static Route<void> route() => MaterialPageRoute<void>(
+    builder: (BuildContext context) => const AccountPage(),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -40,15 +47,12 @@ class AccountPage extends StatelessWidget {
         actions: <Widget>[
           if (!account.isLoggedIn)
             TextButton(
-              onPressed: () =>
-                  Navigator.of(context).push(RegisterPage.route()),
+              onPressed: () => Navigator.of(context).push(RegisterPage.route()),
               child: const Text('注册'),
             ),
         ],
       ),
-      body: account.isLoggedIn
-          ? const _LoggedInView()
-          : const _LoggedOutView(),
+      body: account.isLoggedIn ? const _LoggedInView() : const _LoggedOutView(),
     );
   }
 }
@@ -73,10 +77,7 @@ class _LoggedOutView extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         Center(
-          child: Text(
-            '还没有登录',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
+          child: Text('还没有登录', style: Theme.of(context).textTheme.titleMedium),
         ),
         const SizedBox(height: 6),
         Padding(
@@ -85,18 +86,16 @@ class _LoggedOutView extends StatelessWidget {
             '登录后可以在多台设备间同步账号资料与头像。\n'
             '浏览市场、打开小程序、管理权限都不需要登录。',
             textAlign: TextAlign.center,
-            style: Theme.of(context)
-                .textTheme
-                .bodySmall
-                ?.copyWith(color: scheme.onSurfaceVariant),
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
           ),
         ),
         const SizedBox(height: 24),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24),
           child: FilledButton.icon(
-            onPressed: () =>
-                Navigator.of(context).push(RegisterPage.route()),
+            onPressed: () => Navigator.of(context).push(RegisterPage.route()),
             icon: const Icon(Icons.person_add_alt),
             label: const Text('注册新账号'),
           ),
@@ -125,7 +124,6 @@ class _LoggedInView extends StatefulWidget {
 }
 
 class _LoggedInViewState extends State<_LoggedInView> {
-  late Future<List<AccountSession>> _sessions;
   Uint8List? _avatarBytes;
   String _avatarVersion = '';
 
@@ -139,7 +137,6 @@ class _LoggedInViewState extends State<_LoggedInView> {
   @override
   void initState() {
     super.initState();
-    _sessions = _fetchSessions();
     _loadAvatar();
     if (context.read<AccountService>().profile == null) {
       // 本地可能只有 token（老版本升级上来、缓存被清过、上次拉取失败）：
@@ -147,9 +144,6 @@ class _LoggedInViewState extends State<_LoggedInView> {
       WidgetsBinding.instance.addPostFrameCallback((_) => _ensureProfile());
     }
   }
-
-  Future<List<AccountSession>> _fetchSessions() =>
-      context.read<AccountService>().fetchSessions();
 
   /// 补拉资料。失败就落到「加载失败 + 重试」，不再无限转圈。
   Future<void> _ensureProfile() async {
@@ -243,6 +237,36 @@ class _LoggedInViewState extends State<_LoggedInView> {
     }
   }
 
+  /// 撤销注销申请（冷静期内）
+  Future<void> _cancelDeletion() async {
+    final bool? ok = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        title: const Text('撤销注销申请？'),
+        content: const Text('账号会恢复正常，原定的删除不会执行。'),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('撤销注销'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await context.read<AccountService>().cancelAccountDeletion();
+      if (!mounted) return;
+      AppTheme.showToast('已撤销注销申请');
+    } on AccountException catch (e) {
+      if (!mounted) return;
+      AppTheme.showToast(e.message, isError: true);
+    }
+  }
+
   Future<void> _editProfile() async {
     final AccountProfile? profile = context.read<AccountService>().profile;
     if (profile == null) return;
@@ -255,12 +279,6 @@ class _LoggedInViewState extends State<_LoggedInView> {
       _avatarVersion = ''; // 可能改了头像，重新拉
       await _loadAvatar();
     }
-  }
-
-  Future<void> _refreshSessions() async {
-    setState(() {
-      _sessions = _fetchSessions();
-    });
   }
 
   @override
@@ -281,11 +299,67 @@ class _LoggedInViewState extends State<_LoggedInView> {
       onRefresh: () async {
         await account.refreshProfile(silent: true);
         await _loadAvatar();
-        await _refreshSessions();
       },
       child: ListView(
         padding: const EdgeInsets.only(bottom: 32),
         children: <Widget>[
+          // ------------------------------------------------ 注销中的横幅
+          if (profile.deletion != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+              child: Card(
+                color: scheme.errorContainer,
+                margin: EdgeInsets.zero,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 12, 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Row(
+                        children: <Widget>[
+                          Icon(
+                            Icons.schedule,
+                            size: 20,
+                            color: scheme.onErrorContainer,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '账号已申请注销',
+                              style: Theme.of(context).textTheme.titleSmall
+                                  ?.copyWith(color: scheme.onErrorContainer),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        profile.deletion!.daysLeft > 0
+                            ? '将在 ${profile.deletion!.daysLeft} 天后'
+                                  '（${_shortDate(profile.deletion!.scheduledAt)}）删除。'
+                                  '在这之前撤销申请，账号会恢复原样。'
+                            : '已到期，正在等待服务端清理。撤销申请可以立刻恢复。',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: scheme.onErrorContainer,
+                          height: 1.5,
+                        ),
+                      ),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton(
+                          onPressed: _cancelDeletion,
+                          style: TextButton.styleFrom(
+                            foregroundColor: scheme.onErrorContainer,
+                          ),
+                          child: const Text('撤销注销'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
           // ------------------------------------------------ 资料卡
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
@@ -307,8 +381,8 @@ class _LoggedInViewState extends State<_LoggedInView> {
                       Text(
                         profile.email,
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: scheme.onSurfaceVariant,
-                            ),
+                          color: scheme.onSurfaceVariant,
+                        ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -317,8 +391,8 @@ class _LoggedInViewState extends State<_LoggedInView> {
                         'ID ${profile.id}'
                         '${profile.createdAt == null ? '' : ' · 注册于 ${_shortDate(profile.createdAt!)}'}',
                         style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                              color: scheme.onSurfaceVariant,
-                            ),
+                          color: scheme.onSurfaceVariant,
+                        ),
                       ),
                     ],
                   ),
@@ -339,10 +413,7 @@ class _LoggedInViewState extends State<_LoggedInView> {
               const Divider(height: 1, indent: 16, endIndent: 16),
               ListTile(
                 leading: Icon(Icons.delete_outline, color: scheme.error),
-                title: Text(
-                  '移除头像',
-                  style: TextStyle(color: scheme.error),
-                ),
+                title: Text('移除头像', style: TextStyle(color: scheme.error)),
                 subtitle: const Text('回到用户名首字占位图'),
                 onTap: _removeAvatar,
               ),
@@ -354,9 +425,24 @@ class _LoggedInViewState extends State<_LoggedInView> {
             ListTile(
               leading: const Icon(Icons.badge_outlined),
               title: const Text('编辑资料'),
-              subtitle: const Text('用户名、邮箱'),
+              subtitle: const Text('用户名'),
               trailing: const Icon(Icons.chevron_right),
               onTap: _editProfile,
+            ),
+            const Divider(height: 1, indent: 16, endIndent: 16),
+            ListTile(
+              leading: const Icon(Icons.alternate_email),
+              title: const Text('邮箱'),
+              subtitle: Text(profile.email),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () async {
+                final bool? changed = await Navigator.of(
+                  context,
+                ).push(ChangeEmailPage.route(profile.email));
+                if (changed == true && mounted) {
+                  AppTheme.showToast('邮箱已更换');
+                }
+              },
             ),
             const Divider(height: 1, indent: 16, endIndent: 16),
             ListTile(
@@ -364,57 +450,19 @@ class _LoggedInViewState extends State<_LoggedInView> {
               title: const Text('修改密码'),
               subtitle: const Text('改完后其它设备会被退出登录'),
               trailing: const Icon(Icons.chevron_right),
-              onTap: () => Navigator.of(context).push(ChangePasswordPage.route()),
+              onTap: () =>
+                  Navigator.of(context).push(ChangePasswordPage.route()),
             ),
           ]),
 
           // ------------------------------------------------ 登录设备
           _section(context, '登录设备', <Widget>[
-            FutureBuilder<List<AccountSession>>(
-              future: _sessions,
-              builder: (
-                BuildContext ctx,
-                AsyncSnapshot<List<AccountSession>> snap,
-              ) {
-                if (snap.connectionState == ConnectionState.waiting) {
-                  return const ListTile(
-                    leading: SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: M3ELoadingIndicator(),
-                    ),
-                    title: Text('正在读取登录设备…'),
-                  );
-                }
-                if (snap.hasError) {
-                  final Object err = snap.error!;
-                  return ListTile(
-                    leading: const Icon(Icons.error_outline),
-                    title: const Text('读取失败'),
-                    subtitle: Text(err is AccountException ? err.message : '$err'),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.refresh),
-                      onPressed: _refreshSessions,
-                    ),
-                  );
-                }
-                final List<AccountSession> list = snap.data ?? const <AccountSession>[];
-                if (list.isEmpty) {
-                  return const ListTile(
-                    leading: Icon(Icons.devices_other),
-                    title: Text('没有其它登录设备'),
-                  );
-                }
-                return Column(
-                  children: <Widget>[
-                    for (int i = 0; i < list.length; i++) ...<Widget>[
-                      if (i > 0)
-                        const Divider(height: 1, indent: 16, endIndent: 16),
-                      _sessionTile(context, list[i]),
-                    ],
-                  ],
-                );
-              },
+            ListTile(
+              leading: const Icon(Icons.devices_other),
+              title: const Text('登录设备'),
+              subtitle: const Text('查看当前设备、其它在线设备与历史登录记录'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.of(context).push(SessionListPage.route()),
             ),
           ]),
 
@@ -435,15 +483,26 @@ class _LoggedInViewState extends State<_LoggedInView> {
             ),
           ]),
 
+          // ------------------------------------------------ 注销账号
+          _section(context, '注销账号', <Widget>[
+            ListTile(
+              leading: Icon(Icons.delete_forever, color: scheme.error),
+              title: Text('注销账号', style: TextStyle(color: scheme.error)),
+              subtitle: const Text('冷静期内可撤销，到期后数据不可恢复'),
+              onTap: () =>
+                  Navigator.of(context).push(DeleteAccountPage.route()),
+            ),
+          ]),
+
           const SizedBox(height: 12),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24),
             child: Text(
               '登录状态保存在本机。退出登录会同时通知服务器撤销这台设备的凭证，'
               '即使凭证被复制走也会立刻失效。',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
           ),
         ],
@@ -463,17 +522,20 @@ class _LoggedInViewState extends State<_LoggedInView> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            Icon(Icons.cloud_off_outlined, size: 56, color: scheme.onSurfaceVariant),
+            Icon(
+              Icons.cloud_off_outlined,
+              size: 56,
+              color: scheme.onSurfaceVariant,
+            ),
             const SizedBox(height: 16),
             Text('加载账号资料失败', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
             Text(
               message,
               textAlign: TextAlign.center,
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: scheme.onSurfaceVariant),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
             const SizedBox(height: 20),
             FilledButton.tonal(
@@ -527,65 +589,10 @@ class _LoggedInViewState extends State<_LoggedInView> {
     return Center(
       child: Text(
         profile.initial,
-        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-              color: scheme.onPrimaryContainer,
-            ),
+        style: Theme.of(
+          context,
+        ).textTheme.headlineSmall?.copyWith(color: scheme.onPrimaryContainer),
       ),
-    );
-  }
-
-  Widget _sessionTile(BuildContext context, AccountSession s) {
-    final ColorScheme scheme = Theme.of(context).colorScheme;
-    return ListTile(
-      leading: Icon(
-        s.current ? Icons.smartphone : Icons.devices_other,
-        color: s.current ? scheme.primary : null,
-      ),
-      title: Row(
-        children: <Widget>[
-          Flexible(
-            child: Text(
-              s.device.isEmpty ? '未知设备' : s.device,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          if (s.current) ...<Widget>[
-            const SizedBox(width: 8),
-            Chip(
-              label: const Text('当前设备'),
-              labelStyle: Theme.of(context).textTheme.labelSmall,
-              visualDensity: VisualDensity.compact,
-              padding: EdgeInsets.zero,
-            ),
-          ],
-        ],
-      ),
-      subtitle: Text(
-        <String>[
-          if (s.ip.isNotEmpty) s.ip,
-          if (s.lastSeenAt.isNotEmpty) '最近 ${_shortDate(s.lastSeenAt)}',
-        ].join(' · '),
-        style: Theme.of(context).textTheme.labelSmall,
-      ),
-      trailing: s.current
-          ? null
-          : IconButton(
-              tooltip: '退出这台设备',
-              icon: const Icon(Icons.close),
-              onPressed: () async {
-                final AccountService account = context.read<AccountService>();
-                try {
-                  await account.revokeSession(s.id);
-                  if (!context.mounted) return;
-                  AppTheme.showToast('已退出该设备');
-                  _refreshSessions();
-                } on AccountException catch (e) {
-                  if (!context.mounted) return;
-                  AppTheme.showToast(e.message, isError: true);
-                }
-              },
-            ),
     );
   }
 
@@ -594,11 +601,7 @@ class _LoggedInViewState extends State<_LoggedInView> {
       context: context,
       builder: (BuildContext ctx) => AlertDialog(
         title: Text(all ? '退出所有设备？' : '退出登录？'),
-        content: Text(
-          all
-              ? '所有设备上的登录都会失效，需要重新输入密码。'
-              : '这台设备上的登录会失效，其它设备不受影响。',
-        ),
+        content: Text(all ? '所有设备上的登录都会失效，需要重新输入密码。' : '这台设备上的登录会失效，其它设备不受影响。'),
         actions: <Widget>[
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -646,8 +649,8 @@ class _LoggedInViewState extends State<_LoggedInView> {
             child: Text(
               title,
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
+                color: Theme.of(context).colorScheme.primary,
+              ),
             ),
           ),
           Card.outlined(
@@ -666,8 +669,9 @@ class _LoggedInViewState extends State<_LoggedInView> {
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
 
-  static Route<void> route() =>
-      MaterialPageRoute<void>(builder: (BuildContext context) => const LoginPage());
+  static Route<void> route() => MaterialPageRoute<void>(
+    builder: (BuildContext context) => const LoginPage(),
+  );
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -693,8 +697,9 @@ class _LoginPageState extends State<LoginPage> {
     // 首帧之后再拉配置：拿 InheritedWidget 要在 build 之后才稳。
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
-      final AuthServerConfig cfg =
-          await context.read<AccountService>().loadAuthConfig();
+      final AuthServerConfig cfg = await context
+          .read<AccountService>()
+          .loadAuthConfig();
       if (!mounted) return;
       setState(() => _codeRequired = cfg.loginCode);
     });
@@ -767,7 +772,9 @@ class _LoginPageState extends State<LoginPage> {
                 border: const OutlineInputBorder(),
                 suffixIcon: IconButton(
                   icon: Icon(
-                    _obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                    _obscure
+                        ? Icons.visibility_outlined
+                        : Icons.visibility_off_outlined,
                   ),
                   onPressed: () => setState(() => _obscure = !_obscure),
                 ),
@@ -806,16 +813,20 @@ class _LoginPageState extends State<LoginPage> {
                   const SizedBox(width: 12),
                   // 只有账号和密码都填了才让点：服务端要先核对密码才发信
                   ListenableBuilder(
-                    listenable: Listenable.merge(<Listenable>[_account, _password]),
+                    listenable: Listenable.merge(<Listenable>[
+                      _account,
+                      _password,
+                    ]),
                     builder: (BuildContext ctx, Widget? child) {
                       return EmailCodeButton(
                         enabled:
                             _account.text.trim().isNotEmpty &&
                             _password.text.isNotEmpty,
-                        request: () => context.read<AccountService>().sendLoginCode(
-                          account: _account.text,
-                          password: _password.text,
-                        ),
+                        request: () =>
+                            context.read<AccountService>().sendLoginCode(
+                              account: _account.text,
+                              password: _password.text,
+                            ),
                         onSent: (EmailCodeSent sent) {
                           AppTheme.showToast('验证码已发送到 ${sent.email}');
                         },
@@ -848,8 +859,8 @@ class _LoginPageState extends State<LoginPage> {
             ),
             const SizedBox(height: 12),
             TextButton(
-              onPressed: () => Navigator.of(context)
-                  .pushReplacement(RegisterPage.route()),
+              onPressed: () =>
+                  Navigator.of(context).pushReplacement(RegisterPage.route()),
               child: const Text('还没有账号？去注册'),
             ),
           ],
@@ -874,8 +885,9 @@ class _LoginPageState extends State<LoginPage> {
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key});
 
-  static Route<void> route() =>
-      MaterialPageRoute<void>(builder: (BuildContext context) => const RegisterPage());
+  static Route<void> route() => MaterialPageRoute<void>(
+    builder: (BuildContext context) => const RegisterPage(),
+  );
 
   @override
   State<RegisterPage> createState() => _RegisterPageState();
@@ -907,8 +919,9 @@ class _RegisterPageState extends State<RegisterPage> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!mounted) return;
-      final AuthServerConfig cfg =
-          await context.read<AccountService>().loadAuthConfig();
+      final AuthServerConfig cfg = await context
+          .read<AccountService>()
+          .loadAuthConfig();
       if (!mounted) return;
       setState(() {
         _codeRequired = cfg.registerCode;
@@ -1082,7 +1095,9 @@ class _RegisterPageState extends State<RegisterPage> {
                 border: const OutlineInputBorder(),
                 suffixIcon: IconButton(
                   icon: Icon(
-                    _obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                    _obscure
+                        ? Icons.visibility_outlined
+                        : Icons.visibility_off_outlined,
                   ),
                   onPressed: () => setState(() => _obscure = !_obscure),
                 ),
@@ -1144,20 +1159,18 @@ class EditProfilePage extends StatefulWidget {
 
   final AccountProfile profile;
 
-  static Route<void> route(AccountProfile profile) =>
-      MaterialPageRoute<void>(
-        builder: (BuildContext context) => EditProfilePage(profile: profile),
-      );
+  static Route<void> route(AccountProfile profile) => MaterialPageRoute<void>(
+    builder: (BuildContext context) => EditProfilePage(profile: profile),
+  );
 
   @override
   State<EditProfilePage> createState() => _EditProfilePageState();
 }
 
 class _EditProfilePageState extends State<EditProfilePage> {
-  late final TextEditingController _username =
-      TextEditingController(text: widget.profile.username);
-  late final TextEditingController _email =
-      TextEditingController(text: widget.profile.email);
+  late final TextEditingController _username = TextEditingController(
+    text: widget.profile.username,
+  );
 
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   bool _busy = false;
@@ -1166,7 +1179,6 @@ class _EditProfilePageState extends State<EditProfilePage> {
   @override
   void dispose() {
     _username.dispose();
-    _email.dispose();
     super.dispose();
   }
 
@@ -1180,10 +1192,8 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
     try {
       final String name = _username.text.trim();
-      final String email = _email.text.trim();
       await account.updateProfile(
         username: name != widget.profile.username ? name : null,
-        email: email != widget.profile.email ? email : null,
       );
       if (!mounted) return;
       AppTheme.showToast('资料已更新');
@@ -1202,10 +1212,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
       appBar: AppBar(
         title: const Text('编辑资料'),
         actions: <Widget>[
-          TextButton(
-            onPressed: _busy ? null : _save,
-            child: const Text('保存'),
-          ),
+          TextButton(onPressed: _busy ? null : _save, child: const Text('保存')),
         ],
       ),
       body: Form(
@@ -1231,22 +1238,29 @@ class _EditProfilePageState extends State<EditProfilePage> {
                 return null;
               },
             ),
-            const SizedBox(height: 16),
-            TextFormField(
-              controller: _email,
-              decoration: const InputDecoration(
-                labelText: '邮箱',
-                prefixIcon: Icon(Icons.alternate_email),
-                border: OutlineInputBorder(),
+            const SizedBox(height: 20),
+            // 邮箱不在这个表单里改：它是账号的根凭证，必须走独立流程
+            //（当前密码 + 新邮箱验证码）。这里只给一个入口，避免用户在
+            // 「编辑资料」里找不到它。
+            Card.outlined(
+              margin: EdgeInsets.zero,
+              clipBehavior: Clip.antiAlias,
+              child: ListTile(
+                leading: const Icon(Icons.alternate_email),
+                title: const Text('邮箱'),
+                subtitle: Text(widget.profile.email),
+                trailing: const Text('更换'),
+                onTap: () async {
+                  final NavigatorState navigator = Navigator.of(context);
+                  final bool? changed = await navigator.push(
+                    ChangeEmailPage.route(widget.profile.email),
+                  );
+                  if (changed == true && mounted) {
+                    // 换完邮箱这个页面上的旧地址已经过期，直接退出回账号页
+                    navigator.pop(true);
+                  }
+                },
               ),
-              keyboardType: TextInputType.emailAddress,
-              validator: (String? v) {
-                final String s = (v ?? '').trim();
-                if (!RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$').hasMatch(s)) {
-                  return '邮箱格式不正确';
-                }
-                return null;
-              },
             ),
             if (_error != null) ...<Widget>[
               const SizedBox(height: 12),
@@ -1257,10 +1271,11 @@ class _EditProfilePageState extends State<EditProfilePage> {
             ],
             const SizedBox(height: 16),
             Text(
-              '用户名可以随时改，改动后所有设备上显示的都是新名字。',
+              '用户名可以随时改，改动后所有设备上显示的都是新名字。'
+              '邮箱与账号强绑定，更换需要验证当前密码和新邮箱验证码。',
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
           ],
         ),
@@ -1275,8 +1290,8 @@ class ChangePasswordPage extends StatefulWidget {
   const ChangePasswordPage({super.key});
 
   static Route<void> route() => MaterialPageRoute<void>(
-        builder: (BuildContext context) => const ChangePasswordPage(),
-      );
+    builder: (BuildContext context) => const ChangePasswordPage(),
+  );
 
   @override
   State<ChangePasswordPage> createState() => _ChangePasswordPageState();
@@ -1341,7 +1356,9 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
                 border: const OutlineInputBorder(),
                 suffixIcon: IconButton(
                   icon: Icon(
-                    _obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                    _obscure
+                        ? Icons.visibility_outlined
+                        : Icons.visibility_off_outlined,
                   ),
                   onPressed: () => setState(() => _obscure = !_obscure),
                 ),
@@ -1398,8 +1415,8 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
             Text(
               '修改成功后，除当前设备外的所有登录都会失效。',
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
             ),
           ],
         ),

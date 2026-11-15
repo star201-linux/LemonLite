@@ -30,6 +30,7 @@ import 'core/globals.dart';
 import 'data/models/miniapp_permission.dart';
 import 'data/repositories/market_repository.dart';
 import 'data/services/account_service.dart';
+import 'data/services/market_cache_service.dart';
 import 'data/services/settings_service.dart';
 import 'data/services/update_service.dart';
 import 'pages/account/account_page.dart' show LoginPage;
@@ -150,10 +151,23 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   /// 上一次校验登录态的时间。前后台来回切时用得上（见 [_checkSessionLater]）。
   DateTime _lastSessionCheck = DateTime.fromMillisecondsSinceEpoch(0);
 
+  /// App 退出（detached）时清掉市场缓存。
+  ///
+  /// 为什么不用 didChangeAppLifecycleState：那个回调在 Android 上
+  /// 「被用户从最近任务里划掉」时不一定能跑到；detached 是 Flutter 明确
+  /// 给出的「这个引擎要没了」的信号，能跑到就清。清不掉也不影响正确性 ——
+  /// 缓存里存的是公开的市场数据，没有账号隐私；退出登录时一定会清。
+  AppLifecycleListener? _appLifecycle;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _appLifecycle = AppLifecycleListener(
+      onDetach: () {
+        MarketCacheService.maybeInstance?.clear();
+      },
+    );
     // 小程序菜单里的「返回主页」会发这个信号（见 core/globals.dart）
     shellHomeRequested.addListener(_onHomeRequested);
     // 更新状态是全局的：应用管理的导航角标要跟着它变
@@ -182,6 +196,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _appLifecycle?.dispose();
     WidgetsBinding.instance.removeObserver(this);
     shellHomeRequested.removeListener(_onHomeRequested);
     UpdateService.instance.removeListener(_onUpdatesChanged);
