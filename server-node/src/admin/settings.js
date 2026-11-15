@@ -6,18 +6,18 @@
 // 而这里的东西（注销冷静期、市场每页条数）跟邮件没有关系。
 // 混在一起的结果是运维要找一个「市场分页」的设置得先想到去点「邮件」。
 //
-// 所有值都写回 .env 并立即应用到内存，不需要重启（同 admin/mail.js）。
+// 所有值都写回 config.yaml 并立即应用到内存，不需要重启（同 admin/mail.js）。
 
 import { Router } from 'express';
 import { join } from 'node:path';
 import { config } from '../config.js';
 import { sendOk, wrap } from '../lib/http.js';
-import { updateEnvFile } from '../lib/envfile.js';
+import { updateConfigFile } from '../lib/configfile.js';
 import { intIn } from './shared.js';
 
 export const settingsRouter = Router();
 
-const ENV_PATH = join(config.root, '.env');
+const CONFIG_PATH = join(config.root, 'config.yaml');
 
 function siteSnapshot() {
   return {
@@ -63,11 +63,13 @@ settingsRouter.put(
       intIn(body.marketPageSize, config.market.defaultPageSize, 5, 200),
     );
 
-    updateEnvFile(ENV_PATH, {
-      ACCOUNT_DELETE_DELAY_DAYS: String(deleteDelayDays),
-      ACCOUNT_PURGE_INTERVAL_MINUTES: String(purgeIntervalMinutes),
-      MARKET_PAGE_SIZE: String(marketPageSize),
-      MARKET_MAX_PAGE: String(marketMaxPage),
+    // 写回 config.yaml（保留文件里的人工注释），再改内存里的 config。
+    // 两件事都要做：只改内存 → 重启就回退；只改文件 → 本次运行还是旧值。
+    updateConfigFile(CONFIG_PATH, {
+      'account.deleteDelayDays': deleteDelayDays,
+      'account.purgeIntervalMinutes': purgeIntervalMinutes,
+      'market.defaultPageSize': marketPageSize,
+      'market.maxPageSize': marketMaxPage,
     });
 
     // 立即生效

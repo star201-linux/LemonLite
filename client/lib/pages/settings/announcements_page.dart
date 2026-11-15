@@ -9,6 +9,10 @@
 // 分页：服务端按 offset 返回，这里滚到底自动再拉一页。
 // 公告是短列表（一年几十条），所以没有做本地缓存 —— 每次进来拉一次最新的，
 // 比缓存更符合「公告要看最新的」这个预期。
+//
+// **进来即已读**：页面一打开（列表拉成功）就把设置页那个红点清掉。
+// 用户的原话是「点进去，不用点开详细内容所有小红点就消失」，
+// 而且列表里标题和正文本来就铺开了 —— 要求逐条点开才算读过只是多一层点击。
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -37,6 +41,9 @@ class _AnnouncementsPageState extends State<AnnouncementsPage> {
   bool _loadingMore = false;
   bool _hasMore = false;
   String? _error;
+
+  /// 只在第一次拉成功后清一次红点。下拉刷新不用再清（幂等但没必要）。
+  bool _markedRead = false;
 
   @override
   void initState() {
@@ -77,6 +84,15 @@ class _AnnouncementsPageState extends State<AnnouncementsPage> {
         _hasMore = page.hasMore;
         _loading = false;
       });
+
+      // 1) 把「服务器现在的列表」同步进全局状态：红点该按最新数据算；
+      // 2) 然后清红点。顺序不能反 —— 先清再同步的话，
+      //    同步进来的新公告会立刻让红点又冒出来。
+      _service.syncHistory(page.items);
+      if (!_markedRead) {
+        _markedRead = true;
+        await _service.markAllRead();
+      }
     } on AnnouncementException catch (e) {
       if (!mounted) return;
       setState(() {

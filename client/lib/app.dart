@@ -70,8 +70,9 @@ class LemonLiteApp extends StatelessWidget {
         Provider<MarketRepository>(
           create: (BuildContext ctx) => MarketRepository(settings: settings),
         ),
-        // 站点公告：启动弹窗与「设置 → 市场 → 公告」共用
-        Provider<AnnouncementService>(
+        // 站点公告：启动弹窗、市场横幅、设置页红点共用同一份状态，
+        // 所以必须是 ChangeNotifier（详见 announcement_service.dart 的注释）
+        ChangeNotifierProvider<AnnouncementService>(
           create: (BuildContext ctx) => AnnouncementService(settings: settings),
         ),
         // 主页状态。放在 App 根部而不是 HomePage 内部，
@@ -233,7 +234,12 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     await AccountService.instance.validateSession();
   }
 
-  /// 启动公告：每次启动都拉一次最新公告，有就弹。
+  /// 启动公告：拉一次公告列表，按级别决定要不要弹窗 / 挂横幅。
+  ///
+  /// 注意这里**不直接读 `/latest`**：判断未读数与「有没有更早的未确认弹窗」
+  /// 都需要整份列表，而 `/latest` 只有一条。拉完由 AnnouncementService
+  /// 自己算好 `popup` / `banner`，这里只负责把弹窗显示出来；
+  /// 横幅由市场页监听同一个 service 渲染（它得跟着市场页一起出现）。
   ///
   /// 为什么要等 500ms 而不是立刻弹：启动瞬间还可能有「账号已下线」的弹窗
   ///（[ _maybeShowOfflineDialog ] 走的是同一个 post-frame）。
@@ -241,16 +247,24 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   /// 所以让位给下线提示，这一次就先不弹公告了。
   Future<void> _maybeShowAnnouncement() async {
     await Future<void>.delayed(const Duration(milliseconds: 500));
-    if (!mounted || _announcementDialogOpen) return;
-    if (_offlineDialogOpen) return;
-    final Announcement? announcement = await context
-        .read<AnnouncementService>()
-        .fetchLatest();
-    if (!mounted || announcement == null) return;
-    if (_announcementDialogOpen || _offlineDialogOpen) return;
+    if (!mounted) return;
+
+    final AnnouncementService service = context.read<AnnouncementService>();
+    await service.bootstrap();
+    if (!mounted || _announcementDialogOpen || _offlineDialogOpen) return;
+
+    final Announcement? announcement = service.popup;
+    if (announcement == null) return;
+
     _announcementDialogOpen = true;
     try {
-      await AnnouncementDialog.show(context, announcement: announcement);
+      await AnnouncementDialog.show(
+        context,
+        announcement: announcement,
+        // 点「确定」时才标记已读：点「历史公告」跳走不算确认，
+        // 下次启动还会弹（否则用户只是点了个链接就被当成看过了）
+        onConfirm: () => service.confirmPopup(announcement),
+      );
     } finally {
       _announcementDialogOpen = false;
     }

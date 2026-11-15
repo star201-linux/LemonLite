@@ -841,6 +841,53 @@ describe('公告', () => {
     assert.ok(!after.json.data.announcements.some((a) => a.id === ann.id));
   });
 
+  test('级别默认是 1，可以指定 1~4，公开接口会带回来', async () => {
+    const plain = await api('POST', '/admin/api/announcements', {
+      body: { title: '默认级别', content: 'x' },
+    });
+    assert.equal(plain.status, 200, JSON.stringify(plain.json));
+    assert.equal(plain.json.data.announcement.level, 1);
+
+    const loud = await api('POST', '/admin/api/announcements', {
+      body: { title: '每次启动都弹', content: 'x', level: 4 },
+    });
+    assert.equal(loud.status, 200, JSON.stringify(loud.json));
+    assert.equal(loud.json.data.announcement.level, 4);
+
+    const latest = await api('GET', '/api/announcements/latest');
+    assert.equal(latest.json.data.announcement.level, 4);
+
+    const list = await api('GET', '/api/announcements?limit=5');
+    // 按发布时间倒序，最后插入的排第一
+    assert.equal(list.json.data.announcements[0].level, 4);
+    assert.ok(list.json.data.announcements.some((a) => a.level === 1));
+  });
+
+  test('可以改级别（4 → 1 就是把「每次弹」降回红点）', async () => {
+    const admin = await api('GET', '/admin/api/announcements');
+    const ann = admin.json.data.announcements.find((a) => a.level === 4);
+
+    const r = await api('PUT', `/admin/api/announcements/${ann.id}`, {
+      body: { level: 1 },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.data.announcement.level, 1);
+
+    // 其它字段没被顺手清掉
+    assert.equal(r.json.data.announcement.title, ann.title);
+    assert.equal(r.json.data.announcement.content, ann.content);
+  });
+
+  test('非法级别被拒（不静默当成 1）', async () => {
+    for (const level of [0, 5, -1, 'abc', 2.5]) {
+      const r = await api('POST', '/admin/api/announcements', {
+        body: { title: 'x', content: 'y', level },
+      });
+      assert.equal(r.status, 400, `level=${level}`);
+      assert.equal(r.json.error.code, 'bad_level');
+    }
+  });
+
   test('删除不存在的公告 → 404', async () => {
     const r = await api('DELETE', '/admin/api/announcements/99999');
     assert.equal(r.status, 404);

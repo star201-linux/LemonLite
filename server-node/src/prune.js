@@ -17,9 +17,8 @@ import { pruneSessions } from './lib/auth.js';
 import { purgeDueDeletions } from './lib/account_deletion.js';
 import { liftExpiredBans } from './lib/ban.js';
 import { purgeExpiredCodes } from './lib/email_codes.js';
-import { readEnvFile } from './config.js';
-
-readEnvFile();
+// 配置（config.yaml）在 import 阶段就已读好，这里不需要额外动作。
+import './config.js';
 
 // 注销到期的账号：这是**真正删数据**的一步（账号行 + 会话 + userdata/<id>/）。
 // 放在最前面：它比清理会话/验证码重要得多，先做掉，后面的失败也不影响它。

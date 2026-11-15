@@ -6,7 +6,7 @@ import express from 'express';
 import cors from 'cors';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { config, describeConfig, readEnvFile } from './config.js';
+import { config, configFileCreated, describeConfig } from './config.js';
 import { ping, closePool } from './db.js';
 import { errorHandler, notFoundHandler, sendOk } from './lib/http.js';
 import {
@@ -27,8 +27,6 @@ import { purgeDueDeletions } from './lib/account_deletion.js';
 import { liftExpiredBans } from './lib/ban.js';
 import { iconsRoot } from './lib/icon_store.js';
 import { describeMail, mailStatus } from './lib/mailer.js';
-
-readEnvFile();
 
 const app = express();
 

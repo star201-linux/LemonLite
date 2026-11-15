@@ -168,7 +168,7 @@ export function renderAdminPage({ version }) {
     <form id="setupForm">
       <div class="field" id="setupTokenField" hidden>
         <label for="setup_token">初始化口令（ADMIN_SETUP_TOKEN）</label>
-        <input id="setup_token" type="password" autocomplete="off" placeholder="服务端 .env 里配置的口令" />
+        <input id="setup_token" type="password" autocomplete="off" placeholder="config.yaml 的 admin.setupToken" />
       </div>
       <div class="row">
         <div class="field">
@@ -417,7 +417,7 @@ export function renderAdminPage({ version }) {
           <button class="primary" type="submit">保存并立即生效</button>
           <button class="ghost" type="button" id="reloadBtn">重新读取</button>
         </div>
-        <p class="hint">保存会写入服务端 <code>.env</code> 并立即应用到内存，不需要重启。</p>
+        <p class="hint">保存会写入 <code>config.yaml</code> 并立即应用到内存，不需要重启。</p>
       </form>
     </div>
 
@@ -595,6 +595,16 @@ export function renderAdminPage({ version }) {
   <div class="modal-card">
     <h2 id="annModalTitle">新建公告</h2>
     <div class="field"><label for="ann_title">标题</label><input id="ann_title" type="text" placeholder="如：v0.9 更新说明" /></div>
+    <div class="field">
+      <label for="ann_level">级别</label>
+      <select id="ann_level">
+        <option value="1">1 · 只在「设置 → 公告」上挂数字红点（最轻）</option>
+        <option value="2">2 · 市场页顶部横幅，可手动关掉</option>
+        <option value="3">3 · 启动弹窗，确认一次后不再出现</option>
+        <option value="4">4 · 启动弹窗，每次打开都弹（直到下一条公告）</option>
+      </select>
+      <p class="hint" id="ann_levelHint">红点不打断任何人，适合「更新说明」这类看了有用的内容。</p>
+    </div>
     <div class="field"><label for="ann_content">内容</label><textarea id="ann_content" style="min-height:180px" placeholder="正文，支持换行"></textarea></div>
     <div class="field">
       <label for="ann_time">发布时间</label>
@@ -783,8 +793,9 @@ export function renderAdminPage({ version }) {
         ['管理员', data.counts.admins],
         ['活跃会话', data.counts.sessions],
         ['公告', data.announcements
-          ? data.announcements.total + (data.announcements.pending > 0
-            ? '（' + data.announcements.pending + ' 待发布）' : '')
+          ? data.announcements.total +
+            (data.announcements.pending > 0 ? '（' + data.announcements.pending + ' 待发布）' : '') +
+            (data.announcements.loud > 0 ? '（' + data.announcements.loud + ' 条会弹窗）' : '')
           : '—'],
         ['24h 验证码', data.counts.codes24h]
       ];
@@ -1492,6 +1503,20 @@ export function renderAdminPage({ version }) {
   var annCache = [];
   var editingAnn = null;
 
+  // 级别 → 展示文案。数字本身没有意义，运维要的是「它会怎么打扰用户」。
+  var LEVEL_BADGE = {
+    1: ['ok', '① 红点'],
+    2: ['ok', '② 横幅'],
+    3: ['warn', '③ 弹窗一次'],
+    4: ['err', '④ 每次弹']
+  };
+  var LEVEL_HINT = {
+    1: '红点不打断任何人，适合「更新说明」这类看了有用的内容。',
+    2: '进市场时顶部出现一条横幅，用户点 × 或下次启动就没了。',
+    3: '启动时弹窗，用户点确定后这台设备以后都不再弹。',
+    4: '启动时每次都弹，直到你发布下一条公告 —— 只留给「必须让所有人知道」的事。'
+  };
+
   function loadAnnouncements() {
     return api('/announcements').then(function (data) {
       annCache = data.announcements;
@@ -1511,9 +1536,11 @@ export function renderAdminPage({ version }) {
         : '<span class="badge ok">已发布</span>';
       var text = String(a.content || '');
       var preview = text.length > 90 ? text.slice(0, 90) + '…' : text;
+      var lv = LEVEL_BADGE[Number(a.level) || 1] || LEVEL_BADGE[1];
+      var levelBadge = '<span class="badge ' + lv[0] + '">' + lv[1] + '</span>';
       return '<div class="item">' +
         '<div style="min-width:0;flex:1 1 320px">' +
-          '<div class="item-title">' + esc(a.title) + ' ' + badge + '</div>' +
+          '<div class="item-title">' + esc(a.title) + ' ' + badge + ' ' + levelBadge + '</div>' +
           '<div class="item-sub">发布 ' + shortTime(a.publishedAt) +
             (a.updatedAt && a.updatedAt !== a.publishedAt
               ? ' · 更新 ' + shortTime(a.updatedAt) : '') + '</div>' +
@@ -1532,11 +1559,20 @@ export function renderAdminPage({ version }) {
     $('annModalTitle').textContent = ann ? '编辑公告' : '新建公告';
     $('ann_title').value = ann ? ann.title : '';
     $('ann_content').value = ann ? ann.content : '';
+    $('ann_level').value = String(ann ? Number(ann.level) || 1 : 1);
+    syncLevelHint();
     // 新建时默认「现在」；编辑时回填当前发布时间（改时间只要在这个基础上调）
     $('ann_time').value = toLocalInput(ann ? ann.publishedAt : new Date().toISOString());
     $('annDelete').hidden = !ann;
     $('annModal').hidden = false;
   }
+
+  function syncLevelHint() {
+    var level = Number($('ann_level').value) || 1;
+    $('ann_levelHint').textContent = LEVEL_HINT[level] || '';
+  }
+
+  $('ann_level').addEventListener('change', syncLevelHint);
 
   function closeAnnModal() {
     editingAnn = null;
@@ -1581,6 +1617,7 @@ export function renderAdminPage({ version }) {
     var payload = {
       title: title,
       content: content,
+      level: Number($('ann_level').value) || 1,
       // 留空 = 立即发布（服务端会把空值解释成「现在」）
       publishedAt: fromLocalInput($('ann_time').value)
     };
@@ -1590,7 +1627,13 @@ export function renderAdminPage({ version }) {
     request.then(function (data) {
       closeAnnModal();
       var ann = data && data.announcement;
-      toast(ann && ann.pending ? '已保存，到发布时间才会出现在客户端' : '已保存并发布');
+      if (ann && ann.pending) {
+        toast('已保存，到发布时间才会出现在客户端');
+      } else if (ann && Number(ann.level) >= 3) {
+        toast('已保存：下次启动会弹窗提醒');
+      } else {
+        toast('已保存并发布');
+      }
       return loadAnnouncements();
     }).then(loadStatus).catch(function (err) { toast(err.message, true); });
   });

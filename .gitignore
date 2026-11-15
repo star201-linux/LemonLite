@@ -32,6 +32,12 @@ client/android/app/*.keystore
 .env.*
 !.env.example
 
+# 服务端配置：config.yaml 里有数据库密码与邮件密钥，只在服务器上存在；
+# config.example.yaml 是模板，**必须**入库（首次启动会从它复制）。
+server-node/config.yaml
+config.yaml
+!config.example.yaml
+
 # ---- Node.js ----
 node_modules/
 npm-debug.log*

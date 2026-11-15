@@ -235,7 +235,7 @@ void main() {
       expect(on.codeCooldown, 30);
       expect(on.tokenNeverExpires, isTrue);
 
-      // 服务端没给字段时：注册要验证码、登录不要（与 .env.example 默认一致）
+      // 服务端没给字段时：注册要验证码、登录不要（与 config.example.yaml 默认一致）
       final AuthServerConfig off = AuthServerConfig.fromJson(
         <String, dynamic>{},
       );

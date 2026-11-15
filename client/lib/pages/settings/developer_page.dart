@@ -5,7 +5,7 @@
 // 阶段一只有三件事：
 //   1. 自定义市场服务器地址（保存 / 重置为默认），保存后**立即生效**
 //      —— 保存后直接调 HomeController.load()，用新地址重新拉 index.json
-//   2. 「测试工具 → 小程序测试」二级菜单，用来跑 SDK 自检或本地包目录
+//   2. 「测试工具 → 小程序测试」二级菜单，用来跑 SDK 自检或打开本地 zip 包
 //   3. 关闭开发者模式
 // 另外附一块「运行时信息」，调主题/桥接问题时不用再翻日志。
 
@@ -411,7 +411,7 @@ class _DeveloperPageState extends State<DeveloperPage> {
             ListTile(
               leading: const Icon(Icons.science_outlined),
               title: const Text('小程序测试'),
-              subtitle: const Text('运行 SDK 自检，或打开一个本地包目录'),
+              subtitle: const Text('运行 SDK 自检，或导入一个本地 ZIP 包直接打开'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.of(context).push(MiniappTestPage.route()),
             ),

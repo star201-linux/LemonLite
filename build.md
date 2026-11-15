@@ -178,9 +178,9 @@ flutter test           # 184 个单元测试
 ```bash
 cd main/repo/server-node
 
-cp .env.example .env
-# 编辑 .env：DB_* 必填；注册要发验证码，MAIL_* 也要配
-# （五种通道的配法见 docs/邮件通道配置.md；只想先跑通就 MAIL_DRIVER=console）
+cp config.example.yaml config.yaml
+# 编辑 config.yaml：db.password 必填；注册要发验证码，mail 段也要配
+# （五种通道的配法见 docs/邮件通道配置.md；只想先跑通就 mail.driver: console）
 
 npm install
 npm run init -- --seed     # 建库建表 + 灌基础分类/标签（不含任何小程序）
@@ -231,16 +231,17 @@ dart analyze lib/
 
 ### 注册时提示「服务端邮件通道未配置」
 
-服务端启动日志里会有一行 `! 邮件 ... 未就绪（原因）`，照括号里缺的项补 `.env` 即可：
+服务端启动日志里会有一行 `! 邮件 ... 未就绪（原因）`，照括号里缺的项补 `config.yaml` 即可：
 
 | 日志说的 | 要补 |
 | --- | --- |
-| 没有配置 MAIL_FROM | `MAIL_FROM=no-reply@你的域名` |
-| 没有配置 SMTP_HOST | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` |
-| 没有配置 RESEND_API_KEY | `RESEND_API_KEY` |
-| 没有配置 ALIYUN_DM_* | 阿里云的 AK/SK 与发信地址 |
+| 没有配置 MAIL_FROM | `mail.from: no-reply@你的域名` |
+| 没有配置 SMTP_HOST | `mail.smtp` 下的 `host` / `port` / `user` / `password` |
+| 没有配置 RESEND_API_KEY | `mail.resend.apiKey` |
+| 没有配置 ALIYUN_DM_* | `mail.aliyun` 下的 AK/SK 与发信地址 |
 
-改完 `.env` **重启服务端**才生效（配置只在启动时读一次）。
+改完 `config.yaml` **重启服务端**才生效（文件只在启动时读一次）。
+面板「邮件」页改的则立即生效，并且会自动写回这个文件。
 
 ### 收不到验证码邮件
 
@@ -250,16 +251,16 @@ dart analyze lib/
 2. 垃圾箱；QQ/163 邮箱尤其容易把「机器发的 6 位数字」判成垃圾
 3. 发件域名的 SPF / DKIM 有没有生效：`dig txt 你的域名`
 4. 服务商控制台的发送记录（Resend / SendGrid / 阿里云都有）
-5. 用 `MAIL_DRIVER=console MAIL_DEV_ECHO_CODE=true` 跑一次 ——
+5. 把 `mail.driver` 设为 `console`、`mail.devEchoCode` 设为 `true` 跑一次 ——
    服务端日志里出现 `[mail][dev] 注册验证码 123456 → …` 就说明
    **应用逻辑没问题，问题在邮件通道**（接口响应里不会带验证码）
 
 ### 服务端返回 `Connection refused`，但配置看起来是对的
 
-`.env` 里的 `DB_HOST` 要用数据库真正监听的主机名（远程库不能用
+`config.yaml` 里的 `db.host` 要用数据库真正监听的主机名（远程库不能用
 `localhost`，那指的是「本机」而不是「库所在机器」）。
 
-另外检查 `.env` 是否是 **UTF-8 无 BOM**（Windows 记事本会带 BOM），
+另外检查 `config.yaml` 是否是 **UTF-8 无 BOM**（Windows 记事本会带 BOM），
 以及 `npm start` 时终端有没有打印出实际监听的地址与端口。
 
 ### 客户端报「服务器返回了无法识别的内容」

@@ -21,6 +21,7 @@ import '../../core/globals.dart';
 import '../../data/models/bundle_manifest.dart';
 import '../../data/models/json_utils.dart';
 import '../../data/services/account_service.dart';
+import '../../data/services/announcement_service.dart';
 import '../../data/services/settings_service.dart';
 import '../home/home_controller.dart';
 import '../account/account_page.dart';
@@ -53,6 +54,9 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget build(BuildContext context) {
     final SettingsService settings = context.watch<SettingsService>();
     final HomeController home = context.watch<HomeController>();
+    final AnnouncementService announcements = context
+        .watch<AnnouncementService>();
+    final int unread = announcements.unreadCount;
     final ColorScheme scheme = Theme.of(context).colorScheme;
 
     return Scaffold(
@@ -124,10 +128,26 @@ class _SettingsPageState extends State<SettingsPage> {
           _section(context, '市场', <Widget>[
             // 公告放在最前面：它不需要开发者模式，普通用户就该能翻到。
             // 启动弹窗只显示最新一条，关掉之后唯一的入口就是这里。
+            //
+            // 红点（级别 1 的提醒方式）挂在这里：不打断任何人，但「有东西没看」
+            // 这件事必须一直可见，否则用户永远不知道运营发过话。
+            // 数字是**未读条数**，进一次公告页就全清（见 AnnouncementsPage）。
             ListTile(
-              leading: const Icon(Icons.campaign_outlined),
+              leading: Badge.count(
+                count: unread,
+                isLabelVisible: unread > 0,
+                child: const Icon(Icons.campaign_outlined),
+              ),
               title: const Text('公告'),
-              subtitle: const Text('查看历史公告'),
+              subtitle: Text(
+                unread > 0 ? '$unread 条未读' : '查看历史公告',
+                style: unread > 0
+                    ? TextStyle(
+                        color: scheme.primary,
+                        fontWeight: FontWeight.w500,
+                      )
+                    : null,
+              ),
               trailing: const Icon(Icons.chevron_right),
               onTap: () =>
                   Navigator.of(context).push(AnnouncementsPage.route()),

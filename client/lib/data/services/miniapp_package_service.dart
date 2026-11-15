@@ -26,8 +26,10 @@
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
@@ -200,8 +202,21 @@ class MiniappPackageService {
 
   Directory? _rootCache;
 
+  /// 测试用：直接指定 miniapps 根目录，绕过 path_provider。
+  ///
+  /// 「导入本地 zip」的绝大部分逻辑是文件系统操作（解压、找入口、写完成标记、
+  /// 清理旧版本），而这些恰恰是最容易写错的部分。为了测它们去 mock
+  /// path_provider 的平台通道不值得 —— 给一个目录覆盖点更直接。
+  @visibleForTesting
+  Directory? debugRootOverride;
+
   /// miniapps/ 根目录
   Future<Directory> _root() async {
+    final Directory? override = debugRootOverride;
+    if (override != null) {
+      if (!override.existsSync()) override.createSync(recursive: true);
+      return override;
+    }
     final Directory? cached = _rootCache;
     if (cached != null && cached.existsSync()) return cached;
     final Directory base = await getApplicationSupportDirectory();
@@ -435,6 +450,183 @@ class MiniappPackageService {
     } finally {
       if (tmp.existsSync()) tmp.deleteSync();
     }
+  }
+
+  // ---------------------------------------------------------------- 本地导入
+  //
+  // 开发者模式下「小程序测试」用的入口：直接选一个本地 zip 打开，
+  // 不用先传到服务端上架。
+  //
+  // 和上面 install() 的区别只在「包的来源」：
+  //   * 不校验 sha256（包是用户自己选的，没有可比的期望值）；
+  //   * 不比对版本号（调试时就是要覆盖，版本固定 `dev-<时间戳>`）；
+  //   * 解压、路径穿越防护、入口确认、.complete 标记**完全复用**同一套 ——
+  //     本地包也是包，不该走一条更宽松的路径。
+  //
+  // appId 优先取包内 metadata.json 的 id（这样一个调试包和将来上架的同 id
+  // 应用共用沙箱，行为一致）；没有 metadata.json 就用文件名推一个。
+
+  /// 本地 zip 的大小上限。与服务端上传上限一致（20MB）。
+  static const int maxLocalZipBytes = 20 * 1024 * 1024;
+
+  /// 从 zip 字节安装一个调试包，返回可打开的 [InstalledPackage]。
+  Future<InstalledPackage> installLocalZip(
+    Uint8List bytes, {
+    String fileName = '',
+    void Function(double fraction)? onProgress,
+  }) async {
+    if (bytes.isEmpty) {
+      throw const PackageException('empty_zip', '这个文件是空的');
+    }
+    if (bytes.length > maxLocalZipBytes) {
+      throw PackageException(
+        'too_large',
+        '包太大了（${(bytes.length / 1024 / 1024).toStringAsFixed(1)}MB，'
+        '上限 ${maxLocalZipBytes ~/ 1024 ~/ 1024}MB）',
+      );
+    }
+
+    final Directory root = await _root();
+    final String stamp = DateTime.now().millisecondsSinceEpoch.toString();
+
+    // 先解到临时目录：appId 要等读完 metadata.json 才知道，
+    // 而目标路径依赖 appId。同盘 rename 是原子的，不会留下半个包。
+    final Directory staging = Directory(p.join(root.path, '.import-$stamp'));
+    if (staging.existsSync()) staging.deleteSync(recursive: true);
+    staging.createSync(recursive: true);
+
+    try {
+      onProgress?.call(0.3);
+      await _extractTo(bytes, staging);
+      onProgress?.call(0.7);
+
+      final File? metadataFile = _findMetadataFile(staging);
+      final MiniappMetadata? metadata;
+      final String appId;
+
+      if (metadataFile != null) {
+        final Object? decoded;
+        try {
+          decoded = jsonDecode(metadataFile.readAsStringSync());
+        } catch (e) {
+          throw PackageException('bad_metadata', 'metadata.json 不是合法 JSON：$e');
+        }
+        if (decoded is! Map) {
+          throw const PackageException('bad_metadata', 'metadata.json 顶层必须是对象');
+        }
+        final String declared = (decoded['id'] ?? '').toString().trim();
+        if (declared.isEmpty) {
+          throw const PackageException(
+            'bad_metadata',
+            'metadata.json 缺少 id（它决定这个包以谁的身份运行）',
+          );
+        }
+        appId = _safeSegment(declared);
+        metadata = _readMetadataFile(metadataFile, appId: appId);
+      } else {
+        appId = _developerAppId(fileName);
+        metadata = null;
+      }
+
+      final String prefix = metadataFile == null
+          ? ''
+          : p.relative(p.dirname(metadataFile.path), from: staging.path);
+      final String entry = metadata == null
+          ? 'index.html'
+          : p.posix.normalize(
+              p.posix.join(prefix.replaceAll('\\', '/'), metadata.entry),
+            );
+
+      // 版本固定带时间戳：每次导入都是一个干净的目录，
+      // 不会出现「旧文件还留在里面，改了配置却没生效」这种诡异现象。
+      final String version = 'dev-$stamp';
+      final Directory appRoot = Directory(p.join(root.path, appId));
+      appRoot.createSync(recursive: true);
+      final Directory target = Directory(p.join(appRoot.path, version));
+      if (target.existsSync()) target.deleteSync(recursive: true);
+
+      onProgress?.call(0.9);
+      staging.renameSync(target.path);
+
+      if (!File(p.join(target.path, entry)).existsSync()) {
+        target.deleteSync(recursive: true);
+        // 顺手把刚建出来的空 <appId>/ 目录也删掉：
+        // 留着它无害，但会让「导入失败后磁盘上多了个空目录」变成
+        // 一个每次都要重新确认「这是不是上次失败留下的」的问题。
+        _removeIfEmpty(appRoot);
+        throw PackageException(
+          'missing_entry',
+          '包里没有入口文件 $entry（检查 metadata.json 的 entry，'
+          '或者把首页命名成 index.html）',
+        );
+      }
+
+      File(
+        p.join(target.path, _kCompleteMarker),
+      ).writeAsStringSync(DateTime.now().toIso8601String());
+      File(p.join(appRoot.path, 'current')).writeAsStringSync(
+        jsonEncode(<String, dynamic>{'version': version, 'entry': entry}),
+      );
+
+      // 只留这一次导入的结果：调试包没必要在磁盘上堆十个版本。
+      _pruneDevVersions(appRoot, keep: version);
+
+      onProgress?.call(1);
+      lemonLog('Package', '本地导入 $appId：$version（${bytes.length} 字节）');
+
+      return InstalledPackage(
+        appId: appId,
+        version: version,
+        entry: entry,
+        dir: target.path,
+        metadata: metadata,
+      );
+    } finally {
+      // 成功时 staging 已经被 rename 走了，这里只剩失败路径要清
+      if (staging.existsSync()) {
+        try {
+          staging.deleteSync(recursive: true);
+        } catch (_) {
+          /* 清理失败不影响错误信息，下次导入会覆盖 */
+        }
+      }
+    }
+  }
+
+  void _removeIfEmpty(Directory dir) {
+    try {
+      if (dir.existsSync() && dir.listSync().isEmpty) dir.deleteSync();
+    } catch (_) {
+      /* 删不掉就算了，空目录不影响功能 */
+    }
+  }
+
+  /// 删掉同应用下旧的 `dev-*` 目录（不动正式安装的版本）
+  void _pruneDevVersions(Directory appRoot, {required String keep}) {
+    if (!appRoot.existsSync()) return;
+    for (final FileSystemEntity e in appRoot.listSync()) {
+      if (e is! Directory) continue;
+      final String name = p.basename(e.path);
+      if (!name.startsWith('dev-') || name == keep) continue;
+      try {
+        e.deleteSync(recursive: true);
+      } catch (_) {
+        /* 文件被占用时留到下次 */
+      }
+    }
+  }
+
+  /// 没有 metadata.json 时用文件名推 appId。
+  ///
+  /// 必须带 `dev.local.` 前缀：这样它永远不会和市场上的正式应用撞 id
+  /// （正式 id 是作者自己填的反向域名，不会以 dev 开头）。
+  String _developerAppId(String fileName) {
+    String base = fileName.trim();
+    if (base.isEmpty) base = 'package';
+    base = p.basenameWithoutExtension(base);
+    final String safe = base.replaceAll(RegExp(r'[^\w.\-]'), '_');
+    final String trimmed = safe.isEmpty ? 'package' : safe;
+    return _safeSegment('dev.local.$trimmed');
   }
 
   /// 找 metadata.json：包根，或**唯一**子目录（作者多套了一层文件夹）。

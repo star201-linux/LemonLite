@@ -6,19 +6,24 @@
 //   开发者选项首页负责的是「改配置」（服务器地址、运行时信息），是静态的；
 //   而这一页负责的是「真去开一个 WebView 跑东西」，会跳走、会占资源。
 //   把这类入口收进二级菜单，一是避免在主调试页误触，
-//   二是后面要加更多测试用例（本地 HTML、指定 appId、注入自定义主题…）时有地方放。
+//   二是后面要加更多测试用例时有地方放。
 //
 // 两个入口（这一版不再内置示例小程序：默认市场是空的，
-// 小程序只能由管理员在服务端添加，调试时用本地包目录）：
+// 小程序只能由管理员在服务端添加，调试时用本地 zip 包）：
 //   1. SDK 自检 —— 把每个受控能力真调一遍
-//   2. 本地包目录 —— 直接指定一个**已解压**的小程序目录（file:// 打开）
+//   2. 本地 ZIP 包 —— 选一个 zip，解压到应用私有目录后直接用 file:// 打开
+//
+// 为什么从「填目录路径」改成「选 zip」：
+//   手打一条 `/data/user/0/.../miniapps/xxx/1.0.0` 在手机上几乎不可能不出错，
+//   而且要先在别处把包解压好 —— 那一步在 Android 11+ 的分区存储下更麻烦。
+//   选文件是系统能力，开发者只需要把 zip 传到手机里（或者直接用网盘下载）。
 //
 // 0.6 起不再支持「自定义 URL」：小程序只能从本地包打开，
 // 远程网页那条路已经删了（见 data/services/miniapp_package_service.dart）。
-// 要测一个页面，把它打成 zip 传到服务端，或者直接把解压好的目录填进来。
 
-import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
@@ -38,42 +43,31 @@ class MiniappTestPage extends StatefulWidget {
 }
 
 class _MiniappTestPageState extends State<MiniappTestPage> {
-  /// 本地包目录（绝对路径）。默认留空，由用户填。
-  late final TextEditingController _urlController = TextEditingController();
+  /// 用户选中的 zip（只是选，还没导入）
+  PlatformFile? _picked;
 
-  String? _urlError;
+  /// 正在解压 / 打开
+  bool _busy = false;
 
-  @override
-  void dispose() {
-    _urlController.dispose();
-    super.dispose();
+  String? _error;
+
+  // ------------------------------------------------------------ 工具
+
+  String get _pickedName => _picked?.name ?? '';
+
+  String _sizeLabel(int bytes) {
+    if (bytes <= 0) return '大小未知';
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    }
+    return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
   }
 
-  // ------------------------------------------------------------ 校验
-
-  /// 校验「要当小程序打开的本地目录」。
-  ///
-  /// 只接受**绝对路径且目录存在、里面有 index.html**。
-  /// 不做路径穿越校验 —— 这是开发者选项，填的人本来就有这台机器的
-  /// 文件访问权；真正需要防穿越的是「从网络下载的包」（见 PackageService）。
-  String? _validate(String input) {
-    final String value = input.trim();
-    if (value.isEmpty) return '请输入小程序目录的绝对路径';
-    if (!value.startsWith('/')) {
-      return '请填写绝对路径，例如 /data/user/0/xyz.star201.lemonlite/files/miniapps/xxx/1.0.0';
-    }
-    final Directory dir = Directory(value);
-    if (!dir.existsSync()) return '目录不存在';
-    if (!File('$value/index.html').existsSync()) {
-      return '这个目录里没有 index.html';
-    }
-    return null;
-  }
-
-  /// 用目录名推一个能看懂的标题
-  String _titleOf(String path) {
-    final String name = p.basename(path);
-    return name.isEmpty ? '本地包' : name;
+  /// 用文件名推一个能看懂的标题（去掉 .zip 后缀）
+  String _titleOf(String name) {
+    final String base = p.basenameWithoutExtension(name).trim();
+    return base.isEmpty ? '本地包' : base;
   }
 
   // ------------------------------------------------------------ 动作
@@ -89,30 +83,62 @@ class _MiniappTestPageState extends State<MiniappTestPage> {
     );
   }
 
-  void _openCustom() {
-    final String value = _urlController.text.trim();
-    final String? error = _validate(value);
-    if (error != null) {
-      setState(() => _urlError = error);
+  Future<void> _pickZip() async {
+    if (_busy) return;
+    PlatformFile? picked;
+    try {
+      // 不用 allowedExtensions 过滤：各厂商文件选择器对 zip 的 MIME 过滤不一致，
+      // 反而选不到；这里放开选择、在下面按后缀校验，错误信息也更明确。
+      picked = await FilePicker.pickFile(
+        type: FileType.any,
+        dialogTitle: '选择小程序 ZIP 包',
+      );
+    } catch (e) {
+      if (mounted) setState(() => _error = '打开文件选择器失败：$e');
       return;
     }
+    if (picked == null) return; // 用户取消，不算错误
+    if (!picked.name.toLowerCase().endsWith('.zip')) {
+      setState(() {
+        _picked = null;
+        _error = '请选择 .zip 文件（「${picked!.name}」不是）';
+      });
+      return;
+    }
+    setState(() {
+      _picked = picked;
+      _error = null;
+    });
+  }
 
-    setState(() => _urlError = null);
-    // appId 用目录名：不同目录的调试小程序共用 storage 会串数据
-    final String appId =
-        'dev.local.${p.basename(value).replaceAll(RegExp(r'[^\w.\-]'), '_')}';
-    MiniappHost.instance.open(
-      appId: appId,
-      title: _titleOf(value),
-      // 直接构造一个「已安装包」：目录就是包根，入口固定 index.html
-      installedPackage: InstalledPackage(
-        appId: appId,
-        version: 'dev',
-        entry: 'index.html',
-        dir: value,
-      ),
-      isTransient: true,
-    );
+  Future<void> _importAndOpen() async {
+    final PlatformFile? file = _picked;
+    if (file == null || _busy) return;
+
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+
+    try {
+      final Uint8List bytes = await file.readAsBytes();
+      final InstalledPackage pkg = await MiniappPackageService.instance
+          .installLocalZip(bytes, fileName: file.name);
+
+      if (!mounted) return;
+      MiniappHost.instance.open(
+        appId: pkg.appId,
+        title: pkg.metadata?.name ?? _titleOf(file.name),
+        installedPackage: pkg,
+        isTransient: true,
+      );
+    } on PackageException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } catch (e) {
+      if (mounted) setState(() => _error = '导入失败：$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   // ------------------------------------------------------------ 构建
@@ -174,48 +200,65 @@ class _MiniappTestPageState extends State<MiniappTestPage> {
             ),
           ]),
 
-          // ---------------- 本地包目录 ----------------
-          //
-          // 0.6 起小程序只能从本地包打开，所以这里填的是**目录**而不是 URL。
-          // 典型用法：把 zip 解压到某个目录，或者直接指向
-          //   <应用私有目录>/miniapps/<appId>/<version>/
-          _section(context, '本地包目录', <Widget>[
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: TextField(
-                controller: _urlController,
-                autocorrect: false,
+          // ---------------- 本地 ZIP 包 ----------------
+          _section(context, '本地 ZIP 包', <Widget>[
+            ListTile(
+              leading: Icon(
+                _picked == null
+                    ? Icons.folder_zip_outlined
+                    : Icons.check_circle_outline,
+                color: _picked == null ? null : scheme.primary,
+              ),
+              title: Text(
+                _picked == null ? '还没有选择文件' : _pickedName,
                 maxLines: 1,
-                decoration: InputDecoration(
-                  labelText: '小程序目录（绝对路径）',
-                  hintText:
-                      '/data/user/0/xyz.star201.lemonlite/files/miniapps/xxx/1.0.0',
-                  errorText: _urlError,
-                  helperText: '目录里必须有 index.html；用 file:// 打开，不需要联网',
-                  helperMaxLines: 2,
-                  border: const OutlineInputBorder(),
-                  prefixIcon: const Icon(Icons.folder_open),
-                  suffixIcon: IconButton(
-                    tooltip: '清空',
-                    icon: const Icon(Icons.close),
-                    onPressed: () => setState(() {
-                      _urlController.clear();
-                      _urlError = null;
-                    }),
-                  ),
-                ),
-                onChanged: (_) => setState(() => _urlError = null),
-                onSubmitted: (_) => _openCustom(),
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: Text(
+                _picked == null
+                    ? '选一个 .zip（内含 index.html 或 metadata.json）'
+                    // lengthSync 在原生选择器已经报了大小时不会碰磁盘，
+                    // 拿不到就显示「大小未知」，不值得为一行副标题读一遍文件
+                    : _sizeLabel(_picked!.lengthSync() ?? 0),
+              ),
+              trailing: TextButton(
+                onPressed: _busy ? null : _pickZip,
+                child: Text(_picked == null ? '选择' : '重选'),
               ),
             ),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Icon(Icons.error_outline, size: 16, color: scheme.error),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _error!,
+                        style: textTheme.bodySmall?.copyWith(
+                          color: scheme.error,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
               child: SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
-                  onPressed: _openCustom,
-                  icon: const Icon(Icons.open_in_new),
-                  label: const Text('打开'),
+                  onPressed: _picked == null || _busy ? null : _importAndOpen,
+                  icon: _busy
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.open_in_new),
+                  label: Text(_busy ? '正在导入…' : '导入并打开'),
                 ),
               ),
             ),
@@ -224,11 +267,18 @@ class _MiniappTestPageState extends State<MiniappTestPage> {
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
             child: Text(
+              '包会被解压到应用私有目录（miniapps/），不同包用各自的 appId 隔离数据；'
+              '同一个包再次导入会覆盖上一次的调试版本。\n'
+              '包里没有 metadata.json 时按文件名生成 appId，入口固定取 index.html。',
+              style: textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+            child: Text(
               '注意：Android 9+ 默认禁止明文 HTTP。release 包只能开 https 地址；'
               '要连局域网里的 http 服务，请用 debug 包（生成脚本已为 debug 放开明文）。',
-              style: textTheme.bodySmall?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
+              style: textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
           ),
         ],

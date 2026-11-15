@@ -27,6 +27,8 @@ function toDto(row) {
     id: Number(row.id),
     title: row.title,
     content: row.content,
+    // 1~4：打扰级别。客户端据此决定是红点、横幅还是弹窗（见 docs）。
+    level: Number(row.level ?? 1),
     // ISO + Z：浏览器与 Dart 都能正确按 UTC 解析，再各自转本地时间
     publishedAt: sqlToIso(row.published_at),
   };
@@ -59,7 +61,7 @@ announcementsRouter.get(
 
     // 多取一条判断 hasMore，省掉一次 COUNT(*)
     const rows = await query(
-      `SELECT id, title, content, published_at
+      `SELECT id, title, content, level, published_at
          FROM announcements
         WHERE published_at <= UTC_TIMESTAMP(3)
         ORDER BY published_at DESC, id DESC
@@ -83,7 +85,7 @@ announcementsRouter.get(
   '/latest',
   wrap(async (_req, res) => {
     const row = await queryOne(
-      `SELECT id, title, content, published_at
+      `SELECT id, title, content, level, published_at
          FROM announcements
         WHERE published_at <= UTC_TIMESTAMP(3)
         ORDER BY published_at DESC, id DESC

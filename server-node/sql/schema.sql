@@ -269,6 +269,13 @@ CREATE TABLE IF NOT EXISTS announcements (
   id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   title        VARCHAR(200)    NOT NULL,
   content      TEXT            NOT NULL,
+  -- 打扰级别，决定客户端怎么提醒（见 docs/账号与站点设置.md）：
+  --   1  只在「设置 → 公告」上挂一个数字红点，不打扰
+  --   2  市场页顶部一条横幅，可手动关掉，关掉或下次启动就没了
+  --   3  启动弹窗，确认一次以后不再出现
+  --   4  启动弹窗，**每次都弹**，直到下一条公告发布
+  -- 默认 1：老公告升级上来不该突然变成弹窗。
+  level        TINYINT         NOT NULL DEFAULT 1,
   -- 发布时间（UTC）。> now 的公告客户端看不到。
   published_at DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   created_at   DATETIME(3)     NOT NULL DEFAULT CURRENT_TIMESTAMP(3),

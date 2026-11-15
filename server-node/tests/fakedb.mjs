@@ -240,6 +240,7 @@ export async function query(sql, params = []) {
     return [{
       total: state.announcements.length,
       pending: state.announcements.filter((a) => String(a.published_at) > now).length,
+      loud: state.announcements.filter((a) => Number(a.level) >= 3).length,
     }];
   }
   if (/FROM announcements WHERE id = \?/.test(q)) {
@@ -524,12 +525,13 @@ export async function execute(sql, params = []) {
 
   // ---- 公告
   if (/^INSERT INTO announcements/.test(q)) {
-    const [title, content, published_at] = params;
+    const [title, content, level, published_at] = params;
     const now = new Date().toISOString().slice(0, 23).replace('T', ' ');
     const row = {
       id: state.nextAnnouncementId++,
       title,
       content,
+      level: Number(level) || 1,
       published_at,
       created_at: now,
       updated_at: now,

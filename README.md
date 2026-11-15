@@ -39,7 +39,7 @@ repo/
 | **本地分页缓存**（冷启动先显示上次列表再静默刷新；退出登录 / 退出 App 清空） | ✅ |
 | **下线即登出**（启动与请求时校验 token，被踢 / 过期就弹「账号已下线」并回到可登录状态） | ✅ |
 | **封禁**（面板填时长，`-1` 为永久；原因可选；到期自动解封，封禁立刻踢下线） | ✅ |
-| **公告**（启动弹最新一条；设置 → 市场 → 公告看历史；面板可改发布时间做定时发布） | ✅ |
+| **公告四级**（红点 / 市场页横幅 / 弹窗一次 / 每次启动弹；面板可改级别与发布时间做定时发布） | ✅ |
 | 服务端管理面板（`/admin`：上架、传包、分类标签、用户详情、公告、邮件通道、站点策略） | ✅ |
 | 注册邮箱验证码 / 登录二次验证 | ✅ |
 | 动态取色（Material You）+ 深色模式 | ✅ |
@@ -91,15 +91,18 @@ cd client && flutter pub get && flutter build apk --release
 
 ```bash
 cd server-node
-cp .env.example .env     # DB_* 与 MAIL_*（注册发验证码，必配）
+cp config.example.yaml config.yaml   # 改 db.password；邮件段按需填
 npm install
-npm run init -- --seed   # 建库建表（默认没有任何小程序）
+npm run init -- --seed               # 建库建表（默认没有任何小程序）
 npm start
 ```
 
+配置只有一个 `config.yaml`（带完整注释的模板是 `config.example.yaml`，
+首次启动会自动复制一份）。它不入库 —— 里面有数据库密码与邮件密钥。
+
 市场默认是空的，管理员在 `/admin` 新建应用并上传 zip 后才会有内容。
-邮件通道不配就注册不了；想先跑通流程可把 `MAIL_DRIVER=console` 并开
-`MAIL_DEV_ECHO_CODE=true`，验证码会打到日志并自动填进客户端。
+邮件通道不配就注册不了；想先跑通流程可把 `mail.driver` 设成 `console`
+并开 `mail.devEchoCode: true`，验证码会打到日志并自动填进客户端。
 
 ## 开发小程序
 
@@ -114,19 +117,21 @@ npm start
 | [`client/docs/bundles/README.md`](client/docs/bundles/README.md) | 模块 / 插件包格式 |
 | [`build.md`](build.md) | 构建、签名、部署、常见问题 |
 | [`docs/邮件通道配置.md`](docs/邮件通道配置.md) | 五种邮件通道的配置与排错 |
-| [`docs/账号与站点设置.md`](docs/账号与站点设置.md) | 注销冷静期、更换邮箱、登录设备、封禁、面板改资料、公告、市场分页与缓存 |
+| [`docs/账号与站点设置.md`](docs/账号与站点设置.md) | 注销冷静期、更换邮箱、登录设备、封禁、面板改资料、公告四级、市场分页与缓存 |
+| [`server-node/config.example.yaml`](server-node/config.example.yaml) | **服务端全部可配项**，每项都带说明（复制成 `config.yaml` 再改） |
 | [`server-node/README.md`](server-node/README.md) | 服务端接口与运维 |
 
 ## 开发者模式
 
 设置页最底部连点版本号 **8 次**（间隔不超过 2 秒）解锁。解锁后才会出现
-「开发者选项」：市场服务器地址、本地包调试、模块管理、运行日志。
+「开发者选项」：市场服务器地址、小程序测试（选本地 **ZIP 包**直接打开）、
+模块管理、运行日志。
 
 ## 测试
 
 ```bash
-cd client && flutter test          # 客户端
-cd server-node && npm test         # 邮件 MIME / SMTP / 验证码（无需数据库）
+cd client && flutter test          # 客户端（303 条）
+cd server-node && npm test         # 单元 + 路由层端到端（145 条，无需 MySQL）
 ```
 
 ## 技术栈

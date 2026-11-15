@@ -1,0 +1,226 @@
+# ============================================================================
+# LemonLite 服务端配置
+# ============================================================================
+#
+# 用法：
+#   cp config.example.yaml config.yaml      # 首次部署
+#   然后按下面的注释改 db.password 等必须改的项
+#
+# 几条约定：
+#
+#   1. **改完要重启**（`npm start`）。管理面板里能改的项会立即生效，
+#      但手工编辑这个文件不会 —— 进程只在启动时读一次。
+#   2. 环境变量优先级**高于**本文件：`DB_PASSWORD=xxx npm start` 会覆盖
+#      `db.password`。这是为了容器/CI 里能临时改一项而不挂载文件，
+#      不是让你把配置拆两处写。
+#   3. 本文件里的路径都相对于 server-node/ 目录。
+#   4. 缩进用空格，**不要用 Tab**。字符串里的特殊字符用引号包起来。
+#
+# 变量名对照（从旧版 .env 迁移时用）：
+#   DB_HOST → db.host        DB_PORT → db.port
+#   DB_USER → db.user        DB_PASSWORD → db.password
+#   DB_NAME → db.database    PORT → http.port
+#   其余见每一项上面注释里的括号。
+# ============================================================================
+
+
+# ---------------------------------------------------------------- HTTP
+http:
+  # 监听端口（PORT）
+  port: 3000
+
+  # 监听地址（HOST）。
+  #   0.0.0.0   → 局域网/公网都能访问（手机连同一个 Wi-Fi 时可直连开发机）
+  #   127.0.0.1 → 只有本机能访问。放在 Nginx / Caddy 后面时用这个，
+  #               否则别人可以绕过反代直接打 3000 端口。
+  host: 0.0.0.0
+
+  # 反向代理后面要设 true（TRUST_PROXY），否则日志与验证码限流里
+  # 记到的全是代理的 IP，一个 IP 就能把所有人的额度用光。
+  trustProxy: false
+
+
+# ---------------------------------------------------------------- 数据库
+db:
+  host: 127.0.0.1
+  port: 3306
+  user: root
+  # 生产环境**必须**改。留空等于「无密码 root」，同网段谁都能进来。
+  password: ""
+
+  database: lemonlite
+
+  # 连接池大小（DB_POOL_SIZE）。MySQL 默认 max_connections 是 151，
+  # 这里不要超过它减掉其它客户端占用的余量。
+  connectionLimit: 10
+
+
+# ---------------------------------------------------------------- 账号与会话
+auth:
+  # 登录 token 有效期（TOKEN_TTL）。
+  #   never / 0  → 永不过期：只要客户端不卸载就一直有效（撤销仍然随时生效）
+  #   7d / 12h / 30m → 到点失效；每次请求会顺手续期，常来用就不会掉线
+  #
+  # 默认 never 是因为这个 App 的定位是「自己或小圈子用」。面向公网多租户
+  # 请改回 7d —— 那能把「token 被偷」的窗口从无限缩短到一周。
+  sessionTtl: never
+
+  # 注册是否要邮箱验证码（AUTH_REGISTER_CODE，on/off）。
+  # 关掉只适合内网自测：邮箱不是秘密，没验证就等于谁都能拿别人的邮箱开号。
+  registerCode: true
+
+  # 登录是否再要一次邮箱验证码（AUTH_LOGIN_CODE，on/off）。
+  # 打开后：输对密码还不够，还要收到一封验证码邮件才能登录。
+  # 客户端不写死这个行为 —— 它启动时读 /api/auth/config 跟着服务端走。
+  loginCode: false
+
+  # bcrypt 代价因子（BCRYPT_ROUNDS）。10 在中端服务器上约 60~100ms，
+  # 够用且不拖慢登录；调到 12 会让每次登录多花 4 倍时间。
+  bcryptRounds: 10
+
+  # 单个用户最多同时保留多少个有效会话（MAX_SESSIONS_PER_USER）。
+  # 超出时踢掉最旧的。0 = 不限制。设上限是为了防止脚本无限登录把表撑爆。
+  maxSessionsPerUser: 20
+
+
+# ---------------------------------------------------------------- 邮件
+#
+# 注册要发验证码，而「邮件从哪发出去」在不同部署环境差别很大：
+# 自己 VPS 上的 Postfix、企业邮箱的 SMTP、还是直接调第三方 API。
+# 所以通道做成可切换的 —— 改 driver 就行，不用改代码。
+#
+# 管理面板 →「邮件」页改这些会立即生效并写回本文件。手工改则需要重启。
+mail:
+  # smtp | resend | sendgrid | aliyun | console
+  # console 只把邮件打到服务端日志里（验证码会单独打一行），仅用于本地开发。
+  driver: console
+
+  # 发件地址（MAIL_FROM）。必须是通道那边验证过的域名/邮箱，否则会被拒信。
+  from: ""
+
+  # 发件人显示名（MAIL_FROM_NAME）
+  fromName: LemonLite
+
+  # ---- 验证码策略
+  # 位数（MAIL_CODE_LENGTH），4~8
+  codeLength: 6
+  # 有效期（秒，MAIL_CODE_TTL）。600 = 10 分钟
+  codeTtl: 600
+  # 同一邮箱两次索要之间的最小间隔（秒，MAIL_CODE_COOLDOWN）。防连点、防短信轰炸
+  codeCooldown: 60
+  # 同一邮箱 / 同一 IP 每小时最多发多少封
+  codeMaxPerEmailHour: 10
+  codeMaxPerIpHour: 30
+  # 单个验证码允许输错几次（MAIL_CODE_MAX_ATTEMPTS），超过就作废、必须重新获取
+  codeMaxAttempts: 5
+  # 开发期把验证码单独打一行日志（MAIL_DEV_ECHO_CODE）。
+  # 注意：验证码**永远不进接口响应**，无论这里开不开。生产必须 false。
+  devEchoCode: false
+  # 第三方 API 的超时（毫秒，MAIL_HTTP_TIMEOUT_MS）
+  httpTimeoutMs: 10000
+
+  # ---- 自建 / 兼容 SMTP 的邮箱
+  smtp:
+    host: ""
+    # 465 用 secure: true；587/25 用 secure: false + starttls: true
+    port: 587
+    secure: false
+    # 明文连上后升级 TLS。除非是同机 Postfix 走 127.0.0.1，否则别关。
+    starttls: true
+    user: ""
+    password: ""
+    # 自签证书的内网邮件服务器可以设 false；公网服务保持 true。
+    rejectUnauthorized: true
+    timeoutMs: 15000
+
+  # ---- 第三方：Resend
+  resend:
+    apiKey: ""
+    endpoint: https://api.resend.com/emails
+
+  # ---- 第三方：SendGrid
+  sendgrid:
+    apiKey: ""
+    endpoint: https://api.sendgrid.com/v3/mail/send
+
+  # ---- 第三方：阿里云邮件推送 DirectMail
+  aliyun:
+    accessKeyId: ""
+    accessKeySecret: ""
+    # 发信地址（控制台里配置的那个，如 no-reply@mail.example.com）
+    accountName: ""
+    region: cn-hangzhou
+    endpoint: https://dm.aliyuncs.com
+
+
+# ---------------------------------------------------------------- 管理面板
+#
+# 管理员账号不在这个文件里，而是数据库的 admin_users 表：第一次访问
+# /admin 时页面会让人自己建第一个管理员，之后只能由已有管理员加人。
+# 这里只剩两样「机器该管的东西」。
+admin:
+  # 登录 cookie 的签名密钥（ADMIN_SECRET）。
+  # 留空 → 首次启动自动生成一串随机值并写回本文件。
+  # 换掉它 = 所有管理员立刻掉线（相当于一次全局踢人）。
+  secret: ""
+
+  # 可选（ADMIN_SETUP_TOKEN）。设了之后，创建**第一个**管理员必须填这个口令，
+  # 防止「部署完还没建号」那几分钟被别人抢注。建完号就可以清空。
+  setupToken: ""
+
+  # 登录态有效期（小时，ADMIN_SESSION_HOURS）。7 天足够。
+  sessionTtlHours: 168
+
+
+# ---------------------------------------------------------------- 注销账号
+account:
+  # 用户在客户端申请注销后的冷静期（天，ACCOUNT_DELETE_DELAY_DAYS）。
+  #   0 → 立即删除（不推荐：手滑点错就没救了）
+  #   7 → 默认。期间账号仍能登录，登录后可以撤销；到期物理删除。
+  #
+  # 管理面板「站点」页可以改这个值，改完只对**新的**申请生效 ——
+  # 已经排期的注销不受影响，否则「还剩几天」会变得不可信。
+  deleteDelayDays: 7
+
+  # 到期账号的扫描间隔（分钟，ACCOUNT_PURGE_INTERVAL_MINUTES）。
+  # 0 = 只靠启动时扫一遍 + 手工 `npm run prune`。
+  #
+  # 注意：这里填多大都不影响正确性。resolveSession 会自己比对到期时间，
+  # 「到点还能用」不可能发生 —— 扫描只是让磁盘数据晚一点被删掉。
+  purgeIntervalMinutes: 30
+
+
+# ---------------------------------------------------------------- 应用市场
+market:
+  # 客户端不传 limit 时每页返回多少条（MARKET_PAGE_SIZE）。
+  # 客户端的分段加载以响应里的 meta.limit 为准，所以改这里会立刻改变
+  # 所有人的每页条数，不需要更新客户端。
+  defaultPageSize: 20
+
+  # 客户端能请求的最大条数（MARKET_MAX_PAGE）。传更大的值会被夹到这里 ——
+  # 不设上限的话一个 ?limit=999999 就能把整张应用表拉出来。
+  maxPageSize: 50
+
+
+# ---------------------------------------------------------------- 文件目录
+packages:
+  # 小程序包根目录（PACKAGES_DIR）：packages/<appId>/<version>.zip
+  dir: packages
+  # 单个包大小上限（字节，PACKAGE_MAX_BYTES）。默认 20MB。
+  maxBytes: 20971520
+
+icons:
+  # 小程序图标目录（ICONS_DIR）：icons/<appId>.png
+  dir: icons
+  # 图标大小上限（字节，ICON_MAX_BYTES）。默认 2MB，一张 512×512 绰绰有余。
+  maxBytes: 2097152
+
+userdata:
+  # 用户数据目录（USERDATA_DIR）：userdata/<id>/data.json 与 avatar.png
+  dir: userdata
+  # 头像上限（字节，AVATAR_MAX_BYTES）
+  maxAvatarBytes: 2097152
+  # data.json 上限（字节，USERDATA_MAX_BYTES）。
+  # 这是「一大块不透明 JSON」，默认放到 16MB 但绝不能无上限 ——
+  # 否则一个用户就能把磁盘写满。
+  maxDataBytes: 16777216

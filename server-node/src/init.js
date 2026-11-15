@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import mysql from 'mysql2/promise';
-import { config, readEnvFile } from './config.js';
+import { CONFIG_PATH, config, configFileCreated } from './config.js';
 import { backfillAppCategories } from './lib/schema_guard.js';
 import { splitStatements } from './lib/sqlfile.js';
 
@@ -68,12 +68,11 @@ function fail(text) {
 }
 
 async function main() {
-  // 让「第一次 clone 下来就 npm run init」也能跑：.env 不存在时按 .env.example
-  // 的默认值走，并提示用户去改。
-  const envExisted = readEnvFile();
-  if (!envExisted) {
-    warn('没有找到 .env，已按 .env.example 的默认值连接（root@localhost:3306）');
-    warn('生产环境请先 cp .env.example .env 并改掉 DB_USER / DB_PASSWORD');
+  // 让「第一次 clone 下来就 npm run init」也能跑：config.yaml 不存在时
+  // config.js 会自动从 config.example.yaml 复制一份，这里只负责提醒去改。
+  if (configFileCreated) {
+    warn(`没有找到 config.yaml，已从 config.example.yaml 生成：${CONFIG_PATH}`);
+    warn('生产环境请先改掉 db.user / db.password 再跑本脚本');
   }
 
   const { host, port, user, password, database } = config.db;
@@ -95,7 +94,7 @@ async function main() {
     console.error('');
     console.error('  排查顺序：');
     console.error('    1. MySQL 起来了吗：systemctl status mysql（或 mariadb）');
-    console.error('    2. .env 里的 DB_HOST / DB_PORT / DB_USER / DB_PASSWORD 对吗');
+    console.error(`    2. ${CONFIG_PATH} 里的 db.host / db.port / db.user / db.password 对吗`);
     console.error('    3. 这个账号有 CREATE DATABASE 权限吗');
     process.exit(1);
   }

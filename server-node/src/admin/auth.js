@@ -28,13 +28,13 @@ import {
   validateAdminUsername,
   verifyAdminSession,
 } from '../lib/admin_session.js';
-import { updateEnvFile } from '../lib/envfile.js';
+import { updateConfigFile } from '../lib/configfile.js';
 import { renderAdminPage } from './ui.js';
 
 export const COOKIE_NAME = 'll_admin';
 export const ROLE_ADMIN = 'admin';
 
-const ENV_PATH = join(config.root, '.env');
+const CONFIG_PATH = join(config.root, 'config.yaml');
 /** 建号串行化用的命名锁：MySQL 的连接级锁，断开自动释放 */
 const SETUP_LOCK = 'lemonlite_admin_setup';
 
@@ -71,7 +71,7 @@ export async function adminCount() {
 }
 
 /**
- * 确保有签名密钥。没有就生成一个并写回 .env。
+ * 确保有签名密钥。没有就生成一个并写回 config.yaml 的 `admin.secret`。
  *
  * 写不进去（只读文件系统）也不致命：内存里用着，重启后所有人重新登录。
  * 但不能**静默**失败 —— 那是「今天登录明天又要登录」这种玄学问题的来源。
@@ -81,10 +81,10 @@ export async function ensureAdminSecret() {
   const secret = newAdminSecret();
   config.admin.secret = secret;
   try {
-    updateEnvFile(ENV_PATH, { ADMIN_SECRET: secret });
-    console.log('\x1b[32m✓\x1b[0m 已生成管理面板签名密钥 ADMIN_SECRET（已写入 .env）');
+    updateConfigFile(CONFIG_PATH, { 'admin.secret': secret });
+    console.log('\x1b[32m✓\x1b[0m 已生成管理面板签名密钥（已写入 config.yaml 的 admin.secret）');
   } catch (e) {
-    console.warn(`! ADMIN_SECRET 写不进 .env（${e.message}）`);
+    console.warn(`! 签名密钥写不进 config.yaml（${e.message}）`);
     console.warn('  本次进程内有效，重启后所有管理员需要重新登录');
   }
   return secret;

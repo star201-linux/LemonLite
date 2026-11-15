@@ -352,7 +352,7 @@ class AccountService extends ChangeNotifier {
   AccountException? _lastError;
 
   /// 服务端下发的账号策略。默认值 = 「注册要验证码、登录不要」，
-  /// 与 .env.example 的默认一致；真正生效前会先拉一次 /api/auth/config。
+  /// 与 config.example.yaml 的默认一致；真正生效前会先拉一次 /api/auth/config。
   AuthServerConfig _authConfig = const AuthServerConfig();
 
   bool _authConfigLoaded = false;

@@ -2,7 +2,7 @@
 //
 // 面板的「邮件」页：通道配置 + 测试发信 + 验证码/token 策略。
 //
-// 这些参数全部写进 .env 再同步到内存里的 config —— 不需要重启。
+// 这些参数全部写进 config.yaml 再同步到内存里的 config —— 不需要重启。
 // 密钥类字段（SMTP 密码、API Key）**不会回显**，接口只告诉前端「有没有设置」，
 // 留空提交表示「不修改」。这样即使有人偷看响应，也拿不到密钥。
 
@@ -10,14 +10,14 @@ import { Router } from 'express';
 import { join } from 'node:path';
 import { config } from '../config.js';
 import { ApiError, sendOk, wrap } from '../lib/http.js';
-import { updateEnvFile } from '../lib/envfile.js';
+import { updateConfigFile } from '../lib/configfile.js';
 import { SUPPORTED_DRIVERS, MailError, mailStatus, sendMail } from '../lib/mailer.js';
 import { verificationMail } from '../lib/mail_templates.js';
 import { intIn } from './shared.js';
 
 export const mailRouter = Router();
 
-const ENV_PATH = join(config.root, '.env');
+const CONFIG_PATH = join(config.root, 'config.yaml');
 
 /** 当前配置（密钥类只回「有没有设置」，不回值） */
 function mailSnapshot() {
@@ -103,73 +103,89 @@ mailRouter.put(
       },
     };
 
-    // ---- 先校验再落盘：写坏 .env 的后果比「保存失败」严重得多
-    const envValues = {
-      MAIL_DRIVER: next.driver,
-      MAIL_FROM: next.from,
-      MAIL_FROM_NAME: next.fromName,
-      SMTP_HOST: next.smtp.host,
-      SMTP_PORT: String(next.smtp.port),
-      SMTP_USER: next.smtp.user,
-      SMTP_SECURE: String(next.smtp.secure),
-      SMTP_STARTTLS: String(next.smtp.starttls),
-      SMTP_REJECT_UNAUTHORIZED: String(next.smtp.rejectUnauthorized),
-      RESEND_API_KEY: next.resend.apiKey,
-      SENDGRID_API_KEY: next.sendgrid.apiKey,
-      ALIYUN_DM_ACCESS_KEY_ID: next.aliyun.accessKeyId,
-      ALIYUN_DM_ACCESS_KEY_SECRET: next.aliyun.accessKeySecret,
-      ALIYUN_DM_ACCOUNT_NAME: next.aliyun.accountName,
-      ALIYUN_DM_REGION: next.aliyun.region,
+    // ---- 收集要落盘的项（YAML 路径 → 值）
+    //
+    // 只写用户真的提交了的字段：面板的「策略」区可以单独提交，
+    // 把所有字段都写一遍会把没提交的项覆盖成内存里的当前值 ——
+    // 当前值恰好就是用户刚在另一个标签页改过的值，看着没问题，
+    // 但会把配置文件里的注释顺序打乱，也容易覆盖掉手工编辑。
+    const patch = {
+      'mail.driver': next.driver,
+      'mail.from': next.from,
+      'mail.fromName': next.fromName,
+      'mail.smtp.host': next.smtp.host,
+      'mail.smtp.port': next.smtp.port,
+      'mail.smtp.user': next.smtp.user,
+      'mail.smtp.secure': next.smtp.secure,
+      'mail.smtp.starttls': next.smtp.starttls,
+      'mail.smtp.rejectUnauthorized': next.smtp.rejectUnauthorized,
+      'mail.aliyun.accessKeyId': next.aliyun.accessKeyId,
+      'mail.aliyun.accountName': next.aliyun.accountName,
+      'mail.aliyun.region': next.aliyun.region,
     };
     // 密钥类只有真的填了才写，避免「留空提交」把已保存的密钥清掉
-    if (body.smtp?.password) envValues.SMTP_PASSWORD = next.smtp.password;
-    if (body.resend?.apiKey) envValues.RESEND_API_KEY = next.resend.apiKey;
-    if (body.sendgrid?.apiKey) envValues.SENDGRID_API_KEY = next.sendgrid.apiKey;
+    if (body.smtp?.password) patch['mail.smtp.password'] = next.smtp.password;
+    if (body.resend?.apiKey) patch['mail.resend.apiKey'] = next.resend.apiKey;
+    if (body.sendgrid?.apiKey) patch['mail.sendgrid.apiKey'] = next.sendgrid.apiKey;
     if (body.aliyun?.accessKeySecret) {
-      envValues.ALIYUN_DM_ACCESS_KEY_SECRET = next.aliyun.accessKeySecret;
+      patch['mail.aliyun.accessKeySecret'] = next.aliyun.accessKeySecret;
     }
 
     if (body.codeTtl !== undefined) {
-      envValues.MAIL_CODE_TTL = String(intIn(body.codeTtl, config.mail.codeTtl, 60, 3600));
+      patch['mail.codeTtl'] = intIn(body.codeTtl, config.mail.codeTtl, 60, 3600);
     }
     if (body.codeCooldown !== undefined) {
-      envValues.MAIL_CODE_COOLDOWN = String(
-        intIn(body.codeCooldown, config.mail.codeCooldown, 0, 3600),
-      );
+      patch['mail.codeCooldown'] = intIn(body.codeCooldown, config.mail.codeCooldown, 0, 3600);
     }
     if (body.codeMaxPerEmailHour !== undefined) {
-      envValues.MAIL_CODE_MAX_PER_EMAIL = String(
-        intIn(body.codeMaxPerEmailHour, config.mail.codeMaxPerEmailHour, 1, 1000),
+      patch['mail.codeMaxPerEmailHour'] = intIn(
+        body.codeMaxPerEmailHour,
+        config.mail.codeMaxPerEmailHour,
+        1,
+        1000,
       );
     }
     if (body.codeMaxPerIpHour !== undefined) {
-      envValues.MAIL_CODE_MAX_PER_IP = String(
-        intIn(body.codeMaxPerIpHour, config.mail.codeMaxPerIpHour, 1, 5000),
+      patch['mail.codeMaxPerIpHour'] = intIn(
+        body.codeMaxPerIpHour,
+        config.mail.codeMaxPerIpHour,
+        1,
+        5000,
       );
     }
     if (body.codeMaxAttempts !== undefined) {
-      envValues.MAIL_CODE_MAX_ATTEMPTS = String(
-        intIn(body.codeMaxAttempts, config.mail.codeMaxAttempts, 1, 20),
+      patch['mail.codeMaxAttempts'] = intIn(
+        body.codeMaxAttempts,
+        config.mail.codeMaxAttempts,
+        1,
+        20,
       );
     }
     if (body.devEchoCode !== undefined) {
-      envValues.MAIL_DEV_ECHO_CODE = body.devEchoCode ? 'true' : 'false';
+      patch['mail.devEchoCode'] = Boolean(body.devEchoCode);
     }
     if (body.tokenTtl !== undefined) {
       const ttl = String(body.tokenTtl).trim();
       if (!/^(never|\d+(ms|s|m|h|d))$/.test(ttl)) {
         throw ApiError.badRequest('bad_ttl', 'token 有效期只能是 never 或 7d / 12h / 30m 这类写法');
       }
-      envValues.TOKEN_TTL = ttl;
+      patch['auth.sessionTtl'] = ttl;
     }
     if (body.registerCode !== undefined) {
-      envValues.AUTH_REGISTER_CODE = body.registerCode ? 'on' : 'off';
+      patch['auth.registerCode'] = Boolean(body.registerCode);
     }
     if (body.loginCode !== undefined) {
-      envValues.AUTH_LOGIN_CODE = body.loginCode ? 'on' : 'off';
+      patch['auth.loginCode'] = Boolean(body.loginCode);
     }
 
-    updateEnvFile(ENV_PATH, envValues);
+    // ---- 先校验再落盘：写坏配置的后果比「保存失败」严重得多
+    // updateConfigFile 自己会在写之前反解析一次并逐项核对，
+    // 所以这里只要 catch 住、不要把内存改成一半就行。
+    try {
+      updateConfigFile(CONFIG_PATH, patch);
+    } catch (e) {
+      throw new ApiError(500, 'config_write_failed', `配置写不进去：${e.message}`);
+    }
 
     // ---- 立即应用到内存（不重启即可生效）
     config.mail.driver = next.driver;
@@ -179,28 +195,17 @@ mailRouter.put(
     Object.assign(config.mail.resend, next.resend);
     Object.assign(config.mail.sendgrid, next.sendgrid);
     Object.assign(config.mail.aliyun, next.aliyun);
-    if (envValues.MAIL_CODE_TTL) config.mail.codeTtl = Number(envValues.MAIL_CODE_TTL);
-    if (envValues.MAIL_CODE_COOLDOWN) {
-      config.mail.codeCooldown = Number(envValues.MAIL_CODE_COOLDOWN);
-    }
-    if (envValues.MAIL_CODE_MAX_PER_EMAIL) {
-      config.mail.codeMaxPerEmailHour = Number(envValues.MAIL_CODE_MAX_PER_EMAIL);
-    }
-    if (envValues.MAIL_CODE_MAX_PER_IP) {
-      config.mail.codeMaxPerIpHour = Number(envValues.MAIL_CODE_MAX_PER_IP);
-    }
-    if (envValues.MAIL_CODE_MAX_ATTEMPTS) {
-      config.mail.codeMaxAttempts = Number(envValues.MAIL_CODE_MAX_ATTEMPTS);
-    }
-    if (envValues.MAIL_DEV_ECHO_CODE !== undefined) {
-      config.mail.devEchoCode = envValues.MAIL_DEV_ECHO_CODE === 'true';
-    }
-    if (envValues.TOKEN_TTL) config.auth.sessionTtl = envValues.TOKEN_TTL;
-    if (envValues.AUTH_REGISTER_CODE) {
-      config.auth.registerCode = envValues.AUTH_REGISTER_CODE === 'on';
-    }
-    if (envValues.AUTH_LOGIN_CODE) {
-      config.auth.loginCode = envValues.AUTH_LOGIN_CODE === 'on';
+    for (const [key, value] of Object.entries(patch)) {
+      if (key.startsWith('mail.code') || key === 'mail.devEchoCode') {
+        const field = key.slice('mail.'.length);
+        config.mail[field] = value;
+      } else if (key === 'auth.sessionTtl') {
+        config.auth.sessionTtl = value;
+      } else if (key === 'auth.registerCode') {
+        config.auth.registerCode = value;
+      } else if (key === 'auth.loginCode') {
+        config.auth.loginCode = value;
+      }
     }
 
     sendOk(res, { saved: true, mail: mailSnapshot() });

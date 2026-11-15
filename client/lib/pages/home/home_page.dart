@@ -14,8 +14,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../../data/models/announcement.dart';
 import '../../data/models/app_item.dart';
 import '../../data/repositories/market_repository.dart';
+import '../../data/services/announcement_service.dart';
 import '../../data/services/miniapp_package_service.dart';
 import '../../data/services/settings_service.dart';
 import '../../data/services/update_service.dart';
@@ -27,6 +29,7 @@ import '../detail/app_detail_page.dart';
 import '../miniapp/miniapp_host.dart';
 import 'home_controller.dart';
 import 'search_page.dart';
+import 'widgets/announcement_banner.dart';
 import 'widgets/app_card.dart';
 import 'widgets/category_chips.dart';
 import 'widgets/state_views.dart';
@@ -135,6 +138,11 @@ class _HomePageState extends State<HomePage> {
     final HomeController controller = context.watch<HomeController>();
     final SettingsService settings = context.watch<SettingsService>();
     final ColorScheme scheme = Theme.of(context).colorScheme;
+    // watch 而不是 read：横幅会在启动后异步就绪（bootstrap 拉完才有），
+    // 也可能被用户点 × 关掉 —— 两种都要立刻重建。
+    final AnnouncementService announcementService = context
+        .watch<AnnouncementService>();
+    final Announcement? banner = announcementService.banner;
 
     // 待更新列表来自全局单例；用户点过「稍后再说」的同一批不重复弹提示条，
     // 但应用管理里的小红点仍然保留（信息不能被「关掉」）。
@@ -222,6 +230,20 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
             ),
+
+            // 公告横幅（级别 2）。放在最上面：它的生命周期只有「本次启动」，
+            // 如果排在使用自定义服务器提示之后，用户可能先被那一长条挡住而
+            // 完全没看到公告。位置在列表之上、滚动区之内，不抢任何控件的位置。
+            if (banner != null)
+              SliverToBoxAdapter(
+                child: StaggeredEntrance(
+                  offset: 8,
+                  child: AnnouncementBanner(
+                    announcement: banner,
+                    onDismiss: announcementService.dismissBanner,
+                  ),
+                ),
+              ),
 
             // 使用自定义服务器时给一条明确提示，避免用户「换了地址却不知道数据来自哪」
             if (settings.isCustomServer)

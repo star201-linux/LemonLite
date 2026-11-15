@@ -2,7 +2,7 @@
 //
 // 面板的「公告」页：增删改查。
 //
-// 只要三样东西：标题、内容、发布时间。发布时间**可改** ——
+// 只要四样东西：标题、内容、级别、发布时间。发布时间**可改** ——
 // 运营最常见的两个动作是「写错日期了」和「这条提前发」，
 // 若只能在创建时设一次，就得删了重建（id 会变，客户端已经显示过的记录就对不上了）。
 //
@@ -19,12 +19,16 @@ export const announcementsRouter = Router();
 const TITLE_MAX = 200;
 const CONTENT_MAX = 20000;
 
+/** 四个级别，含义见 docs/账号与站点设置.md */
+export const LEVELS = [1, 2, 3, 4];
+
 function toDto(row) {
   const publishedAt = sqlToIso(row.published_at);
   return {
     id: Number(row.id),
     title: row.title,
     content: row.content,
+    level: Number(row.level ?? 1),
     publishedAt,
     createdAt: sqlToIso(row.created_at),
     updatedAt: sqlToIso(row.updated_at),
@@ -61,6 +65,24 @@ function readContent(raw) {
 }
 
 /**
+ * 级别：1~4。
+ *
+ * 不接受「0 表示默认」这种写法 —— 面板的下拉永远有值，
+ * 真收到 0 说明前端传错了，静默改成 1 会让「我明明选了弹窗，怎么没弹」
+ * 变成一次纯靠运气的排查。
+ */
+function readLevel(raw, fallback = 1) {
+  if (raw === undefined || raw === null || raw === '') return fallback;
+  // 用 Number 而不是 parseInt：parseInt('2.5') 会静默变成 2，
+  // 一个手抖的小数就变成「选了第 2 级」而不是「你填错了」。
+  const n = Number(raw);
+  if (!Number.isInteger(n) || !LEVELS.includes(n)) {
+    throw ApiError.badRequest('bad_level', '公告级别只能是 1、2、3、4');
+  }
+  return n;
+}
+
+/**
  * 发布时间：接受 ISO 字符串或 `YYYY-MM-DDTHH:mm` / `YYYY-MM-DD HH:mm`。
  *
  * 空值 = 现在（「马上发」是默认动作）。
@@ -88,7 +110,7 @@ announcementsRouter.get(
   '/api/announcements',
   wrap(async (_req, res) => {
     const rows = await query(
-      `SELECT id, title, content, published_at, created_at, updated_at
+      `SELECT id, title, content, level, published_at, created_at, updated_at
          FROM announcements
         ORDER BY published_at DESC, id DESC
         LIMIT 200`,
@@ -102,12 +124,13 @@ announcementsRouter.post(
   wrap(async (req, res) => {
     const title = readTitle(req.body?.title);
     const content = readContent(req.body?.content);
+    const level = readLevel(req.body?.level, 1);
     const publishedAt = readPublishedAt(req.body?.publishedAt);
 
     const result = await execute(
-      `INSERT INTO announcements (title, content, published_at)
-       VALUES (?, ?, ?)`,
-      [title, content, publishedAt],
+      `INSERT INTO announcements (title, content, level, published_at)
+       VALUES (?, ?, ?, ?)`,
+      [title, content, level, publishedAt],
     );
     const row = await queryOne('SELECT * FROM announcements WHERE id = ?', [
       result.insertId,
@@ -132,6 +155,10 @@ announcementsRouter.put(
     if (req.body?.content !== undefined) {
       sets.push('content = ?');
       params.push(readContent(req.body.content));
+    }
+    if (req.body?.level !== undefined) {
+      sets.push('level = ?');
+      params.push(readLevel(req.body.level));
     }
     if (req.body?.publishedAt !== undefined) {
       sets.push('published_at = ?');
@@ -162,11 +189,15 @@ announcementsRouter.delete(
 export async function announcementStats() {
   const row = await queryOne(
     `SELECT COUNT(*) AS total,
-            SUM(CASE WHEN published_at > UTC_TIMESTAMP(3) THEN 1 ELSE 0 END) AS pending
+            SUM(CASE WHEN published_at > UTC_TIMESTAMP(3) THEN 1 ELSE 0 END) AS pending,
+            SUM(CASE WHEN level >= 3 THEN 1 ELSE 0 END) AS loud
        FROM announcements`,
   );
   return {
     total: Number(row?.total ?? 0),
     pending: Number(row?.pending ?? 0),
+    // 会弹窗的条数（级别 3 / 4）。概览里单独提一句：
+    // 「12 条公告」听起来无害，但其中 8 条每次启动都弹的话就是另一回事了。
+    loud: Number(row?.loud ?? 0),
   };
 }

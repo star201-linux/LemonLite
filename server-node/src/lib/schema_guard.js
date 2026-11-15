@@ -9,10 +9,10 @@
 //   全是 `CREATE TABLE IF NOT EXISTS`，幂等、一次几毫秒，换来「升级不用记命令」。
 //
 // 它**不负责**灌种子数据（那是 init.js 的事），也绝不做 ALTER/删表。
-// 唯一的例外是 ensureUserColumns()：`CREATE TABLE IF NOT EXISTS` 不会给
-// 已经存在的表补列，而 users 上的「注销冷静期」两列（0.8）与「封禁时长 /
-// 原因」两列（0.9）都是后加的。那段 ALTER 是幂等的（列已存在时吃 1060
-// 错误码），并且只加 NULL / 带默认值的空列、不改不删任何已有数据。
+// 唯一的例外是「补列」：`CREATE TABLE IF NOT EXISTS` 不会给已经存在的表
+// 补列，而 users 上的「注销冷静期」两列（0.8）、「封禁时长 / 原因」两列
+// 与 announcements.level（0.10）都是后加的。那些 ALTER 是幂等的（列已存在时
+// 吃 1060 错误码），并且只加 NULL / 带默认值的空列、不改不删任何已有数据。
 
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -60,11 +60,17 @@ const USER_ADDED_COLUMNS = [
   ['ban_reason', "VARCHAR(255) NOT NULL DEFAULT ''"],
 ];
 
-export async function ensureUserColumns(conn = pool) {
+const ANNOUNCEMENT_ADDED_COLUMNS = [
+  // 公告级别 1~4（0.10）。老公告默认 1（只在设置页红点），最不打扰。
+  ['level', 'TINYINT NOT NULL DEFAULT 1'],
+];
+
+/** 给一张表补列，列已存在（1060）视为成功 */
+async function ensureColumns(conn, table, columns) {
   const added = [];
-  for (const [name, type] of USER_ADDED_COLUMNS) {
+  for (const [name, type] of columns) {
     try {
-      await conn.query(`ALTER TABLE users ADD COLUMN ${name} ${type}`);
+      await conn.query(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
       added.push(name);
     } catch (e) {
       // 1060 = Duplicate column name，其它错误交给调用方记录
@@ -72,6 +78,14 @@ export async function ensureUserColumns(conn = pool) {
     }
   }
   return added;
+}
+
+export async function ensureUserColumns(conn = pool) {
+  return ensureColumns(conn, 'users', USER_ADDED_COLUMNS);
+}
+
+export async function ensureAnnouncementColumns(conn = pool) {
+  return ensureColumns(conn, 'announcements', ANNOUNCEMENT_ADDED_COLUMNS);
 }
 
 /**
@@ -100,11 +114,16 @@ export async function ensureSchema({ logger = console } = {}) {
   }
 
   // 老库补列（新库这里已经是 no-op）
-  try {
-    const added = await ensureUserColumns();
-    if (added.length > 0) logger.log(`[schema] users 表补列：${added.join(', ')}`);
-  } catch (e) {
-    failed.push(e.code || e.message);
+  for (const [table, ensure] of [
+    ['users', ensureUserColumns],
+    ['announcements', ensureAnnouncementColumns],
+  ]) {
+    try {
+      const added = await ensure();
+      if (added.length > 0) logger.log(`[schema] ${table} 表补列：${added.join(', ')}`);
+    } catch (e) {
+      failed.push(e.code || e.message);
+    }
   }
 
   if (failed.length > 0) {

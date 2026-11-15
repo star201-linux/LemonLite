@@ -5,12 +5,15 @@
 ## 快速开始
 
 ```bash
-cd server
-cp .env.example .env        # 改掉 DB_PASSWORD
+cd server-node
+cp config.example.yaml config.yaml   # 改掉 db.password
 npm install
-npm run init -- --seed      # 建库建表 + 基础分类/标签（**不含任何小程序**）
+npm run init -- --seed               # 建库建表 + 基础分类/标签（**不含任何小程序**）
 npm start
 ```
+
+配置全在 `config.yaml` 一个文件里（带完整注释，改完重启生效）。它不入库 ——
+里面有数据库密码与邮件密钥，只在服务器上存在；模板 `config.example.yaml` 才是仓库里那份。
 
 默认市场是**空的**：没有任何预置小程序。打开管理面板 `/admin`
 （第一次访问时创建管理员账号），在「应用」页新建应用、上传 zip 包与图标，
@@ -30,9 +33,42 @@ npm start
 ```bash
 curl http://127.0.0.1:3000/api/health
 curl 'http://127.0.0.1:3000/api/market/feed?limit=3'
-npm test                    # 邮件 / SMTP / 验证码等单元测试，不需要 MySQL
-node --test tests/api.test.mjs   # 路由层端到端测试（内存数据库替身）
+npm test                    # 单元 + 路由层端到端测试（内存数据库替身，不需要 MySQL）
 ```
+
+## 配置文件
+
+一个文件：`config.yaml`。第一次启动若不存在，会自动从 `config.example.yaml` 复制一份
+（模板里每一行都有注释，可以直接照着改）。
+
+**优先级：环境变量 > `config.yaml` > 内置默认值。**
+
+环境变量那层是为了容器部署 —— `docker run -e DB_PASSWORD=...` 比挂载并改写 YAML 方便。
+键名沿用 1.0 的 `.env` 变量名（`DB_HOST` / `MAIL_DRIVER` / `ACCOUNT_DELETE_DELAY_DAYS` …），
+老部署不用改。启动日志会打印「有几项来自环境变量」，避免「改了文件却没生效」的困惑。
+
+| 段 | 管什么 |
+| --- | --- |
+| `http` | 监听地址与端口、是否信任反代头 |
+| `db` | MySQL 连接 |
+| `auth` | token 有效期、注册/登录验证码开关、bcrypt 代价、会话上限 |
+| `mail` | 通道（smtp/resend/sendgrid/aliyun/console）、发件地址、验证码策略 |
+| `admin` | 面板 cookie 签名密钥、首建口令、登录态时长 |
+| `account` | 注销冷静期、到期扫描间隔 |
+| `market` | 默认每页条数与每页上限 |
+| `packages` / `icons` / `userdata` | 三个数据目录与各自的体积上限 |
+
+**哪些要重启、哪些不用**：
+
+- 管理面板里能改的（`account.*`、`market.*`、多数 `mail.*`、`auth.registerCode` 等）
+  **立即生效**，并且会写回 `config.yaml`（保留你写的注释）；
+- 手工编辑 `config.yaml` **需要重启** —— 进程只在启动时读一次。
+
+写坏配置不会「带病运行」：解析失败时服务直接退出并打印是哪个文件、怎么重来。
+面板保存也会在写盘前反解析一遍逐项核对，失败就整次不写。
+
+从 1.0 的 `.env` 迁移：对照关系写在 `config.example.yaml` 顶部；
+懒得逐项搬的话，直接把旧 `.env` 的键当成环境变量喂进去也能跑（见上面的优先级）。
 
 ## init 脚本做什么
 
@@ -145,12 +181,12 @@ userdata/<id>/avatar.png    头像（固定文件名，覆盖式更新）
 注册流程是：`POST /api/auth/email-code` 让服务端发一封带 6 位码的邮件 →
 用户把码填进注册页 → `POST /api/auth/register` 带上 `code`，服务端核销。
 
-**两个开关**（都在 `.env` 里，客户端启动时读 `/api/auth/config` 跟着变）：
+**两个开关**（都在 `config.yaml` 的 `auth` 段，客户端启动时读 `/api/auth/config` 跟着变）：
 
-| 变量 | 默认 | 作用 |
+| 键 | 默认 | 作用 |
 | --- | --- | --- |
-| `AUTH_REGISTER_CODE` | `on` | 注册要不要邮箱验证码 |
-| `AUTH_LOGIN_CODE` | `off` | 登录要不要再来一次邮箱验证码（两步验证） |
+| `auth.registerCode` | `true` | 注册要不要邮箱验证码 |
+| `auth.loginCode` | `false` | 登录要不要再来一次邮箱验证码（两步验证） |
 
 开登录验证码后，登录流程变成：密码先核对 → `POST /api/auth/login-code` 发信 →
 `POST /api/auth/login` 同时带密码与 `code`。**发码接口必须先给对密码**，
@@ -218,13 +254,13 @@ http://<本机IP>:<端口>/admin
 
 **第一次打开时还没有账号**：页面会让你创建第一个管理员（默认 `admin` 组），
 建完直接进入面板。之后访问同一个地址就是普通登录 —— 账号存在数据库表
-`admin_users` 里，不再是 `.env` 里一个全服共用的口令。
+`admin_users` 里，不再是配置文件里一个全服共用的口令。
 
 新增管理员只有一个入口：已登录的 admin 在「管理员」页添加（同样是 admin 组）。
 可以停用、重置密码、删除账号；停用 / 改密 / 删除都会让那个账号现有的登录立刻失效。
 「至少要保留一个可用管理员」由服务端兜住 —— 不会出现把最后一个 admin 删掉之后谁也进不去。
 
-公网部署建议在 `.env` 里设 `ADMIN_SETUP_TOKEN`：设了之后创建第一个账号必须填它，
+公网部署建议在 `config.yaml` 里设 `admin.setupToken`：设了之后创建第一个账号必须填它，
 避免「部署完还没建号」那几分钟被别人抢注。
 
 | 页面 | 能做什么 |
@@ -232,7 +268,8 @@ http://<本机IP>:<端口>/admin
 | 概览 | 用户 / 应用 / 分类 / 标签 / 管理员 / 活跃会话 / 24h 验证码、当前策略、运行时长 |
 | 应用 | 列表（含已下架）、新建、编辑、上架/下架、软删除；**上传 zip 包**（自动算 sha256 与大小、原子写库）、查看本机已有版本 |
 | 分类标签 | 新建 / 改名 / 删除分类与标签、分类排序；删除仍在被使用的分类或标签会先提示有几个应用在用，确认后才删 |
-| 用户 | 搜索、封禁/解封（立刻踢掉该用户所有登录）、重置密码、单独踢下线 |
+| 用户 | 搜索；点「管理」进详情页改用户名 / 注册邮箱 / 头像，填时长封禁（`-1` 永久）、重置密码、踢下线、撤销注销、立即删除 |
+| 公告 | 新建 / 编辑 / 删除；四个打扰级别（红点 / 横幅 / 弹窗一次 / 每次弹）、发布时间可改（填未来时间 = 定时发布） |
 | 管理员 | 添加 admin 账号、重置密码、停用/启用、删除；以及修改自己的密码 |
 | 邮件 | smtp / resend / sendgrid / aliyun / console 五个通道、测试发信、验证码限流、token 有效期、注册/登录验证码开关 |
 
@@ -247,10 +284,13 @@ http://<本机IP>:<端口>/admin
 
 - **账号与会话**：口令 bcrypt 哈希落库；登录态是 HMAC 签名 cookie，签名密钥里混了
   该账号的 `password_hash` —— 改密码就等于踢掉这个账号的所有旧 cookie。
-  签名密钥是 `.env` 里的 `ADMIN_SECRET`（没有就启动时自动生成）。
+  签名密钥是 `config.yaml` 里的 `admin.secret`（没有就启动时自动生成并写回）。
 - **首次建号是串行化的**：用 MySQL 命名锁 + 表内计数，两个请求同时打过来也只会建一个。
-- **改完立即生效**：邮件配置同时写 `.env`（重启后仍有效）和进程内 `config`（不用重启）。
-  写文件是「逐行替换 KEY、不重排、不删注释」。
+- **改完立即生效**：面板保存时同时写 `config.yaml`（重启后仍有效）和进程内 `config`。
+  写文件走 YAML 的 Document API —— **只改目标那一行，注释与顺序原样保留**
+  （这个文件本身就是部署文档，`JSON.stringify` 一遍就等于毁一份说明书）。
+- **写盘前自校验**：序列化后立刻反解析，逐项核对值真的落进去了才 rename。
+  配置文件写坏的后果是「下次启动起不来」，比「保存失败」严重得多。
 - **密钥不回显**：口令 / API Key 类字段只返回「有没有设置」，留空提交表示「不修改」。
 - 面板是服务端直出的单页 HTML，**不引任何 CDN** —— 内网没外网也能用。
 
@@ -284,7 +324,7 @@ http://<本机IP>:<端口>/admin
 | PUT | `/admin/api/tags/:id` | `{name}` 改名 |
 | DELETE | `/admin/api/tags/:id[?force=1]` | 删除；被应用使用时需 `force=1` |
 | GET | `/admin/api/mail` | 邮件配置（密钥类只报「已设置」） |
-| PUT | `/admin/api/mail` | 保存并立即生效，同时写回 `.env` |
+| PUT | `/admin/api/mail` | 保存并立即生效，同时写回 `config.yaml` |
 | POST | `/admin/api/mail/test` | `{to}` 发一封测试信 |
 | GET | `/admin/api/apps?q=` | 应用列表（含已下架、分类、标签） |
 | POST | `/admin/api/apps` | 新建应用（`categoryIds[]`、`tagNames[]`） |
@@ -303,9 +343,10 @@ http://<本机IP>:<端口>/admin
 | POST | `/admin/api/users/:id/status` | `{status: active\|disabled}` 老接口：`disabled` = 永久封禁 |
 | POST | `/admin/api/users/:id/password` | 重置密码 |
 | POST | `/admin/api/users/:id/logout` | 踢掉该用户所有会话 |
+| GET / PUT | `/admin/api/site` | 站点策略（注销冷静期、扫描间隔、市场分页） |
 | GET | `/admin/api/announcements` | 公告列表（含待发布） |
-| POST | `/admin/api/announcements` | `{title, content, publishedAt?}` 新建 |
-| PUT | `/admin/api/announcements/:id` | 改标题 / 内容 / 发布时间 |
+| POST | `/admin/api/announcements` | `{title, content, level?, publishedAt?}` 新建 |
+| PUT | `/admin/api/announcements/:id` | 改标题 / 内容 / 级别 / 发布时间 |
 | DELETE | `/admin/api/announcements/:id` | 删除 |
 
 公开接口（不需要登录）：
@@ -331,15 +372,15 @@ npm run prune    # 清理过期 30 天以上的会话行、过期 1 天以上的
 
 上线前务必确认：
 
-- [ ] `.env` 里 `DB_PASSWORD` 不是空
+- [ ] `config.yaml` 里 `db.password` 不是空（且这个文件不在版本库里）
 - [ ] MySQL 不监听公网（或只允许内网）
 - [ ] 前面挂 HTTPS（token 是 Bearer，明文 HTTP 等于公开）
 - [ ] `CORS_ORIGIN` 收紧到你的域名，不要留 `*`
-- [ ] `TRUST_PROXY=true` 如果放在 Nginx 后面（否则日志里全是代理 IP）
+- [ ] `http.trustProxy: true` 如果放在 Nginx 后面（否则日志里全是代理 IP）
 - [ ] `userdata/` 目录权限只给运行服务的用户
-- [ ] `TOKEN_TTL` 若不是 `never`，确认你能接受「到点要重新登录」
+- [ ] `auth.sessionTtl` 若不是 `never`，确认你能接受「到点要重新登录」
       （默认 `never` = 永不过期；撤销仍然随时生效）
-- [ ] `AUTH_LOGIN_CODE=on` 时确认邮件通道稳定 —— 发不出信等于谁都登不进去
-- [ ] `MAIL_DEV_ECHO_CODE=false`（**开着等于验证码直接送给请求方**）
-- [ ] `MAIL_DRIVER` 不是 `console`（那样谁都能注册，因为码只在服务端日志里）
+- [ ] `auth.loginCode: true` 时确认邮件通道稳定 —— 发不出信等于谁都登不进去
+- [ ] `mail.devEchoCode: false`（**开着等于验证码直接送给请求方**）
+- [ ] `mail.driver` 不是 `console`（那样谁都能注册，因为码只在服务端日志里）
 - [ ] SMTP 用 587/465 这类加密端口，别在公网上跑明文 25
