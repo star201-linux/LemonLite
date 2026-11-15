@@ -145,6 +145,12 @@ export function renderAdminPage({ version }) {
   .chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
   .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px;
     border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; }
+  button.chip { background: var(--surface); color: var(--text); cursor: pointer;
+    font-family: inherit; font-size: 13px; transition: .18s ease; }
+  button.chip:hover { background: var(--surface-2); }
+  button.chip.active { background: var(--primary); border-color: var(--primary);
+    color: var(--on-primary); }
+  input:disabled { opacity: .5; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -558,15 +564,35 @@ export function renderAdminPage({ version }) {
 
     <h3>封禁 <span id="u_banBadge" class="badge"></span></h3>
     <p class="hint" id="u_banHint"></p>
+    <div class="field">
+      <label>快捷时长</label>
+      <div class="chip-list" id="u_banPresets">
+        <button class="chip" type="button" data-hours="1">1 小时</button>
+        <button class="chip" type="button" data-hours="6">6 小时</button>
+        <button class="chip" type="button" data-hours="12">12 小时</button>
+        <button class="chip" type="button" data-hours="24">1 天</button>
+        <button class="chip" type="button" data-hours="72">3 天</button>
+        <button class="chip" type="button" data-hours="168">7 天</button>
+        <button class="chip" type="button" data-hours="720">30 天</button>
+      </div>
+    </div>
     <div class="row">
       <div class="field">
-        <label for="u_ban_days">封禁时长（天，-1 = 永久）</label>
-        <input id="u_ban_days" type="number" value="7" />
+        <label for="u_ban_days">天</label>
+        <input id="u_ban_days" type="number" min="0" max="3650" step="1" value="7" />
       </div>
       <div class="field">
-        <label for="u_ban_reason">原因（可选）</label>
-        <input id="u_ban_reason" type="text" placeholder="如：发布违规内容" />
+        <label for="u_ban_hours">小时</label>
+        <input id="u_ban_hours" type="number" min="0" max="23" step="1" value="0" />
       </div>
+    </div>
+    <p class="hint" id="u_banNote" style="margin:-4px 0 12px"></p>
+    <label class="check" for="u_ban_perm">
+      <input type="checkbox" id="u_ban_perm" /> 永久封禁（不自动解封，需手工解除）
+    </label>
+    <div class="field">
+      <label for="u_ban_reason">原因（可选）</label>
+      <input id="u_ban_reason" type="text" placeholder="如：发布违规内容" />
     </div>
     <div class="actions" style="margin-top:0">
       <button class="primary" type="button" id="u_banBtn">封禁并踢下线</button>
@@ -1312,6 +1338,62 @@ export function renderAdminPage({ version }) {
     if (e.target === $('userModal')) closeUserModal();
   });
 
+  /** 小时数 → 「2 天 3 小时」/「1 天」/「5 小时」；-1 表示永久 */
+  function fmtBanHours(hours) {
+    if (hours === -1) return '永久';
+    var d = Math.floor(hours / 24);
+    var h = hours % 24;
+    if (d && h) return d + ' 天 ' + h + ' 小时';
+    if (d) return d + ' 天';
+    return h + ' 小时';
+  }
+
+  /** 把时长填进表单：-1 = 永久（勾上复选框并锁住两个输入框） */
+  function setBanDuration(hours) {
+    var perm = hours === -1;
+    $('u_ban_perm').checked = perm;
+    $('u_ban_days').disabled = perm;
+    $('u_ban_hours').disabled = perm;
+    $('u_ban_days').value = perm ? 0 : Math.floor(hours / 24);
+    $('u_ban_hours').value = perm ? 0 : hours % 24;
+    syncBanDuration();
+  }
+
+  /** 读表单：合计小时数，-1 = 永久；填错返回 NaN */
+  function readBanHours() {
+    if ($('u_ban_perm').checked) return -1;
+    var d = Number($('u_ban_days').value || 0);
+    var h = Number($('u_ban_hours').value || 0);
+    if (!Number.isInteger(d) || !Number.isInteger(h)) return NaN;
+    if (d < 0 || d > 3650 || h < 0 || h > 23) return NaN;
+    return d * 24 + h;
+  }
+
+  function banHoursOk(hours) {
+    return hours === -1 ||
+      (Number.isFinite(hours) && hours >= 1 && hours <= 3650 * 24);
+  }
+
+  /** 高亮与当前时长一致的预设，并把「当前：…」写在下面 */
+  function syncBanDuration() {
+    var hours = readBanHours();
+    var ok = banHoursOk(hours);
+    var chips = $('u_banPresets').querySelectorAll('button[data-hours]');
+    for (var i = 0; i < chips.length; i++) {
+      var on = ok && Number(chips[i].getAttribute('data-hours')) === hours;
+      if (on) chips[i].classList.add('active');
+      else chips[i].classList.remove('active');
+    }
+    var note = $('u_banNote');
+    if (!ok) {
+      note.textContent = '天填 0~3650，小时填 0~23，合计至少 1 小时。';
+    } else if (hours === -1) {
+      note.textContent = '当前：永久封禁，需要手工解除。';
+    } else {
+      note.textContent = '当前：' + fmtBanHours(hours) + '，到期自动解封。';
+    }
+  }
+
   function renderUserModal() {
     if (!userDetail) return;
     var u = userDetail.user;
@@ -1344,12 +1426,16 @@ export function renderAdminPage({ version }) {
 
     var badge = $('u_banBadge');
     if (u.ban) {
+      var left = Number(u.ban.hoursLeft);
       badge.textContent = u.ban.permanent ? '永久' :
-        (u.ban.daysLeft > 0 ? '剩 ' + u.ban.daysLeft + ' 天' : '即将到期');
+        (left > 0 ? '剩 ' + fmtBanHours(left) : '即将到期');
       badge.className = 'badge err';
       $('u_banHint').textContent = '封禁至 ' + shortTime(u.ban.until) +
         (u.ban.reason ? ' · 原因：' + u.ban.reason : '');
-      $('u_ban_days').value = u.ban.permanent ? -1 : Math.max(1, u.ban.daysLeft);
+      // 预填「剩余时长」：管理员多半是在原有时长上微调。
+      // hoursLeft 缺失（旧服务端）时退回按天算，别把表单填成 0。
+      setBanDuration(u.ban.permanent ? -1 :
+        Math.max(1, left > 0 ? left : Math.round(Number(u.ban.daysLeft || 0) * 24)));
       $('u_ban_reason').value = u.ban.reason || '';
       $('u_banBtn').textContent = '修改封禁';
       $('u_unbanBtn').disabled = false;
@@ -1360,7 +1446,7 @@ export function renderAdminPage({ version }) {
         ? '账号处于停用状态，但当前没有对应的封禁记录（可能是旧数据）。'
         : '账号正常，可以登录。';
       if (u.status !== 'disabled') {
-        $('u_ban_days').value = 7;
+        setBanDuration(7 * 24);
         $('u_ban_reason').value = '';
       }
       $('u_banBtn').textContent = '封禁并踢下线';
@@ -1424,16 +1510,33 @@ export function renderAdminPage({ version }) {
       .catch(function (err) { toast(err.message, true); });
   });
 
+  $('u_banPresets').addEventListener('click', function (e) {
+    var btn = e.target.closest ? e.target.closest('button[data-hours]') : null;
+    if (!btn) return;
+    setBanDuration(Number(btn.getAttribute('data-hours')));
+  });
+  $('u_ban_days').addEventListener('input', syncBanDuration);
+  $('u_ban_hours').addEventListener('input', syncBanDuration);
+  $('u_ban_perm').addEventListener('change', function () {
+    // 取消勾选时回到常用的 7 天：两个框停在 0/0 会立刻提示「至少 1 小时」
+    setBanDuration($('u_ban_perm').checked ? -1 : 7 * 24);
+  });
+
   $('u_banBtn').addEventListener('click', function () {
     if (!userDetail) return;
-    var days = Number($('u_ban_days').value);
+    var hours = readBanHours();
+    if (!banHoursOk(hours)) {
+      toast('天填 0~3650，小时填 0~23，合计至少 1 小时', true);
+      return;
+    }
     var reason = $('u_ban_reason').value.trim();
-    var label = days === -1 ? '永久封禁' : ('封禁 ' + days + ' 天');
+    var label = hours === -1 ? '永久封禁' : ('封禁 ' + fmtBanHours(hours));
     if (!confirm('确定' + label + '「' + userDetail.user.username + '」？\\n' +
-      '该账号的所有登录会立刻失效。' + (days === -1 ? '永久封禁需要手工解封。' : ''))) return;
+      '该账号的所有登录会立刻失效。' +
+      (hours === -1 ? '永久封禁需要手工解除。' : '到期会自动解封。'))) return;
     api('/users/' + userDetail.user.id + '/ban', {
       method: 'POST',
-      body: { durationDays: days, reason: reason }
+      body: { durationHours: hours, reason: reason }
     }).then(function (data) {
       toast(label + '已生效' + (data && data.user && data.user.ban && data.user.ban.permanent
         ? '' : '，到期自动解封'));

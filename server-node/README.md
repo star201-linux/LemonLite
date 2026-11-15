@@ -268,7 +268,7 @@ http://<本机IP>:<端口>/admin
 | 概览 | 用户 / 应用 / 分类 / 标签 / 管理员 / 活跃会话 / 24h 验证码、当前策略、运行时长 |
 | 应用 | 列表（含已下架）、新建、编辑、上架/下架、软删除；**上传 zip 包**（自动算 sha256 与大小、原子写库）、查看本机已有版本 |
 | 分类标签 | 新建 / 改名 / 删除分类与标签、分类排序；删除仍在被使用的分类或标签会先提示有几个应用在用，确认后才删 |
-| 用户 | 搜索；点「管理」进详情页改用户名 / 注册邮箱 / 头像，填时长封禁（`-1` 永久）、重置密码、踢下线、撤销注销、立即删除 |
+| 用户 | 搜索；点「管理」进详情页改用户名 / 注册邮箱 / 头像，按「x 天 x 小时」封禁（可永久）、重置密码、踢下线、撤销注销、立即删除 |
 | 公告 | 新建 / 编辑 / 删除；四个打扰级别（红点 / 横幅 / 弹窗一次 / 每次弹）、发布时间可改（填未来时间 = 定时发布） |
 | 管理员 | 添加 admin 账号、重置密码、停用/启用、删除；以及修改自己的密码 |
 | 邮件 | smtp / resend / sendgrid / aliyun / console 五个通道、测试发信、验证码限流、token 有效期、注册/登录验证码开关 |
@@ -338,7 +338,7 @@ http://<本机IP>:<端口>/admin
 | PUT | `/admin/api/users/:id` | `{username?, email?}` 面板代改资料 |
 | POST | `/admin/api/users/:id/avatar` | multipart 上传头像（`file`） |
 | DELETE | `/admin/api/users/:id/avatar` | 删除头像 |
-| POST | `/admin/api/users/:id/ban` | `{durationDays, reason?}` 封禁；`-1` = 永久 |
+| POST | `/admin/api/users/:id/ban` | `{durationHours, reason?}` 封禁，按小时；`-1` = 永久。`durationDays` 为兼容旧字段 |
 | POST | `/admin/api/users/:id/unban` | 解封 |
 | POST | `/admin/api/users/:id/status` | `{status: active\|disabled}` 老接口：`disabled` = 永久封禁 |
 | POST | `/admin/api/users/:id/password` | 重置密码 |

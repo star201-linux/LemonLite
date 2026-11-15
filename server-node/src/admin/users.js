@@ -18,7 +18,7 @@ import { execute, query, queryOne } from '../db.js';
 import { ApiError, sendOk, wrap } from '../lib/http.js';
 import { hashPassword, revokeAllSessions } from '../lib/auth.js';
 import { cancelDeletion, deletionInfo, purgeUser } from '../lib/account_deletion.js';
-import { banInfo, liftBan, parseBanDuration } from '../lib/ban.js';
+import { banInfo, liftBan, parseBanDuration, parseBanHours } from '../lib/ban.js';
 import { toSqlTime } from '../lib/sql_time.js';
 import { sniffImage } from '../lib/image.js';
 import { validateEmail, validateUsername } from '../lib/validate.js';
@@ -234,9 +234,12 @@ usersRouter.delete(
 
 /**
  * POST /api/users/:id/ban
- * body: { durationDays, reason? }
+ * body: { durationHours | durationDays, reason? }
  *
- * durationDays：正整数 = 天数，`-1` = 永久。
+ * 两个时长字段二选一，`durationHours` 优先：
+ *   durationHours：正整数 = 小时数，面板「x 天 x 小时」合成后传这个；
+ *   durationDays ：正整数 = 天数，老脚本与旧面板还在用，保留兼容。
+ * 两者都用 `-1` 表示永久。
  * 封禁立刻撤销全部会话 —— 否则被踢的人手里那张 token 还能用到过期。
  */
 usersRouter.post(
@@ -246,8 +249,12 @@ usersRouter.post(
     const row = await queryOne('SELECT id, username FROM users WHERE id = ?', [id]);
     if (!row) throw ApiError.notFound('没有这个用户');
 
-    const { until, days } = parseBanDuration(req.body?.durationDays);
-    const reason = String(req.body?.reason ?? '').trim().slice(0, 255);
+    const body = req.body ?? {};
+    const { until, hours, days } =
+      body.durationHours === undefined
+        ? parseBanDuration(body.durationDays)
+        : parseBanHours(body.durationHours);
+    const reason = String(body.reason ?? '').trim().slice(0, 255);
 
     await execute(
       `UPDATE users
@@ -258,7 +265,7 @@ usersRouter.post(
     await revokeAllSessions(id);
 
     const updated = await queryOne('SELECT * FROM users WHERE id = ?', [id]);
-    sendOk(res, { user: toAdminUser(req, updated), days });
+    sendOk(res, { user: toAdminUser(req, updated), hours, days });
   }),
 );
 

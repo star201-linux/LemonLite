@@ -16,6 +16,7 @@ import {
   banInfo,
   banMessage,
   parseBanDuration,
+  parseBanHours,
 } from '../src/lib/ban.js';
 
 const DAY = 24 * 3600 * 1000;
@@ -53,6 +54,52 @@ test('超过上限被拒（防止多打一个 0 变成一百年）', () => {
 test('字符串形式也能解析（表单提交都是字符串）', () => {
   assert.equal(parseBanDuration('7').days, 7);
   assert.equal(parseBanDuration('-1').until, null);
+});
+
+test('小时口径：0 天 1 小时 = 1 小时，不是 1 天', () => {
+  const parsed = parseBanHours(1);
+  const delta = parsed.until.getTime() - Date.now();
+  assert.ok(delta > 3600_000 - 5000 && delta <= 3600_000, String(delta));
+  assert.equal(parsed.hours, 1);
+  // 兼容字段向上取整，只用于「天数」口径的老调用方
+  assert.equal(parsed.days, 1);
+});
+
+test('小时口径：1 天 2 小时 = 26 小时', () => {
+  assert.equal(parseBanHours(26).hours, 26);
+  assert.equal(parseBanHours(26).days, 2);
+});
+
+test('小时口径：-1 仍是永久，0 与负数（除 -1）被拒', () => {
+  assert.equal(parseBanHours(-1).until, null);
+  assert.equal(parseBanHours('-1').hours, -1);
+  for (const bad of [0, -2, '', 'abc', null, undefined, 1.5, '1.5', '2 小时']) {
+    assert.throws(() => parseBanHours(bad), /封禁时长/, String(bad));
+  }
+});
+
+test('小时口径：上限 3650 天，多 1 小时也拒', () => {
+  assert.equal(parseBanHours(3650 * 24).hours, 3650 * 24);
+  assert.throws(() => parseBanHours(3650 * 24 + 1), /封禁时长/);
+});
+
+test('天数口径不再被 parseInt 糊弄：1.5 天 / "7 天" 都拒', () => {
+  for (const bad of [1.5, '1.5', '7 天']) {
+    assert.throws(() => parseBanDuration(bad), /封禁时长/, String(bad));
+  }
+  assert.equal(parseBanDuration(' 7 ').days, 7);
+});
+
+test('剩余时长按小时算，封 1 小时不会显示成「剩 1 天」', () => {
+  const row = {
+    status: 'disabled',
+    banned_until: utcString(3600_000),
+    ban_reason: '',
+  };
+  const info = banInfo(row);
+  assert.equal(info.hoursLeft, 1);
+  // 老字段保持原语义（向上取整的天数），不影响已上线的客户端
+  assert.equal(info.daysLeft, 1);
 });
 
 test('正常账号：banInfo 为 null，banBlocks 为 false', () => {

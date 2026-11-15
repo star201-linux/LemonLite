@@ -25,26 +25,68 @@ import { parseSqlTime, toSqlTime } from './sql_time.js';
 
 /** 时长上限（天）。10 年 ≈ 永久，再大就没意义了，还容易填错位数。 */
 export const MAX_BAN_DAYS = 3650;
+/** 同上，换算成小时：面板按「天 + 小时」填，边界统一按小时比 */
+export const MAX_BAN_HOURS = MAX_BAN_DAYS * 24;
 
 /**
- * 把请求里的「封禁时长」解析成 {until, permanent}。
+ * 严格整数：`'7abc'`、`'1.5'`、`''`、`NaN` 全部退化成 NaN。
+ *
+ * 不用 parseInt：它会把 `'1.5'` 悄悄读成 1、把 `'7 天'` 读成 7，
+ * 「填错了却被接受」比直接报错更难发现。
+ */
+function toInt(raw) {
+  if (typeof raw === 'number') return Number.isInteger(raw) ? raw : Number.NaN;
+  const text = String(raw ?? '').trim();
+  return /^-?\d+$/.test(text) ? Number(text) : Number.NaN;
+}
+
+function assertParsed(value, unit) {
+  if (!Number.isFinite(value)) {
+    throw ApiError.badRequest('bad_duration', `封禁时长要填整数${unit}，-1 表示永久`);
+  }
+}
+
+/**
+ * 按**小时**解析封禁时长 —— 面板「x 天 x 小时」合成的就是这个数。
+ *
+ * @param {unknown} raw 小时数字符串 / 数字；`-1` = 永久
+ * @returns {{ until: Date|null, hours: number, days: number }}
+ */
+export function parseBanHours(raw) {
+  const hours = toInt(raw);
+  assertParsed(hours, '小时');
+  if (hours === -1) return { until: null, hours: -1, days: -1 };
+  if (hours < 1 || hours > MAX_BAN_HOURS) {
+    throw ApiError.badRequest(
+      'bad_duration',
+      `封禁时长要在 1 小时 ~ ${MAX_BAN_DAYS} 天之间，或者选「永久」`,
+    );
+  }
+  return {
+    until: new Date(Date.now() + hours * 3600_000),
+    hours,
+    // 兼容旧调用方：它们只认「天」，这里向上取整
+    days: Math.ceil(hours / 24),
+  };
+}
+
+/**
+ * 按**天**解析 —— 老的 `durationDays` 字段走这里，保持兼容。
  *
  * @param {unknown} raw 天数字符串 / 数字；`-1` = 永久，`0` = 拒绝
- * @returns {{ until: Date|null, days: number }} until 为 null 表示永久
+ * @returns {{ until: Date|null, hours: number, days: number }}
  */
 export function parseBanDuration(raw) {
-  const days = Number.parseInt(String(raw ?? ''), 10);
-  if (!Number.isFinite(days)) {
-    throw ApiError.badRequest('bad_duration', '封禁时长要填整数天，-1 表示永久');
-  }
-  if (days === -1) return { until: null, days: -1 };
+  const days = toInt(raw);
+  assertParsed(days, '天');
+  if (days === -1) return { until: null, hours: -1, days: -1 };
   if (days < 1 || days > MAX_BAN_DAYS) {
     throw ApiError.badRequest(
       'bad_duration',
-      `封禁时长要在 1~${MAX_BAN_DAYS} 天之间，或者填 -1 表示永久`,
+      `封禁时长要在 1 天 ~ ${MAX_BAN_DAYS} 天之间，或者填 -1 表示永久`,
     );
   }
-  return { until: new Date(Date.now() + days * 86400_000), days };
+  return { until: new Date(Date.now() + days * 86400_000), hours: days * 24, days };
 }
 
 /** 封禁状态：面板与客户端都用这一份 */
@@ -59,7 +101,12 @@ export function banInfo(row) {
     // 到期时间（ISO，带 Z）；永久为 null
     until: until ? until.toISOString() : null,
     reason: String(row.ban_reason ?? ''),
-    // 还剩几天（向上取整），永久为 -1。只用于面板显示。
+    // 还剩几小时（向上取整），永久为 -1。面板按「x 天 x 小时」显示用这个 ——
+    // 封 1 小时时 daysLeft 会是 1，拿它当「剩 1 天」显示就错了。
+    hoursLeft: until
+      ? Math.max(0, Math.ceil((until.getTime() - Date.now()) / 3600_000))
+      : -1,
+    // 还剩几天（向上取整），永久为 -1。老字段，保留给只认「天」的调用方。
     daysLeft: until
       ? Math.max(0, Math.ceil((until.getTime() - Date.now()) / 86400_000))
       : -1,

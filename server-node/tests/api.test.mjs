@@ -705,6 +705,45 @@ describe('封禁时长与面板改资料', () => {
     }
   });
 
+  test('按小时封禁：0 天 1 小时也能设，剩余按小时算', async () => {
+    const r = await api('POST', `/admin/api/users/${id}/ban`, {
+      body: { durationHours: 1, reason: '刷屏' },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.data.hours, 1);
+    assert.equal(r.json.data.user.ban.permanent, false);
+    assert.equal(r.json.data.user.ban.hoursLeft, 1);
+    // 老字段保持原语义（向上取整的天数），只认「天」的调用方照旧能跑
+    assert.equal(r.json.data.user.ban.daysLeft, 1);
+
+    const user = fakedb.state.users.find((u) => u.id === id);
+    const left = new Date(user.banned_until.replace(' ', 'T') + 'Z').getTime() - Date.now();
+    assert.ok(left > 3600_000 - 60_000 && left <= 3600_000, String(left));
+
+    await api('POST', `/admin/api/users/${id}/unban`, { body: {} });
+  });
+
+  test('按小时封禁：非法与越界被拒', async () => {
+    for (const hours of [0, -2, 1.5, '1.5', 3650 * 24 + 1]) {
+      const r = await api('POST', `/admin/api/users/${id}/ban`, {
+        body: { durationHours: hours },
+      });
+      assert.equal(r.status, 400, `hours=${hours}`);
+      assert.equal(r.json.error.code, 'bad_duration');
+    }
+  });
+
+  test('两个字段都传时以 durationHours 为准', async () => {
+    const r = await api('POST', `/admin/api/users/${id}/ban`, {
+      body: { durationHours: 2, durationDays: 30 },
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.data.hours, 2);
+    assert.equal(r.json.data.user.ban.hoursLeft, 2);
+
+    await api('POST', `/admin/api/users/${id}/unban`, { body: {} });
+  });
+
   test('面板可以改用户名与注册邮箱', async () => {
     const r = await api('PUT', `/admin/api/users/${id}`, {
       body: { username: '改名之后', email: 'renamed@b.com' },
