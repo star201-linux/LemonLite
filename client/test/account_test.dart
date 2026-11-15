@@ -10,6 +10,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lemonlite/app.dart';
 import 'package:lemonlite/data/services/account_service.dart';
+import 'package:lemonlite/data/services/settings_service.dart';
+import 'package:lemonlite/pages/account/session_offline_dialog.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   // ========================================================== 用户资料模型
@@ -74,6 +77,117 @@ void main() {
       expect(q.username, 'new');
       expect(q.email, 'e@x.com');
       expect(q.id, 1);
+    });
+
+    test('toJson 能原样回环（本地资料缓存靠它）', () {
+      final AccountProfile p = parse(<String, dynamic>{
+        'id': 7,
+        'username': '张三',
+        'email': 'a@b.com',
+        'avatarUrl': 'https://x/a.png',
+        'avatarVersion': '1700000000',
+        'createdAt': '2026-10-18 12:00:00.000',
+        'createdIp': '1.2.3.4',
+      });
+      final AccountProfile back = parse(p.toJson());
+      expect(back.id, p.id);
+      expect(back.username, p.username);
+      expect(back.email, p.email);
+      expect(back.avatarUrl, p.avatarUrl);
+      expect(back.avatarVersion, p.avatarVersion);
+      expect(back.createdAt, p.createdAt);
+      expect(back.createdIp, p.createdIp);
+    });
+  });
+
+  // ========================================================== 登录态与「被下线」
+
+  group('启动恢复与被下线', () {
+    late SettingsService settings;
+
+    setUp(() async {
+      SharedPreferences.setMockInitialValues(<String, Object>{});
+      settings = await SettingsService.init();
+    });
+
+    test('没有 token 时是未登录，且不残留上一个账号的资料', () async {
+      await settings.writeRaw(
+        'account.profile',
+        '{"id":1,"username":"ghost","email":"g@x.com"}',
+      );
+      await AccountService.instance.init(settings);
+      expect(AccountService.instance.isLoggedIn, isFalse);
+      expect(AccountService.instance.profile, isNull);
+    });
+
+    test('有 token 时从缓存恢复资料（打开账号页不用先转圈）', () async {
+      await settings.writeRaw('account.token', 'lmn_cached');
+      await settings.writeRaw(
+        'account.profile',
+        '{"id":9,"username":"缓存用户","email":"c@x.com","avatarVersion":"1"}',
+      );
+      await AccountService.instance.init(settings);
+      expect(AccountService.instance.isLoggedIn, isTrue);
+      expect(AccountService.instance.profile?.username, '缓存用户');
+      expect(AccountService.instance.profile?.id, 9);
+    });
+
+    test('缓存是坏 JSON 时当作没有资料，但登录态仍恢复', () async {
+      await settings.writeRaw('account.token', 'lmn_cached');
+      await settings.writeRaw('account.profile', '{ 不是 json');
+      await AccountService.instance.init(settings);
+      expect(AccountService.instance.isLoggedIn, isTrue);
+      expect(AccountService.instance.profile, isNull);
+    });
+
+    test('401：清登录态 + 留下「已下线」提示，且只消费一次', () async {
+      await settings.writeRaw('account.token', 'lmn_revoked');
+      await settings.writeRaw(
+        'account.profile',
+        '{"id":3,"username":"被踢的","email":"k@x.com"}',
+      );
+      await AccountService.instance.init(settings);
+      expect(AccountService.instance.hasOfflineNotice, isFalse);
+
+      await AccountService.instance.handleUnauthorized('登录已失效，请重新登录');
+
+      expect(AccountService.instance.isLoggedIn, isFalse);
+      expect(AccountService.instance.profile, isNull);
+      expect(settings.readRaw('account.token'), isNull, reason: '本地 token 要一起删');
+      expect(settings.readRaw('account.profile'), isNull, reason: '资料缓存也要删');
+
+      expect(AccountService.instance.hasOfflineNotice, isTrue);
+      final String? reason = AccountService.instance.takeOfflineNotice();
+      expect(reason, contains('登录已失效'));
+      expect(reason, contains('被踢的'), reason: '提示里要带上是哪个账号，便于确认');
+
+      expect(AccountService.instance.hasOfflineNotice, isFalse);
+      expect(
+        AccountService.instance.takeOfflineNotice(),
+        isNull,
+        reason: '提示只能消费一次，否则每 rebuild 一次就弹一次窗',
+      );
+    });
+
+    test('重复的 401 不会重新记提示（并发请求只有一个弹窗）', () async {
+      await settings.writeRaw('account.token', 'lmn_revoked');
+      await AccountService.instance.init(settings);
+
+      await AccountService.instance.handleUnauthorized('登录已失效');
+      expect(AccountService.instance.takeOfflineNotice(), isNotNull);
+
+      await AccountService.instance.handleUnauthorized('登录已失效');
+      expect(
+        AccountService.instance.hasOfflineNotice,
+        isFalse,
+        reason: '第二个 401 到达时已经不是登录态了，不该再记一条',
+      );
+    });
+
+    test('未登录时的 401 不产生提示', () async {
+      await AccountService.instance.init(settings);
+      await AccountService.instance.handleUnauthorized('登录已失效');
+      expect(AccountService.instance.hasOfflineNotice, isFalse);
     });
   });
 
@@ -249,6 +363,73 @@ void main() {
           reason: '${e.code} 被归到了多个输入框',
         );
       }
+    });
+  });
+
+  // ========================================================== 「已下线」弹窗
+
+  group('SessionOfflineDialog', () {
+    Future<void> open(WidgetTester tester, {String reason = ''}) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (BuildContext ctx) => Scaffold(
+              body: Center(
+                child: FilledButton(
+                  onPressed: () async {
+                    await SessionOfflineDialog.show(ctx, reason: reason);
+                  },
+                  child: const Text('打开'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('打开'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('说明「是怎么下线的」，并给出两个出口', (WidgetTester tester) async {
+      await open(tester, reason: '登录已失效，请重新登录');
+      expect(find.text('账号已下线'), findsOneWidget);
+      expect(find.textContaining('被管理员下线'), findsOneWidget);
+      expect(find.text('登录已失效，请重新登录'), findsOneWidget);
+      expect(find.text('知道了'), findsOneWidget);
+      expect(find.text('去登录'), findsOneWidget);
+    });
+
+    testWidgets('「知道了」关掉弹窗且不跳转', (WidgetTester tester) async {
+      await open(tester);
+      await tester.tap(find.text('知道了'));
+      await tester.pumpAndSettle();
+      expect(find.text('账号已下线'), findsNothing);
+    });
+
+    testWidgets('「去登录」返回 true（由外壳去 push 登录页）', (WidgetTester tester) async {
+      bool? result;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (BuildContext ctx) => Scaffold(
+              body: Center(
+                child: FilledButton(
+                  onPressed: () async {
+                    result = await SessionOfflineDialog.show(ctx, reason: '');
+                  },
+                  child: const Text('打开'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('打开'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('去登录'));
+      await tester.pumpAndSettle();
+      expect(result, isTrue);
+      expect(find.text('账号已下线'), findsNothing);
     });
   });
 

@@ -32,6 +32,8 @@ import 'data/repositories/market_repository.dart';
 import 'data/services/account_service.dart';
 import 'data/services/settings_service.dart';
 import 'data/services/update_service.dart';
+import 'pages/account/account_page.dart' show LoginPage;
+import 'pages/account/session_offline_dialog.dart';
 import 'pages/applications/applications_page.dart';
 import 'pages/home/home_controller.dart';
 import 'pages/home/home_page.dart';
@@ -138,20 +140,35 @@ class AppShell extends StatefulWidget {
   State<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends State<AppShell> {
+class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   int _tabIndex = 0;
+
+  /// 弹窗防重入。一条 401 可能同时来自好几个并发请求，
+  /// AccountService 已经做了幂等，这里再兜一层，避免叠出两个对话框。
+  bool _offlineDialogOpen = false;
+
+  /// 上一次校验登录态的时间。前后台来回切时用得上（见 [_checkSessionLater]）。
+  DateTime _lastSessionCheck = DateTime.fromMillisecondsSinceEpoch(0);
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // 小程序菜单里的「返回主页」会发这个信号（见 core/globals.dart）
     shellHomeRequested.addListener(_onHomeRequested);
     // 更新状态是全局的：应用管理的导航角标要跟着它变
     UpdateService.instance.addListener(_onUpdatesChanged);
+    // 「被下线」的提示也是全局的（任何页面、任何请求都可能触发）
+    AccountService.instance.addListener(_onAccountChanged);
     // 先从缓存恢复（第一帧就能显示小红点），再在首帧后向服务端查一次
     UpdateService.instance.restore();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      // **启动时校验本地 token 还有没有效**：被管理员踢下线、在别的设备
+      // 退出、或者 token 过期，本地都还揣着这张已经作废的票根。不校验的话
+      // 界面会一直显示「已登录」，点进账号页才露馅（而且是个转不完的圈）。
+      unawaited(_checkSession());
+      _maybeShowOfflineDialog();
       // **打开 App 时检查所有已装小程序有没有新版本**
       UpdateService.instance.checkAll(
         repository: context.read<MarketRepository>(),
@@ -165,9 +182,61 @@ class _AppShellState extends State<AppShell> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     shellHomeRequested.removeListener(_onHomeRequested);
     UpdateService.instance.removeListener(_onUpdatesChanged);
+    AccountService.instance.removeListener(_onAccountChanged);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    // 从后台回来补一次校验：被踢下线之后用户最可能做的就是「切回 App」，
+    // 这时候发现得早，弹窗才赶在他点进账号页之前出现。
+    unawaited(_checkSession());
+  }
+
+  /// 校验本地登录态。20 秒内只查一次 —— 前后台频繁切换不该把 /me
+  /// 打成轮询，但「切回来就发现被踢了」这个体验要保住。
+  Future<void> _checkSession() async {
+    final DateTime now = DateTime.now();
+    if (now.difference(_lastSessionCheck) < const Duration(seconds: 20)) return;
+    _lastSessionCheck = now;
+    await AccountService.instance.validateSession();
+  }
+
+  void _onAccountChanged() {
+    if (!mounted) return;
+    _maybeShowOfflineDialog();
+  }
+
+  /// 取出「被下线」提示并弹窗。没有提示就什么都不做 ——
+  /// 平时的登录/退出/改资料也会 notify，不能每次都弹。
+  void _maybeShowOfflineDialog() {
+    if (_offlineDialogOpen) return;
+    final String? reason = AccountService.instance.takeOfflineNotice();
+    if (reason == null) return;
+    _offlineDialogOpen = true;
+    // 可能是在 notify 的同步调用栈里进来的，排到帧后再弹
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) {
+        _offlineDialogOpen = false;
+        return;
+      }
+      final bool goLogin = await SessionOfflineDialog.show(
+        context,
+        reason: reason,
+      );
+      _offlineDialogOpen = false;
+      if (!mounted) return;
+      if (goLogin) {
+        await Navigator.of(context).push(LoginPage.route());
+      } else {
+        // 弹窗期间可能又收到一条（例如并发的另一个请求），补弹一次
+        _maybeShowOfflineDialog();
+      }
+    });
   }
 
   void _onHomeRequested() {

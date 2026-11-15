@@ -129,11 +129,48 @@ class _LoggedInViewState extends State<_LoggedInView> {
   Uint8List? _avatarBytes;
   String _avatarVersion = '';
 
+  /// 正在补拉资料（只在本地没有资料缓存时发生）
+  bool _loadingProfile = false;
+
+  /// 补拉失败的原因（网络不通等）。有它就不能再转圈：
+  /// **无限加载圈是这次要修的 bug**，不是「加载中」的样子。
+  String? _profileError;
+
   @override
   void initState() {
     super.initState();
-    _sessions = context.read<AccountService>().fetchSessions();
+    _sessions = _fetchSessions();
     _loadAvatar();
+    if (context.read<AccountService>().profile == null) {
+      // 本地可能只有 token（老版本升级上来、缓存被清过、上次拉取失败）：
+      // 这时必须主动拉一次，否则页面会永远停在加载态。
+      WidgetsBinding.instance.addPostFrameCallback((_) => _ensureProfile());
+    }
+  }
+
+  Future<List<AccountSession>> _fetchSessions() =>
+      context.read<AccountService>().fetchSessions();
+
+  /// 补拉资料。失败就落到「加载失败 + 重试」，不再无限转圈。
+  Future<void> _ensureProfile() async {
+    if (!mounted || _loadingProfile) return;
+    setState(() {
+      _loadingProfile = true;
+      _profileError = null;
+    });
+    try {
+      await context.read<AccountService>().refreshProfile();
+      if (!mounted) return;
+      _avatarVersion = '';
+      await _loadAvatar();
+    } on AccountException catch (e) {
+      // 401 已由 AccountService 统一处理（清登录态 + 弹「已下线」），
+      // 页面会自己切到未登录视图，这里不必再提示。
+      if (!mounted || e.code == 'unauthorized') return;
+      setState(() => _profileError = e.message);
+    } finally {
+      if (mounted) setState(() => _loadingProfile = false);
+    }
   }
 
   Future<void> _loadAvatar() async {
@@ -222,7 +259,7 @@ class _LoggedInViewState extends State<_LoggedInView> {
 
   Future<void> _refreshSessions() async {
     setState(() {
-      _sessions = context.read<AccountService>().fetchSessions();
+      _sessions = _fetchSessions();
     });
   }
 
@@ -233,6 +270,10 @@ class _LoggedInViewState extends State<_LoggedInView> {
     final ColorScheme scheme = Theme.of(context).colorScheme;
 
     if (profile == null) {
+      // 有 token 但还没拿到资料：正在拉就转圈，拉失败就给出重试入口。
+      // 以前这里无条件转圈，token 被服务端作废时会**永远**转下去。
+      final String? error = _profileError;
+      if (error != null) return _profileErrorView(context, error);
       return const Center(child: M3ELoadingIndicator());
     }
 
@@ -346,10 +387,11 @@ class _LoggedInViewState extends State<_LoggedInView> {
                   );
                 }
                 if (snap.hasError) {
+                  final Object err = snap.error!;
                   return ListTile(
                     leading: const Icon(Icons.error_outline),
                     title: const Text('读取失败'),
-                    subtitle: Text('${snap.error}'),
+                    subtitle: Text(err is AccountException ? err.message : '$err'),
                     trailing: IconButton(
                       icon: const Icon(Icons.refresh),
                       onPressed: _refreshSessions,
@@ -405,6 +447,52 @@ class _LoggedInViewState extends State<_LoggedInView> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// 资料没拉下来时的兜底视图：说明原因 + 重试 + 退出登录。
+  ///
+  /// 为什么要给「退出登录」：如果 token 已经作废而服务端又连不上，
+  /// 用户手上就没有任何能回到可用状态的按钮了。
+  Widget _profileErrorView(BuildContext context, String message) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(Icons.cloud_off_outlined, size: 56, color: scheme.onSurfaceVariant),
+            const SizedBox(height: 16),
+            Text('加载账号资料失败', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 20),
+            FilledButton.tonal(
+              onPressed: _loadingProfile ? null : _ensureProfile,
+              child: _loadingProfile
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: M3ELoadingIndicator(),
+                    )
+                  : const Text('重试'),
+            ),
+            const SizedBox(height: 8),
+            TextButton(
+              onPressed: () => _logout(context, all: false),
+              child: const Text('退出登录'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -594,6 +682,13 @@ class _LoginPageState extends State<LoginPage> {
   bool _obscure = true;
   String? _error;
 
+  /// 服务端开发回显的验证码（只有开了 MAIL_DEV_ECHO_CODE 才有）。
+  ///
+  /// **不再自动填进输入框**：用户看到「验证码自己出现了」会怀疑是不是
+  /// 被谁填了。这里只把它显示出来，点一下「填入」才写进输入框 ——
+  /// 省事的同时让这件事发生在用户眼皮底下。
+  String? _devCode;
+
   /// 这台服务器是否要求登录验证码。
   /// 初值 false 只是「还没拉到配置」时的保守值 —— 拉不到也不会挡住登录，
   /// 真正的判定在服务端（会回 `code_required`，那时再把输入框展开）。
@@ -729,10 +824,7 @@ class _LoginPageState extends State<LoginPage> {
                           password: _password.text,
                         ),
                         onSent: (EmailCodeSent sent) {
-                          final String? debug = sent.debugCode;
-                          if (debug != null && debug.isNotEmpty) {
-                            _code.text = debug;
-                          }
+                          setState(() => _devCode = sent.debugCode);
                           AppTheme.showToast('验证码已发送到 ${sent.email}');
                         },
                         onError: (AccountException e) =>
@@ -741,6 +833,15 @@ class _LoginPageState extends State<LoginPage> {
                     },
                   ),
                 ],
+              ),
+            ],
+
+            // 开发模式回显：只提示，不替用户填
+            if (_codeRequired && _devCode != null) ...<Widget>[
+              const SizedBox(height: 8),
+              _DevCodeHint(
+                code: _devCode!,
+                onFill: () => setState(() => _code.text = _devCode!),
               ),
             ],
 
@@ -810,6 +911,9 @@ class _RegisterPageState extends State<RegisterPage> {
   bool _obscure = true;
   bool _busy = false;
   String? _error;
+
+  /// 服务端开发回显的验证码，只显示不自动填（见登录页同名字段说明）
+  String? _devCode;
 
   /// 服务端是否要求注册验证码（默认 true，拉到 /api/auth/config 后以其为准）。
   /// 内网部署可能根本发不出邮件，这时服务端会把它关掉，客户端得跟着变。
@@ -968,10 +1072,7 @@ class _RegisterPageState extends State<RegisterPage> {
                       email: _emailText,
                     ),
                     onSent: (EmailCodeSent sent) {
-                      final String? debug = sent.debugCode;
-                      if (debug != null && debug.isNotEmpty) {
-                        _code.text = debug;
-                      }
+                      setState(() => _devCode = sent.debugCode);
                       AppTheme.showToast('验证码已发送，请查收 ${sent.email}');
                     },
                     onError: (AccountException e) =>
@@ -979,6 +1080,14 @@ class _RegisterPageState extends State<RegisterPage> {
                   ),
                 ],
               ),
+              // 开发模式回显：只提示，不替用户填
+              if (_codeRequired && _devCode != null) ...<Widget>[
+                const SizedBox(height: 8),
+                _DevCodeHint(
+                  code: _devCode!,
+                  onFill: () => setState(() => _code.text = _devCode!),
+                ),
+              ],
               // 服务端邮件没配好时，注册一定失败 —— 提前说，别让用户白等
               if (!_mailReady) ...<Widget>[
                 const SizedBox(height: 8),
@@ -1323,6 +1432,46 @@ class _ChangePasswordPageState extends State<ChangePasswordPage> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ================================================================ 开发模式回显
+
+/// 服务端开了 `MAIL_DEV_ECHO_CODE` 时把验证码显示出来。
+///
+/// 为什么不做成「自动填进输入框」：那样用户会以为自己没填过、怀疑验证码
+/// 被别人拿到了。这里摆明「这是服务端回显，只用于调试」，填不填由用户决定。
+class _DevCodeHint extends StatelessWidget {
+  const _DevCodeHint({required this.code, required this.onFill});
+
+  final String code;
+  final VoidCallback onFill;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 6, 6, 6),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: <Widget>[
+          Icon(Icons.science_outlined, size: 18, color: scheme.onSurfaceVariant),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '服务端调试验证码：$code',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+            ),
+          ),
+          TextButton(onPressed: onFill, child: const Text('填入')),
+        ],
       ),
     );
   }

@@ -10,6 +10,7 @@
 // 它不属于「用户偏好」，混淆在一起会让「重置设置」意外把人踢下线。
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -84,6 +85,19 @@ class AccountProfile {
     createdIp: createdIp,
     updatedAt: updatedAt,
   );
+
+  /// 落盘用。字段名与 /api/auth/me 保持一致，
+  /// 这样 `fromJson(toJson())` 是恒等变换，缓存与服务端响应可以用同一个解析器。
+  Map<String, dynamic> toJson() => <String, dynamic>{
+    'id': id,
+    'username': username,
+    'email': email,
+    'avatarUrl': avatarUrl,
+    'avatarVersion': avatarVersion,
+    'createdAt': createdAt,
+    'createdIp': createdIp,
+    'updatedAt': updatedAt,
+  };
 }
 
 /// 一次「发送验证码」的结果。
@@ -250,6 +264,10 @@ class AccountService extends ChangeNotifier {
 
   static const String _kToken = 'account.token';
 
+  /// 资料缓存。**只用于「打开就能显示」**，不是登录凭证：
+  /// 真正的有效期判定永远在服务端（每次拉 /api/auth/me 会重新覆盖它）。
+  static const String _kProfile = 'account.profile';
+
   late final Dio _dio = Dio(
     BaseOptions(
       connectTimeout: const Duration(seconds: 15),
@@ -278,6 +296,16 @@ class AccountService extends ChangeNotifier {
 
   bool _authConfigLoaded = false;
 
+  /// 正在显式退出登录（自己点的「退出」，不是被别人踢）。
+  /// 期间收到的 401 不该弹「已下线」—— 那正是用户想要的结果。
+  bool _loggingOut = false;
+
+  /// 「被下线」提示待消费。为什么用「待消费标记」而不是直接 showDialog：
+  /// 401 可能在任意时刻、任意页面到达（启动静默校验时甚至还没有监听者），
+  /// 所以先记在服务层，由外壳在能弹窗时取走。
+  bool _offlinePending = false;
+  String _offlineReason = '';
+
   String? get token => _token;
   AccountProfile? get profile => _profile;
   bool get isLoggedIn => _token != null && _token!.isNotEmpty;
@@ -289,6 +317,21 @@ class AccountService extends ChangeNotifier {
   /// 登录是否需要验证码（未拉到配置前按「不需要」处理）
   bool get loginCodeRequired => _authConfig.loginCode;
 
+  /// 是否有未消费的「被下线」提示
+  bool get hasOfflineNotice => _offlinePending;
+
+  /// 取走「被下线」提示（一次消费，取过就清）。
+  ///
+  /// 返回提示语；没有待处理提示时返回 null。UI 据此决定要不要弹窗，
+  /// 所以这里必须是「读 + 清」一体，否则 rebuild 一次就会弹第二遍。
+  String? takeOfflineNotice() {
+    if (!_offlinePending) return null;
+    _offlinePending = false;
+    final String reason = _offlineReason;
+    _offlineReason = '';
+    return reason;
+  }
+
   /// 启动时调用：从本地拿 token，`withProfile: true` 时顺便校验它还有效。
   ///
   /// 为什么校验要单独一个开关：启动阶段网络可能还没好，
@@ -297,13 +340,35 @@ class AccountService extends ChangeNotifier {
   Future<void> init(SettingsService settings, {bool withProfile = false}) async {
     _settings = settings;
     _token = settings.readRaw(_kToken);
+    // 先清掉内存里的旧值：init 可能被调用多次（测试、切服务器），
+    // 不清会留下上一个账号的资料。
+    _profile = null;
+    _offlinePending = false;
+    _offlineReason = '';
     if (!isLoggedIn) {
       _token = null;
       return;
     }
+    // 资料缓存：让「设置 → 账号」打开就有内容，不用先转一圈加载圈
+    _profile = _readCachedProfile();
+    notifyListeners();
     if (withProfile) {
       // 静默校验：失败只清 token，不抛给 UI
-      unawaited(refreshProfile(silent: true));
+      unawaited(validateSession());
+    }
+  }
+
+  /// 静默校验本地 token 是否还活着（是否被踢 / 过期 / 改过密码）。
+  ///
+  /// 这是「在别的设备点了踢下线，本机却仍显示已登录」的修法：
+  /// 本地 token 只是一张票根，票有没有被作废只有服务端知道。
+  /// 校验失败时 [handleUnauthorized] 会清本地态并留下「已下线」提示。
+  Future<void> validateSession() async {
+    if (!isLoggedIn) return;
+    try {
+      await refreshProfile(silent: true);
+    } catch (_) {
+      // silent 已吞掉异常，这里只是兜底：校验失败不该影响启动
     }
   }
 
@@ -359,10 +424,20 @@ class AccountService extends ChangeNotifier {
       // 服务端明确报错
       final Object? err = json['error'];
       if (err is Map) {
-        throw AccountException(
-          (err['code'] ?? 'unknown').toString(),
-          (err['message'] ?? '操作失败').toString(),
-        );
+        final String code = (err['code'] ?? 'unknown').toString();
+        final String message = (err['message'] ?? '操作失败').toString();
+        // 401 是**所有**账号接口共同的失效信号，所以只在这一个出口处理：
+        // 清本地 token 并记一条「已下线」提示，由外壳弹窗告知用户。
+        // 散在各处各写一遍的话，迟早会漏掉某个接口，用户就会看到
+        // 「顶栏还显示已登录、点进去一直转圈」这种自相矛盾的状态。
+        //
+        // `account_disabled`（被管理员封禁）走同一条路：对用户来说
+        // 「被踢下线」和「被停用」都是「这个号在这台机器上不能用了」，
+        // 区别只在提示语里，没必要让界面呈现成两种不同的破状态。
+        if (auth && (code == 'unauthorized' || code == 'account_disabled')) {
+          unawaited(handleUnauthorized(message));
+        }
+        throw AccountException(code, message);
       }
       throw AccountException('http_${res.statusCode}', '服务器返回 ${res.statusCode}');
     } on DioException catch (e) {
@@ -516,12 +591,15 @@ class AccountService extends ChangeNotifier {
   /// 退出登录（只撤销当前会话）
   Future<void> logout() async {
     await _guard(() async {
+      _loggingOut = true;
       try {
         await _request('POST', '/api/auth/logout');
       } on AccountException catch (e) {
         // 网络不通时也要能退出本地登录态 —— 否则用户会卡在
         // 「退不出去」的状态里，而服务端那条会话到期后自然消失。
         lemonLog('Account', '退出登录请求失败，仍清本地状态：${e.message}');
+      } finally {
+        _loggingOut = false;
       }
       await _clearAuth();
     });
@@ -530,10 +608,13 @@ class AccountService extends ChangeNotifier {
   /// 退出所有设备
   Future<void> logoutAll() async {
     await _guard(() async {
+      _loggingOut = true;
       try {
         await _request('POST', '/api/auth/logout-all');
       } on AccountException catch (e) {
         lemonLog('Account', '退出所有设备失败：${e.message}');
+      } finally {
+        _loggingOut = false;
       }
       await _clearAuth();
     });
@@ -547,16 +628,14 @@ class AccountService extends ChangeNotifier {
     try {
       final Map<String, dynamic> data = await _request('GET', '/api/auth/me');
       _profile = AccountProfile.fromJson(data);
+      unawaited(_cacheProfile());
       notifyListeners();
     } on AccountException catch (e) {
-      // 401 = token 已失效（被撤销 / 过期 / 密码改了）：清掉本地状态。
+      // token 失效（401）已经由 _request 统一处理（清态 + 记提示）。
       // 其它错误（网络）不该把用户踢下线 —— 那会让「飞机上打开 App」
       // 变成「突然未登录」。
-      final bool expired = e.code == 'unauthorized';
-      if (expired) {
-        await _clearAuth();
-      }
       if (!silent) rethrow;
+      lemonLog('Account', '静默刷新资料失败：${e.message}');
     }
   }
 
@@ -581,6 +660,7 @@ class AccountService extends ChangeNotifier {
             (Object? k, Object? v) => MapEntry<String, dynamic>(k.toString(), v),
           ),
         );
+        unawaited(_cacheProfile());
       }
     });
   }
@@ -705,10 +785,13 @@ class AccountService extends ChangeNotifier {
           : null;
       if (json == null || json['ok'] != true) {
         final Object? err = json?['error'];
-        throw AccountException(
-          (err is Map ? err['code'] : null)?.toString() ?? 'upload_failed',
-          (err is Map ? err['message'] : null)?.toString() ?? '头像上传失败',
-        );
+        final String code =
+            (err is Map ? err['code'] : null)?.toString() ?? 'upload_failed';
+        final String message =
+            (err is Map ? err['message'] : null)?.toString() ?? '头像上传失败';
+        // 这里没走 _request（要的是 multipart），401 得自己接一次
+        if (code == 'unauthorized') unawaited(handleUnauthorized(message));
+        throw AccountException(code, message);
       }
 
       final Object? data = json['data'];
@@ -717,6 +800,7 @@ class AccountService extends ChangeNotifier {
           avatarUrl: (data['avatarUrl'] ?? '').toString(),
           avatarVersion: (data['avatarVersion'] ?? '').toString(),
         );
+        unawaited(_cacheProfile());
       }
     });
   }
@@ -726,6 +810,7 @@ class AccountService extends ChangeNotifier {
     await _guard(() async {
       await _request('DELETE', '/api/upload/avatar');
       _profile = _profile?.copyWith(avatarUrl: '', avatarVersion: '');
+      unawaited(_cacheProfile());
     });
   }
 
@@ -803,14 +888,60 @@ class AccountService extends ChangeNotifier {
         ),
       );
     }
+    // 刚登录成功：上一次残留的「已下线」提示必须清掉，
+    // 否则重新登录后还会弹一次「你被下线了」。
+    _offlinePending = false;
+    _offlineReason = '';
+    unawaited(_cacheProfile());
     notifyListeners();
+  }
+
+  /// 登录态失效（401）：清本地状态 + 留一条待展示的提示。
+  ///
+  /// 幂等：已经清过就直接返回，避免并发的几个请求各弹一次窗。
+  /// 用户自己点「退出登录」时不算「被下线」（见 [_loggingOut]）。
+  Future<void> handleUnauthorized(String message) async {
+    if (!isLoggedIn || _loggingOut) return;
+    final String name = _profile?.username ?? '';
+    lemonLog('Account', '登录态已失效（$message），清本地状态');
+    _offlinePending = true;
+    _offlineReason = message.trim().isEmpty ? '登录状态已失效' : message.trim();
+    if (name.isNotEmpty) _offlineReason = '$_offlineReason\n账号：$name';
+    // _clearAuth 同步把 _token 置空并 notify，
+    // 所以并发的第二个 401 进来时 isLoggedIn 已经是 false，不会再弹。
+    await _clearAuth();
   }
 
   Future<void> _clearAuth() async {
     _token = null;
     _profile = null;
-    await _settings?.removeMany(<String>[_kToken]);
+    await _settings?.removeMany(<String>[_kToken, _kProfile]);
     notifyListeners();
+  }
+
+  /// 读本地资料缓存；解析失败当作没有（不该让一条脏数据挡住登录态恢复）。
+  AccountProfile? _readCachedProfile() {
+    final String? raw = _settings?.readRaw(_kProfile);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final Object? decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        return AccountProfile.fromJson(
+          decoded.map<String, dynamic>(
+            (Object? k, Object? v) => MapEntry<String, dynamic>(k.toString(), v),
+          ),
+        );
+      }
+    } catch (e) {
+      lemonLog('Account', '资料缓存解析失败，忽略：$e');
+    }
+    return null;
+  }
+
+  Future<void> _cacheProfile() async {
+    final AccountProfile? profile = _profile;
+    if (profile == null) return;
+    await _settings?.writeRaw(_kProfile, jsonEncode(profile.toJson()));
   }
 
   /// 设备标识：登录时上报给服务端，用于「我的登录设备」。
