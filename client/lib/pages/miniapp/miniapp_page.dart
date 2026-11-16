@@ -24,6 +24,7 @@
 
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
@@ -39,12 +40,15 @@ import '../../bridge/js_bridge.dart';
 import '../../bridge/web_permission.dart';
 import '../../core/autotest.dart';
 import '../../core/globals.dart';
+import '../../core/miniapp_asset_server.dart';
+import '../../core/miniapp_web_origin.dart';
 import '../../core/native_bridge.dart';
 import '../../data/models/bundle_manifest.dart';
 import '../../data/models/miniapp_permission.dart';
 import '../../data/models/miniapp_session.dart';
 import '../../data/repositories/bundle_repository.dart';
 import '../../data/services/download_service.dart';
+import '../../data/services/miniapp_package_service.dart';
 import '../../data/services/permission_service.dart';
 import '../../theme/app_theme.dart';
 import '../../theme/md3e_interceptor.dart';
@@ -83,17 +87,13 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
     verticalScrollBarEnabled: true,
     // 自己实现链接拦截（tel: / mailto: 等转交系统）
     useShouldOverrideUrlLoading: true,
-    // 开启资源拦截：主文档在进入解析器之前取出，把 MD3E 样式与 DOM 拦截脚本
-    // 写进 <head>（见 theme/md3e_interceptor.dart）。不开这个开关，
-    // shouldInterceptRequest 回调根本不会被调用。
+    // 开启资源拦截：本地包的页面与子资源都从这里出（见 _serveLocalResource）。
+    // 不开这个开关，shouldInterceptRequest 回调根本不会被调用。
     useShouldInterceptRequest: true,
-    // 本地包（file://）必须允许文件访问，否则 WebView 直接拒绝加载。
-    // 注意这三个开关的**区别**，别只开错的那个：
-    //   allowFileAccess               → 允许 WebView 加载 file:// 的**页面本身**
-    //   allowFileAccessFromFileURLs   → 允许 file:// 页面里的 JS 去读别的 file://
-    //   allowUniversalAccessFromFileURLs → 允许 file:// 页面发任意跨域请求
-    // 只开第一个：页面能加载，但页面里的脚本**不能**顺着文件系统爬出去，
-    // 也不能绕过 CORS 读别处 —— 这对一个「从网络下载来的 HTML」是必须的。
+    // 本地包**不再走 file://**（module script 在 file:// 下会被 CORS 拒，
+    // 见 core/miniapp_web_origin.dart），所以这三个开关现在只是兜底：
+    // 页面里若自己写了 file:// 资源，仍然只允许「读页面本身」，不允许顺着
+    // 文件系统爬、也不允许绕过 CORS —— 本地包的内容依旧按不可信处理。
     allowFileAccess: true,
     allowFileAccessFromFileURLs: false,
     allowUniversalAccessFromFileURLs: false,
@@ -393,7 +393,7 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
   @override
   Widget build(BuildContext context) {
     // 既没有已装包也没有本地资源：给个明确的错误页，而不是白屏
-    if (_session.fileUri == null && _session.localAsset == null) {
+    if (_session.webUri == null && _session.localAsset == null) {
       return _shell(
         child: const ErrorView(title: '无法打开', message: '这个小程序还没有安装到本机，也没有内置资源'),
       );
@@ -470,7 +470,7 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
               child: ErrorView(
                 title: '页面加载失败',
                 message: _pageError!,
-                detail: _session.fileUri ?? _session.localAsset,
+                detail: _session.entry,
                 onRetry: _reload,
               ),
             ),
@@ -512,14 +512,56 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
     ),
   );
 
+  /// 资源服务器：只在拿到 miniapps 根目录后构造一次。
+  ///
+  /// 拦截回调是高频的，每次都 await path_provider 太浪费；
+  /// 根目录在进程生命周期里也不会变。
+  MiniappAssetServer? _assets;
+
+  /// 把虚拟源上的请求交给资源服务器。
+  ///
+  /// 返回 null = 不是我们的请求（外链 / 其它 scheme），交给 WebView 默认处理。
+  Future<WebResourceResponse?> _serveLocalResource(
+    WebResourceRequest request,
+    Map<String, dynamic> payload,
+  ) async {
+    final WebUri url = request.url;
+    if (!MiniappWebOrigin.owns(url)) return null;
+
+    MiniappAssetServer? server = _assets;
+    if (server == null) {
+      final InstalledPackage? pkg = _session.installedPackage;
+      if (pkg == null) return null; // asset 模式不会有虚拟源请求
+      try {
+        final Directory root =
+            await MiniappPackageService.instance.rootDirectory();
+        server = _assets = MiniappAssetServer(
+          root: root,
+          appId: pkg.appId,
+          version: pkg.version,
+        );
+      } catch (e) {
+        lemonLog('Miniapp', '读取 miniapps 目录失败：$e');
+        return MiniappAssetServer.notFound(url);
+      }
+    }
+
+    return server.respond(
+      url,
+      // 页面先插 MD3E 样式再交给解析器（子资源不走这里）
+      documentRenderer: (Uri u, File f) =>
+          Md3eInterceptor.intercept(url: u, file: f, payload: payload),
+    );
+  }
+
   Widget _buildWebViewWidget(Map<String, dynamic> payload) {
     //
     // 入口选择（互斥，按优先级）：
     //
     //   1. 内置 asset → initialData 塞 HTML 字符串
-    //   2. 已安装的包 → initialUrlRequest + file:// 地址
+    //   2. 已安装的包 → initialUrlRequest + 虚拟 https 地址
     //
-    // ⚠ 这两条路的取舍是**用真机日志换来的**（0.6.1 → 0.6.2 白屏排查）：
+    // ⚠ 这几条路的取舍是**用真机日志换来的**（0.6.1 → 0.6.2 白屏排查）：
     //
     //   * `initialFile` **绝对不能用**：它走 `Util.getUrlAsset()`，
     //     是 **Flutter asset 路径**语义（拼 file:///android_asset/flutter_assets/…）。
@@ -530,33 +572,35 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
     //     是唯一被验证过可用的。0.6.2 曾把它改成「释放成临时文件 + file://」，
     //     结果同样白屏（日志显示原生侧连 WebView 都没创建）—— 已回退。
     //
-    //   * **本地包用 initialUrlRequest + file://**。它有真实的 origin，
-    //     相对资源能解析；而「包 + UserScript」的组合还没有真机验证，
-    //     如果后续发现 UserScript 在 file:// 下不执行，备选方案是
-    //     `shouldOverrideUrlLoading` + `loadDataWithBaseURL` 注入。
+    //   * **本地包不能再用 file://**：包里的 `<script type="module">` 走 CORS 模式，
+    //     file:// 的 origin 是 null，Chromium 直接拒绝加载 app.js ——
+    //     页面骨架在、脚本不跑。改成虚拟 https 源
+    //     `https://miniapp.lemonlite.local/<appId>/<version>/…`，
+    //     由 shouldInterceptRequest 从磁盘喂内容：同源、安全上下文、纯本地。
+    //     详见 core/miniapp_web_origin.dart。
     //
     // 共同前提（见 build 里的 guard）：数据必须在建 WebView 之前就绪 ——
     // `_webViewWidget ??= ...` 只执行一次，晚到的数据永远不会被用上。
     final String? assetHtml = _localHtml;
-    final String? fileUri = _session.fileUri;
+    final Uri? webUri = _session.webUri;
 
     lemonLog(
       'Miniapp',
       '构建 WebView：模式=${assetHtml != null
               ? "initialData(asset)"
-              : fileUri != null
-              ? "fileUrl"
+              : webUri != null
+              ? "localOrigin"
               : "无入口"}'
           ' · html=${assetHtml == null ? "null" : "${assetHtml.length} 字符"}'
-          ' · fileUri=$fileUri'
+          ' · webUri=$webUri'
           ' · scripts=${_buildUserScripts(payload, _payloads, _initialGeoPolicy()).length}',
     );
 
     return InAppWebView(
-      // 本地包：file:// 地址。**不要**用 initialFile（asset 语义，见上）。
-      initialUrlRequest: fileUri == null
+      // 本地包：虚拟 https 地址。**不要**用 initialFile（asset 语义，见上）。
+      initialUrlRequest: webUri == null
           ? null
-          : URLRequest(url: WebUri(fileUri)),
+          : URLRequest(url: WebUri(webUri.toString())),
       // 内置 asset：HTML 字符串。baseUrl 给 https 以便相对资源按 web 解析。
       initialData: assetHtml == null
           ? null
@@ -570,21 +614,23 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
       initialUserScripts: UnmodifiableListView<UserScript>(
         _buildUserScripts(payload, _payloads, _initialGeoPolicy()),
       ),
-      // ------------------------------------------------------------ 文档拦截
+      // -------------------------------------------------------- 本地资源服务
       //
-      // 小程序包是本地 file:// 页面。这里在主文档被解析之前把它取出来，
-      // 把「主题变量 + MD3E 基础样式 + DOM 拦截脚本」插到 <head> 最前面，
-      // 再原样交还给 WebView（相对资源仍然按原 URL 解析）。
+      // 小程序的虚拟源 `https://miniapp.lemonlite.local/<appId>/<version>/…`
+      // 下**所有**请求都由这里从磁盘喂内容（详见 core/miniapp_web_origin.dart）：
       //
-      // 为什么不在 onLoadStop 里注入：那时页面已经按浏览器默认样式画完第一帧了，
-      // 用户会看到一次「旧样式 → 新样式」的跳变；标签页里的 CSP 也可能拒绝
-      // 动态插入的 <style>。改写文档没有这两个问题。
+      //   页面（.html）→ 先做 MD3E 改写（主题变量 + 基础样式 + DOM 拦截脚本
+      //                  写进 <head> 最前面），再交给 WebView 解析；
+      //   其它子资源   → 原样返回字节 + 正确 MIME（字体、wasm 的 MIME 错了会被拒）。
       //
-      // 返回 null = 不接管（非主文档 / 非 file:// / 读不到文件），
-      // WebView 会按它自己的默认流程加载。
+      // 为什么不在 onLoadStop 里注入样式：那时页面已经按浏览器默认样式画完第一帧，
+      // 用户会看到一次「旧样式 → 新样式」的跳变；页面 CSP 也可能拒绝动态 <style>。
+      // 改写文档没有这两个问题。
+      //
+      // 返回 null = 不接管（外链 / 其它 scheme），交给 WebView 默认流程。
       shouldInterceptRequest:
           (InAppWebViewController controller, WebResourceRequest request) =>
-              Md3eInterceptor.intercept(request: request, payload: payload),
+              _serveLocalResource(request, payload),
       onWebViewCreated: (InAppWebViewController controller) {
         lemonLog('Miniapp', 'WebView 已创建');
         _onWebViewCreated(controller);

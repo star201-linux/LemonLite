@@ -36,8 +36,9 @@ class MiniappSession {
 
   /// 本机已安装的小程序包（0.6 起主要入口）。
   ///
-  /// 它指向 `miniapps/<appId>/<version>/`，WebView 用 file:// 打开其中的
-  /// 入口文件 —— 断网也能用，而且「装的是哪一版」是明确的。
+  /// 它指向 `miniapps/<appId>/<version>/`，WebView 通过虚拟 https 源打开其中的
+  /// 入口文件（见 core/miniapp_web_origin.dart）—— 断网也能用，
+  /// 而且「装的是哪一版」是明确的。
   final InstalledPackage? installedPackage;
 
   /// 本地 assets 入口
@@ -98,11 +99,18 @@ class MiniappSession {
 
   String get title => titleNotifier.value;
 
-  /// 入口地址（后台列表里展示用）
+  /// 入口地址（后台列表里展示用）。真实文件路径，排障时一眼能看到装在哪。
   String get entry =>
       installedPackage?.entryUri ?? localAsset ?? '（无入口）';
 
-  /// WebView 要加载的 file:// 地址（本地包时非空）
+  /// WebView 要加载的虚拟 https 地址（本地包时非空）
+  ///
+  /// 为什么不用 file://：包里的 `<script type="module">` 在 file:// 下
+  /// 会被 CORS 拦掉，见 core/miniapp_web_origin.dart 的完整说明。
+  Uri? get webUri => installedPackage?.webUri;
+
+  /// 入口的 file:// 地址。只用来给 bundle 的 matches 做「本地包」判断 ——
+  /// 模块的匹配规则通常按 http(s) 域名写，本地包只该吃 `*`。
   String? get fileUri => installedPackage?.entryUri;
 
   bool get isBackground => !isForeground;

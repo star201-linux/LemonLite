@@ -243,7 +243,7 @@ class _AppManageDetailPageState extends State<AppManageDetailPage> {
 
     // 顺序很重要：
     //   1. 先把这个小程序的后台会话关掉 —— 它的 WebView 已经加载了
-    //      file:// 的页面，文件被删掉后再继续跑只会得到一堆「资源丢失」。
+    //      本地页面的文件被删掉后再继续跑只会得到一堆「资源丢失」。
     //   2. 再删包目录（这才是「移除」应有的含义：不占空间了）。
     //   3. 数据是可选项（用户可能只是不想留文件，但想保留记录）。
     await MiniappHost.instance.close(widget.appId);

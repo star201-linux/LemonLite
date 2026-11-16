@@ -14,7 +14,7 @@
 //
 // ⚠ 测试环境的限制：flutter_inappwebview 没有测试用的平台实现，
 // 一旦真的构建 InAppWebView 就会抛 assert。所以这里的断言全部
-// **停在 WebView 之前**（检查 Loading 状态、检查 session 的 fileUri），
+// **停在 WebView 之前**（检查 Loading 状态、检查 session 的 webUri），
 // 而不是去检查 WebView 内部字段。这已经能覆盖那个 bug：
 // bug 的本质是「数据没就绪就往下走」，而「往下走」就是构建 WebView。
 
@@ -64,7 +64,7 @@ void main() {
   });
 
   group('本地包模式', () {
-    test('fileUri 是 file:// 且指向入口（不能走 initialFile 的 asset 语义）', () {
+    test('webUri 是虚拟 https 源（file:// 会让 module script 被 CORS 拒）', () {
       final MiniappSession session = MiniappSession(
         appId: 'pkg.test',
         title: '包',
@@ -78,15 +78,19 @@ void main() {
       );
       addTearDown(session.dispose);
 
-      // MiniappSessionView 把它传给 initialUrlRequest + WebUri(fileUri)。
+      // MiniappSessionView 把它传给 initialUrlRequest。
       // 插件里 initialFile 那条路是 asset 语义（拼
       // file:///android_asset/flutter_assets/...），拿文件系统路径去开
       // 必然 404 且只在 logcat 留一行 —— 页面上就是空白。
-      expect(session.fileUri, isNotNull);
-      expect(session.fileUri, startsWith('file://'));
-      expect(session.fileUri, endsWith('/1.0.0/index.html'));
-      // entry 属性（后台列表展示用）也应是同一个地址
-      expect(session.entry, session.fileUri);
+      expect(session.webUri, isNotNull);
+      expect(
+        session.webUri.toString(),
+        startsWith('https://miniapp.lemonlite.local/'),
+      );
+      expect(session.webUri.toString(), endsWith('/pkg.test/1.0.0/index.html'));
+      // entry 仍是真实文件路径：排障时一眼能看到包装在哪
+      expect(session.entry, startsWith('file://'));
+      expect(session.entry, endsWith('/pkg/1.0.0/index.html'));
     });
   });
 

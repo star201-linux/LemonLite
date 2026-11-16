@@ -594,7 +594,7 @@ class _AppDetailPageState extends State<AppDetailPage> {
         title: app.name,
         iconUrl: app.icon,
         declaredPermissions: _declaredPermissions,
-        // 已经装好的本地包：会话直接用 file:// 打开
+        // 已经装好的本地包：会话用虚拟 https 源打开
         installedPackage: pkg,
       );
     }

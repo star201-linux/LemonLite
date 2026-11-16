@@ -8,7 +8,7 @@
 //        ↓  比对本地已装版本
 //   /data/user/0/<包名>/files/miniapps/<appId>/<version>/
 //        ↓  完全不同就下载 zip → 校验 sha256 → 解压
-//   WebView 用 file:// 打开 <dir>/<entry>
+//   WebView 用虚拟 https 源打开 <dir>/<entry>（见 core/miniapp_web_origin.dart）
 //
 // 为什么不再用远程网页：
 //   * 断网就用不了（小程序本该是「装好的东西」）
@@ -36,6 +36,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../../core/globals.dart';
+import '../../core/miniapp_web_origin.dart';
 import '../models/miniapp_metadata.dart';
 
 /// 一个本地已安装的小程序包
@@ -63,8 +64,18 @@ class InstalledPackage {
   /// 入口文件的绝对路径
   String get entryPath => p.join(dir, entry);
 
-  /// WebView 用的 file:// 地址
+  /// 入口的 file:// 地址 —— 只用于排障展示，WebView 不再加载它。
+  ///
+  /// 包里的 `<script type="module">` 在 file:// 下会被 CORS 挡掉（见
+  /// core/miniapp_web_origin.dart 的说明），真正给 WebView 的是 [webUri]。
   String get entryUri => Uri.file(entryPath).toString();
+
+  /// WebView 实际加载的虚拟 https 地址
+  Uri get webUri => MiniappWebOrigin.entryUrl(
+    appId: appId,
+    version: version,
+    entry: entry,
+  );
 
   bool get isUsable => File(entryPath).existsSync();
 }
@@ -211,6 +222,10 @@ class MiniappPackageService {
   Directory? debugRootOverride;
 
   /// miniapps/ 根目录
+  ///
+  /// WebView 的资源拦截器也要用它把虚拟 URL 映射回文件，所以对外暴露一份。
+  Future<Directory> rootDirectory() => _root();
+
   Future<Directory> _root() async {
     final Directory? override = debugRootOverride;
     if (override != null) {

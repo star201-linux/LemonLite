@@ -39,6 +39,7 @@ import 'dart:typed_data';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 import '../core/globals.dart';
+import '../core/miniapp_web_origin.dart';
 import 'md3e_styles.dart';
 
 /// 单条拦截缓存：文件没变、主题没变就直接复用上次的改写结果。
@@ -65,31 +66,24 @@ class Md3eInterceptor {
 
   /// 该请求要不要走拦截。
   ///
-  /// 只拦**主文档**且只拦 `file://`：
-  ///   * 子资源（图片 / 脚本 / 字体）改写没有意义，还会让内存翻倍；
-  ///   * 小程序包是本机文件，`http(s)` 只可能是页面里的外链，不该动。
-  static bool shouldIntercept(WebResourceRequest request) {
-    if (request.isForMainFrame != true) return false;
-    final WebUri url = request.url;
-    if (url.scheme != 'file') return false;
-    final String path = url.path.toLowerCase();
-    return path.endsWith('.html') ||
-        path.endsWith('.htm') ||
-        !path.contains('.');
-  }
+  /// 只拦**主文档**。子资源（图片 / 脚本 / 字体）改写没有意义，还会让内存翻倍；
+  /// 小程序的页面是本地包里的 .html，由虚拟源 `miniapp.lemonlite.local` 提供
+  /// （见 core/miniapp_web_origin.dart），外链页面不该动。
+  static bool shouldIntercept(Uri url) =>
+      MiniappWebOrigin.owns(url) && MiniappWebOrigin.isDocument(url);
 
   /// 主文档拦截入口。返回 null 表示「按原样加载」。
   ///
+  /// [file] 是虚拟 URL 映射出来的真实文件（调用方已做越界检查）。
   /// [payload] 是 ThemeInjector.toThemePayload 的结果 —— 文档里直接内联
   /// `--md-*` 变量，保证首帧颜色就是对的（不用等 UserScript 跑完）。
   static Future<WebResourceResponse?> intercept({
-    required WebResourceRequest request,
+    required Uri url,
+    required File file,
     required Map<String, dynamic> payload,
   }) async {
-    if (!shouldIntercept(request)) return null;
-
-    final String path = request.url.toFilePath();
-    final File file = File(path);
+    final String path = url.path;
+    final String cacheKey = url.toString();
 
     FileStat stat;
     try {
@@ -101,7 +95,7 @@ class Md3eInterceptor {
     }
 
     final String themeHash = _themeHash(payload);
-    final _CacheEntry? cached = _cache[path];
+    final _CacheEntry? cached = _cache[cacheKey];
     if (cached != null &&
         cached.length == stat.size &&
         cached.modified == stat.modified &&
@@ -120,7 +114,7 @@ class Md3eInterceptor {
     }
 
     final String rewritten = rewriteHtml(html, payload);
-    _cache[path] = _CacheEntry(
+    _cache[cacheKey] = _CacheEntry(
       modified: stat.modified,
       length: stat.size,
       themeHash: themeHash,
