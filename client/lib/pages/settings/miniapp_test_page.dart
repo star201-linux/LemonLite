@@ -28,6 +28,8 @@ import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
 import '../../core/autotest.dart';
+import '../../data/models/miniapp_permission.dart';
+import '../../data/services/application_registry.dart';
 import '../../data/services/miniapp_package_service.dart';
 import '../miniapp/miniapp_host.dart';
 
@@ -125,12 +127,23 @@ class _MiniappTestPageState extends State<MiniappTestPage> {
       final InstalledPackage pkg = await MiniappPackageService.instance
           .installLocalZip(bytes, fileName: file.name);
 
+      // 导入的包也要进应用清单：它已经落在 app/<appId>/ 里占着磁盘，
+      // 就该在「应用管理」里看得见、能管权限、能删掉。
+      // 名字 / 声明权限以包里的 metadata.json 为准。
+      await ApplicationRegistry.instance.ensureKnown(
+        appId: pkg.appId,
+        name: pkg.metadata?.name ?? _titleOf(file.name),
+        permissions: pkg.metadata?.permissionIds,
+      );
+
       if (!mounted) return;
       MiniappHost.instance.open(
         appId: pkg.appId,
         title: pkg.metadata?.name ?? _titleOf(file.name),
         installedPackage: pkg,
         isTransient: true,
+        declaredPermissions:
+            pkg.metadata?.declaredPermissions ?? const <MiniappPermission>[],
       );
     } on PackageException catch (e) {
       if (mounted) setState(() => _error = e.message);

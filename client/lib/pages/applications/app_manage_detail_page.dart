@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 
 import '../../data/services/application_registry.dart';
 import '../../data/services/icon_cache_service.dart';
+import '../../data/services/installed_app_info.dart';
 import '../../data/services/miniapp_package_service.dart';
 import '../../data/services/miniapp_storage_service.dart';
 import '../../data/services/update_service.dart';
@@ -48,6 +49,9 @@ class _AppManageDetailPageState extends State<AppManageDetailPage> {
   /// 本地缓存的图标（有就优先显示，断网也有图）
   String? _localIcon;
 
+  /// 包内 metadata.json 的展示信息：这一页显示的就是「装在本机的这一个包」
+  InstalledAppInfo? _info;
+
   @override
   void initState() {
     super.initState();
@@ -55,23 +59,28 @@ class _AppManageDetailPageState extends State<AppManageDetailPage> {
       widget.appId,
       name: widget.appName,
     );
-    _loadIcon();
+    _loadInfo();
   }
 
-  Future<void> _loadIcon() async {
-    final RegisteredApp? app = ApplicationRegistry.instance.byId(widget.appId);
-    final String? icon = await IconCacheService.instance.ensure(
+  /// 名称 / 图标 / 版本一律读包自己的 JSON（见 installed_app_info.dart）
+  Future<void> _loadInfo() async {
+    final InstalledAppInfo info = await loadInstalledAppInfo(widget.appId);
+    String? icon = info.iconPath;
+    icon ??= await IconCacheService.instance.ensure(
       appId: widget.appId,
-      url: app?.icon,
+      url: info.iconUrl,
     );
     if (!mounted) return;
-    setState(() => _localIcon = icon);
+    setState(() {
+      _info = info;
+      _localIcon = icon;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     final RegisteredApp? app = ApplicationRegistry.instance.byId(widget.appId);
-    final String name = app?.displayName ?? widget.appName;
+    final String name = _info?.name ?? app?.displayName ?? widget.appName;
 
     return Scaffold(
       appBar: AppBar(title: Text(name)),
@@ -132,8 +141,8 @@ class _AppManageDetailPageState extends State<AppManageDetailPage> {
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
             child: Text(
-              '移除只影响本机的应用清单与权限记录。小程序本身是远程页面，'
-              '下次从主页再次打开时它会重新出现在这里。',
+              '移除会删掉本机这一个包（含 app.zip）以及应用清单与权限记录。'
+              '下次从主页再次打开同一个小程序时会重新下载安装。',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
@@ -146,13 +155,14 @@ class _AppManageDetailPageState extends State<AppManageDetailPage> {
 
   Widget _header(BuildContext context, RegisteredApp? app, String name) {
     final ColorScheme scheme = Theme.of(context).colorScheme;
+    final InstalledAppInfo? info = _info;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
       child: Row(
         children: <Widget>[
           AppIcon(
             name: name,
-            iconUrl: app?.icon,
+            iconUrl: info?.iconUrl ?? app?.icon,
             localPath: _localIcon,
             size: 64,
           ),
@@ -164,7 +174,9 @@ class _AppManageDetailPageState extends State<AppManageDetailPage> {
                 Text(name, style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 4),
                 SelectableText(
-                  widget.appId,
+                  '${widget.appId}'
+                  '${(info?.version ?? '').isEmpty ? '' : ' · ${info!.versionLabel}'}'
+                  '${info != null && !info.installed ? ' · 安装包已丢失' : ''}',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),

@@ -22,6 +22,7 @@
 //   * initialSettings 做成 static final，保证 widget 恒等；
 //   * WebView widget 只构建一次并缓存（_webViewWidget），主题变化只走 JS 热更新。
 
+import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
@@ -194,25 +195,32 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
   }
 
   /// 把策略推给页面里的 shim（坐标取整与后台拦截都在那一边做）。
-  void _pushGeoPolicy() {
+  ///
+  /// 返回的 Future 可以 await：授权回调里**必须**等它落定再允许这次定位，
+  /// 否则这一帧拿到的还是旧策略（选了「近似」却给出米级坐标）。
+  Future<void> _pushGeoPolicy() async {
     final InAppWebViewController? controller = _controller;
     if (controller == null) return;
-    controller.evaluateJavascript(
-      source:
-          'window.__lemonliteApplyGeo && '
-          'window.__lemonliteApplyGeo(${jsonEncode(_geoPolicy())})',
-    );
+    try {
+      await controller.evaluateJavascript(
+        source:
+            'window.__lemonliteApplyGeo && '
+            'window.__lemonliteApplyGeo(${jsonEncode(_geoPolicy())})',
+      );
+    } catch (e) {
+      lemonLog('Miniapp', '下发定位策略失败：$e');
+    }
   }
 
   void _onGeoPolicyChanged() {
     if (!mounted) return;
-    _pushGeoPolicy();
+    unawaited(_pushGeoPolicy());
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    _pushGeoPolicy();
+    unawaited(_pushGeoPolicy());
   }
 
   /// 读取已启用的模块。
@@ -512,7 +520,7 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
     ),
   );
 
-  /// 资源服务器：只在拿到 miniapps 根目录后构造一次。
+  /// 资源服务器：只在拿到 app/ 根目录后构造一次。
   ///
   /// 拦截回调是高频的，每次都 await path_provider 太浪费；
   /// 根目录在进程生命周期里也不会变。
@@ -535,13 +543,9 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
       try {
         final Directory root =
             await MiniappPackageService.instance.rootDirectory();
-        server = _assets = MiniappAssetServer(
-          root: root,
-          appId: pkg.appId,
-          version: pkg.version,
-        );
+        server = _assets = MiniappAssetServer(root: root, appId: pkg.appId);
       } catch (e) {
-        lemonLog('Miniapp', '读取 miniapps 目录失败：$e');
+        lemonLog('Miniapp', '读取 app 目录失败：$e');
         return MiniappAssetServer.notFound(url);
       }
     }
@@ -663,6 +667,21 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
                   appName: _session.title,
                 );
 
+            // 每个被请求的权限都记一笔（允许算调用、拒绝算被拦）。
+            // 未在 metadata.json 里声明的权限靠这条记录才能出现在权限管理里。
+            final PermissionService? permsUse = PermissionService.maybeInstance;
+            if (permsUse != null) {
+              for (final MiniappPermission p in ask.permissions) {
+                unawaited(
+                  permsUse.recordUse(
+                    _session.appId,
+                    p,
+                    denied: !granted.contains(p),
+                  ),
+                );
+              }
+            }
+
             // 第二层：Android 运行时权限。
             //
             // 顺序至关重要 —— 必须**先**拿到系统权限，再回 ALLOW。
@@ -711,12 +730,26 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
       // （见 bridge/geo_policy_js.dart），两者合起来才是完整的授权。
       onGeolocationPermissionsShowPrompt:
           (InAppWebViewController controller, String origin) async {
+            // 「谁在要什么」必须留痕：包里的 metadata.json 可能根本没写
+            // location，但页面调了 navigator.geolocation —— 这种情况下
+            // 它也得出现在权限管理里（标为「运行时请求」），否则用户
+            // 既看不到、也没法撤销。
             final PermissionAnswer answer = await PermissionPromptService.instance
                 .ensure(
                   _session.appId,
                   MiniappPermission.location,
                   appName: _session.title,
                 );
+            final PermissionService? permsUse = PermissionService.maybeInstance;
+            if (permsUse != null) {
+              unawaited(
+                permsUse.recordUse(
+                  _session.appId,
+                  MiniappPermission.location,
+                  denied: !answer.allowed,
+                ),
+              );
+            }
             if (!answer.allowed) {
               await autotestLog('定位请求被拒绝：$origin');
               return GeolocationPermissionShowPromptResponse(
@@ -747,7 +780,9 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
             );
 
             // 页面侧立刻按新策略走：近似要取整、后台要拦。
-            _pushGeoPolicy();
+            // **必须 await**：策略只在这次定位的坐标投递之前落地，
+            // 才谈得上「选了近似就只给近似」。
+            await _pushGeoPolicy();
 
             return GeolocationPermissionShowPromptResponse(
               origin: origin,
@@ -801,7 +836,7 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
         // 页面加载完，用「当前最新」主题覆盖一次（UserScript 里的快照可能已过期）
         _syncTheme(Theme.of(context).colorScheme, force: true);
         // 定位策略同理：文档开始时的快照可能早于权限变更
-        _pushGeoPolicy();
+        unawaited(_pushGeoPolicy());
       },
       onReceivedError:
           (

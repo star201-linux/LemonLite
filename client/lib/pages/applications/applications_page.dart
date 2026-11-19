@@ -25,6 +25,7 @@ import '../../data/models/miniapp_permission.dart';
 import '../../data/repositories/market_repository.dart';
 import '../../data/services/application_registry.dart';
 import '../../data/services/icon_cache_service.dart';
+import '../../data/services/installed_app_info.dart';
 import '../../data/services/miniapp_package_service.dart';
 import '../../data/services/miniapp_storage_service.dart';
 import '../../data/services/permission_service.dart';
@@ -50,6 +51,7 @@ class _ApplicationsSnapshot {
     required this.apps,
     required this.usage,
     required this.icons,
+    required this.infos,
   });
 
   final List<RegisteredApp> apps;
@@ -59,6 +61,9 @@ class _ApplicationsSnapshot {
 
   /// appId → 本地图标路径（没缓存到就是 null）
   final Map<String, String?> icons;
+
+  /// appId → 包内 metadata.json 给出的展示信息（应用管理以它为准）
+  final Map<String, InstalledAppInfo> infos;
 
   int get totalBytes => usage.values.fold<int>(
     0,
@@ -111,12 +116,20 @@ class _ApplicationsPageState extends State<ApplicationsPage> {
           for (final RegisteredApp app in apps) app.id: app.icon,
         });
 
+    // 应用管理显示的是「本机装的东西」，名称 / 图标 / 版本一律以包内
+    // metadata.json 为准（见 services/installed_app_info.dart）。
+    // 市场数据只在包没有 metadata.json 时兜底，不再反向覆盖。
+    final Map<String, InstalledAppInfo> infos = await loadInstalledAppInfos(
+      apps.map((RegisteredApp a) => a.id),
+    );
+
     return _ApplicationsSnapshot(
       apps: apps,
       usage: <String, MiniappStorageUsage>{
         for (final MiniappStorageUsage u in usages) u.appId: u,
       },
       icons: icons,
+      infos: infos,
     );
   }
 
@@ -189,6 +202,7 @@ class _ApplicationsPageState extends State<ApplicationsPage> {
                       for (final RegisteredApp app in data.apps)
                         _ApplicationTile(
                           app: app,
+                          info: data.infos[app.id],
                           usage: data.usage[app.id],
                           localIcon: data.icons[app.id],
                           update: UpdateService.instance.of(app.id),
@@ -295,6 +309,7 @@ class _SummaryCard extends StatelessWidget {
 class _ApplicationTile extends StatelessWidget {
   const _ApplicationTile({
     required this.app,
+    required this.info,
     required this.usage,
     required this.localIcon,
     required this.update,
@@ -302,6 +317,10 @@ class _ApplicationTile extends StatelessWidget {
   });
 
   final RegisteredApp app;
+
+  /// 包内 metadata.json 的展示信息；为 null 时退回清单里的名字
+  final InstalledAppInfo? info;
+
   final MiniappStorageUsage? usage;
   final String? localIcon;
   final PackageUpdate? update;
@@ -328,7 +347,15 @@ class _ApplicationTile extends StatelessWidget {
         )
         .length;
 
+    final String name = info?.name ?? app.displayName;
+    final String? iconPath = info?.iconPath ?? localIcon;
+
     final List<String> parts = <String>[app.id];
+    if ((info?.version ?? '').isNotEmpty) parts.add(info!.versionLabel);
+    if (info != null && !info!.installed) parts.add('安装包已丢失');
+    if (info != null && info!.installed && !info!.fromMetadata) {
+      parts.add('包内无 metadata.json');
+    }
     if (update != null) parts.add('有新版本 ${update!.latestVersion}');
     if (usage != null) parts.add(usage!.summaryLabel);
     if (granted > 0) parts.add('已允许 $granted 项权限');
@@ -343,13 +370,14 @@ class _ApplicationTile extends StatelessWidget {
         isLabelVisible: update != null,
         smallSize: 10,
         child: AppIcon(
-          name: app.displayName,
-          iconUrl: app.icon,
-          localPath: localIcon,
+          name: name,
+          // 包内图标优先；没有才用清单里缓存的市场图标（断网时退回首字）
+          iconUrl: info?.iconUrl ?? app.icon,
+          localPath: iconPath,
           size: 44,
         ),
       ),
-      title: Text(app.displayName),
+      title: Text(name),
       subtitle: Text(
         parts.join(' · '),
         maxLines: 2,
@@ -372,8 +400,8 @@ class _ApplicationTile extends StatelessWidget {
         await Navigator.of(context).push(
           AppDetailPage.routeForRegisteredApp(
             appId: app.id,
-            name: app.displayName,
-            icon: app.icon,
+            name: name,
+            icon: info?.iconPath,
           ),
         );
         onChanged();

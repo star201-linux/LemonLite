@@ -1,37 +1,45 @@
 // lib/data/services/miniapp_package_service.dart
 //
-// 小程序包的下载 / 校验 / 解压 / 版本管理。
+// 小程序包的下载 / 校验 / 解压 / 安装。
 //
-// 数据流（这是 0.6 的核心变化）：
+// 数据流（0.7 起）：
 //
 //   服务端 /api/market/feed  → 拿到 packageUrl / version / sha256
 //        ↓  比对本地已装版本
-//   /data/user/0/<包名>/files/miniapps/<appId>/<version>/
-//        ↓  完全不同就下载 zip → 校验 sha256 → 解压
+//   /data/data/<包名>/app/<appId>/          ← 解压后的包，平铺在根
+//        ↓  需要更新就下载 zip → 校验 sha256 → 解到暂存目录 → 整体换入
 //   WebView 用虚拟 https 源打开 <dir>/<entry>（见 core/miniapp_web_origin.dart）
 //
-// 为什么不再用远程网页：
-//   * 断网就用不了（小程序本该是「装好的东西」）
-//   * 每次打开都要重新拉页面
-//   * 没有版本概念 —— 用户没法知道装的是哪一版，也没法回滚
+// 目录布局（就这一种，没有版本子目录）：
 //
-// 目录布局：
-//   miniapps/<appId>/<version>/index.html     ← 解压后的包
-//   miniapps/<appId>/<version>/.complete      ← 完成标记（解压成功的唯一凭据）
+//   app/<appId>/index.html       ← 解压后的包内容，入口就在根上
+//   app/<appId>/app.zip          ← 原始包（重命名为 app.zip，便于人工取回）
+//   app/<appId>/.install.json    ← {version, entry, installedAt, sha256, source}
 //
-// 为什么用「.complete 标记」而不是「目录存在就算装好」：
-//   解压到一半被系统杀掉，目录会存在但不完整。下次打开就会白屏/404，
-//   而用户完全不知道发生了什么。写标记是最后一步，
-//   没有标记的目录一律当作损坏，直接删掉重下。
+// 为什么这次改掉 `<appId>/<version>/`：
+//   * 我们要的是一个「应用目录」，不是一堆版本目录。设备上 /data/data/<pkg>/app/
+//     下每个小程序一个文件夹，用文件管理器点进去就能看到它自己的文件；
+//   * 原包必须留在本机（离线重装、排障、导出），版本子目录里再塞一份 zip
+//     会让「哪个是包、哪些是解出来的」混在一起；
+//   * 升级不再需要 `current` 指针：新内容整体换入，换成功才有新目录。
+//
+// 为什么仍然要「先解到暂存目录再整体换入」：
+//   直接往 app/<appId>/ 里解压，中途被杀就会留下「一半旧文件 + 一半新文件」——
+//   页面能打开、但脚本和样式不是同一版，是最难查的一类故障。
+//   暂存目录与目标同盘，rename 是原子的：要么全旧，要么全新。
+//
+// 为什么用「.install.json 标记」而不是「目录存在就算装好」：
+//   解压到一半被系统杀掉，目录会存在但不完整。没有标记的目录一律当作损坏，
+//   删掉重下 —— 而不是让用户面对一个白屏的图标。
 
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
-import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -47,6 +55,8 @@ class InstalledPackage {
     required this.entry,
     required this.dir,
     this.metadata,
+    this.zipPath = '',
+    this.installedAt,
   });
 
   final String appId;
@@ -60,6 +70,11 @@ class InstalledPackage {
 
   /// 解压后的根目录（绝对路径）
   final String dir;
+
+  /// 原包路径（`<dir>/app.zip`）。没有留存原包时为空。
+  final String zipPath;
+
+  final DateTime? installedAt;
 
   /// 入口文件的绝对路径
   String get entryPath => p.join(dir, entry);
@@ -78,6 +93,9 @@ class InstalledPackage {
   );
 
   bool get isUsable => File(entryPath).existsSync();
+
+  /// 原包还在不在（用户可能手工删掉过）
+  bool get hasZip => zipPath.isNotEmpty && File(zipPath).existsSync();
 }
 
 /// 下载进度
@@ -195,7 +213,11 @@ class MiniappPackageService {
 
   static final MiniappPackageService instance = MiniappPackageService._();
 
-  static const String _kCompleteMarker = '.complete';
+  /// 安装信息文件名（应用目录里那个点文件）
+  static const String _kInstallFile = '.install.json';
+
+  /// 原包在应用目录里的名字
+  static const String kZipName = 'app.zip';
 
   /// 单个包解压后的上限。与服务端的上传上限呼应（服务端 20MB 压缩包，
   /// 解压后按 4 倍膨胀留余量）。
@@ -213,15 +235,15 @@ class MiniappPackageService {
 
   Directory? _rootCache;
 
-  /// 测试用：直接指定 miniapps 根目录，绕过 path_provider。
+  /// 测试用：直接指定 app/ 根目录，绕过 path_provider。
   ///
-  /// 「导入本地 zip」的绝大部分逻辑是文件系统操作（解压、找入口、写完成标记、
-  /// 清理旧版本），而这些恰恰是最容易写错的部分。为了测它们去 mock
+  /// 「导入本地 zip」的绝大部分逻辑是文件系统操作（解压、找入口、写安装标记、
+  /// 换入新目录），而这些恰恰是最容易写错的部分。为了测它们去 mock
   /// path_provider 的平台通道不值得 —— 给一个目录覆盖点更直接。
   @visibleForTesting
   Directory? debugRootOverride;
 
-  /// miniapps/ 根目录
+  /// `app/` 根目录
   ///
   /// WebView 的资源拦截器也要用它把虚拟 URL 映射回文件，所以对外暴露一份。
   Future<Directory> rootDirectory() => _root();
@@ -234,21 +256,34 @@ class MiniappPackageService {
     }
     final Directory? cached = _rootCache;
     if (cached != null && cached.existsSync()) return cached;
-    final Directory base = await getApplicationSupportDirectory();
-    final Directory dir = Directory(p.join(base.path, 'miniapps'));
+    // 应用私有根：Android 上是 /data/data/<包名>（getApplicationSupportDirectory
+    // 给的是它下面的 files/，取父目录才是应用根）。
+    //
+    // 直接用 <data>/app/ 而不是 <data>/files/app/：这是「装到哪」这件事对
+    // 用户和排障最直观的答案 —— 用文件管理器进 data/data/<包名>/ 就能看到
+    // 每个小程序一个文件夹。App 对自己整个 data 目录有写权限，这不是越界。
+    // 非 Android 平台没有这个约定，退回 support 目录下的 app/。
+    final Directory files = await getApplicationSupportDirectory();
+    final Directory dir = Directory(
+      Platform.isAndroid
+          ? p.join(files.parent.path, 'app')
+          : p.join(files.path, 'app'),
+    );
     if (!dir.existsSync()) dir.createSync(recursive: true);
     _rootCache = dir;
+    // 迁移与清理只做一次：它们都是「升级后第一次启动」的事
+    await migrateLegacyLayout(Directory(p.join(files.path, 'miniapps')), dir);
+    _sweepLeftovers(dir);
     return dir;
   }
 
-  /// 某个应用的目录（含所有版本）
+  /// 某个应用的目录（解压内容 + app.zip + .install.json 都在这里）
   Future<Directory> appDir(String appId) async {
     final Directory root = await _root();
-    final String safe = _safeSegment(appId);
-    return Directory(p.join(root.path, safe));
+    return Directory(p.join(root.path, _safeSegment(appId)));
   }
 
-  /// appId / version 会被当目录名用，必须挡住 `../` 之类
+  /// appId 会被当目录名用，必须挡住 `../` 之类
   String _safeSegment(String raw) {
     final String v = raw.trim();
     if (v.isEmpty) {
@@ -262,33 +297,27 @@ class MiniappPackageService {
 
   // ---------------------------------------------------------------- 查询
 
-  /// 本地已装的版本。没装 / 装坏了都返回 null。
+  /// 本地已装的包。没装 / 装坏了都返回 null。
   Future<InstalledPackage?> installed(String appId) async {
     final Directory dir = await appDir(appId);
     if (!dir.existsSync()) return null;
 
-    // 目录里可能有多个版本；.complete 里记录了当前生效的那一个
-    final File pointer = File(p.join(dir.path, 'current'));
-    if (!pointer.existsSync()) return null;
+    final File manifestFile = File(p.join(dir.path, _kInstallFile));
+    if (!manifestFile.existsSync()) return null;
 
     final String version;
     final String entry;
+    DateTime? installedAt;
     try {
-      final Map<String, dynamic> meta =
-          jsonDecode(pointer.readAsStringSync()) as Map<String, dynamic>;
-      version = (meta['version'] ?? '').toString();
-      entry = (meta['entry'] ?? 'index.html').toString();
+      final Object? decoded = jsonDecode(manifestFile.readAsStringSync());
+      if (decoded is! Map) return null;
+      version = (decoded['version'] ?? '').toString();
+      entry = (decoded['entry'] ?? 'index.html').toString();
+      installedAt = DateTime.tryParse(
+        (decoded['installedAt'] ?? '').toString(),
+      );
       if (version.isEmpty) return null;
     } catch (_) {
-      return null;
-    }
-
-    final Directory versionDir = Directory(
-      p.join(dir.path, _safeSegment(version)),
-    );
-    if (!File(p.join(versionDir.path, _kCompleteMarker)).existsSync()) {
-      // 目录在但没有完成标记：解压到一半被杀过。当作没装。
-      lemonLog('Package', '$appId v$version 缺少完成标记，视为未安装');
       return null;
     }
 
@@ -296,10 +325,16 @@ class MiniappPackageService {
       appId: appId,
       version: version,
       entry: entry,
-      dir: versionDir.path,
-      metadata: _tryReadMetadata(versionDir),
+      dir: dir.path,
+      metadata: _tryReadMetadata(dir, appId),
+      zipPath: p.join(dir.path, kZipName),
+      installedAt: installedAt,
     );
-    return pkg.isUsable ? pkg : null;
+    if (!pkg.isUsable) {
+      lemonLog('Package', '$appId 缺少入口 $entry，视为未安装');
+      return null;
+    }
+    return pkg;
   }
 
   /// 所有已装的包（升级检查要用）
@@ -310,7 +345,9 @@ class MiniappPackageService {
 
     for (final FileSystemEntity e in root.listSync()) {
       if (e is! Directory) continue;
-      final InstalledPackage? pkg = await installed(p.basename(e.path));
+      final String name = p.basename(e.path);
+      if (name.startsWith('.')) continue; // 暂存 / 回收站
+      final InstalledPackage? pkg = await installed(name);
       if (pkg != null) result.add(pkg);
     }
     return result;
@@ -333,22 +370,16 @@ class MiniappPackageService {
     if (packageUrl.trim().isEmpty) {
       throw const PackageException('no_url', '这个应用还没有可下载的包');
     }
-    final String safeVersion = _safeSegment(version);
-
-    final Directory dir = await appDir(appId);
-    if (!dir.existsSync()) dir.createSync(recursive: true);
+    final String safeId = _safeSegment(appId);
+    final Directory root = await _root();
+    final String stamp = DateTime.now().millisecondsSinceEpoch.toString();
 
     // ---- 1. 下载到临时文件 ----
     //
     // 为什么不整块读进内存：包上限 20MB，读进内存再校验也能跑，
     // 但下载失败时内存里那坨东西没有任何价值；落盘能让断点续传
     // （将来）与「校验前先确认大小」都更容易。
-    final File tmp = File(
-      p.join(
-        dir.path,
-        '.download-${DateTime.now().millisecondsSinceEpoch}.zip',
-      ),
-    );
+    final File tmp = File(p.join(root.path, '.download-$stamp.zip'));
     try {
       final Response<ResponseBody> res = await _dio.get<ResponseBody>(
         packageUrl,
@@ -386,10 +417,9 @@ class MiniappPackageService {
       // 没有它，一个被劫持的网络就能塞进任意 HTML —— 那个 HTML
       // 能调所有 JSBridge 能力。
       final String expected = sha256.trim().toLowerCase();
+      final Uint8List bytes = tmp.readAsBytesSync();
       if (expected.isNotEmpty) {
-        final String actual = crypto.sha256
-            .convert(await tmp.readAsBytes())
-            .toString();
+        final String actual = crypto.sha256.convert(bytes).toString();
         if (actual != expected) {
           throw PackageException('checksum_mismatch', '包校验失败（下载可能被中断或被篡改），已丢弃');
         }
@@ -397,71 +427,58 @@ class MiniappPackageService {
         lemonLog('Package', '$appId 的服务端没给 sha256，跳过完整性校验');
       }
 
-      // ---- 3. 解压到 <appId>/<version>/ ----
-      final Directory target = Directory(p.join(dir.path, safeVersion));
-      // 重装同一版本：先清掉旧的（否则旧文件会和新文件混在一起）
-      if (target.existsSync()) target.deleteSync(recursive: true);
-      target.createSync(recursive: true);
+      // ---- 3. 解压 → 校验入口 → 换入 app/<appId>/ ----
+      final Directory staging = Directory(
+        p.join(root.path, '.staging-$stamp'),
+      );
+      staging.createSync(recursive: true);
+      try {
+        await _extractTo(bytes, staging);
 
-      final List<int> bytes = tmp.readAsBytesSync();
-      await _extractTo(bytes, target);
+        // 读 metadata.json（包自己的身份与权限声明）。
+        //
+        // 这一步在「确认入口」之前：入口路径以包自己的声明为准，
+        // 服务端那份 package_entry 只是没有 metadata.json 时的兜底。
+        //
+        // 允许 zip 外面再套一层目录（作者用「右键压缩文件夹」打出来的包
+        // 就是这样）：metadata.json 在唯一子目录里时，那个子目录就是包根，
+        // 入口要带上这层前缀 —— 与 Service 端 zip_meta.js 的规则保持一致。
+        final File? metadataFile = _findMetadataFile(staging);
+        final MiniappMetadata? metadata = metadataFile == null
+            ? null
+            : _readMetadataFile(metadataFile, appId: safeId);
+        final String prefix = metadataFile == null
+            ? ''
+            : p.relative(p.dirname(metadataFile.path), from: staging.path);
+        final String effectiveEntry = metadata == null
+            ? entry
+            : p.posix.normalize(
+                p.posix.join(prefix.replaceAll('\\', '/'), metadata.entry),
+              );
 
-      // ---- 4. 读 metadata.json（包自己的身份与权限声明） ----
-      //
-      // 这一步在「确认入口」之前：入口路径以包自己的声明为准，
-      // 服务端那份 package_entry 只是没有 metadata.json 时的兜底。
-      //
-      // 允许 zip 外面再套一层目录（作者用「右键压缩文件夹」打出来的包
-      // 就是这样）：metadata.json 在唯一子目录里时，那个子目录就是包根，
-      // 入口要带上这层前缀 —— 与 Service 端 zip_meta.js 的规则保持一致。
-      final File? metadataFile = _findMetadataFile(target);
-      final MiniappMetadata? metadata = metadataFile == null
-          ? null
-          : _readMetadataFile(metadataFile, appId: appId);
-      final String prefix = metadataFile == null
-          ? ''
-          : p.relative(p.dirname(metadataFile.path), from: target.path);
-      final String effectiveEntry = metadata == null
-          ? entry
-          : p.posix.normalize(
-              p.posix.join(prefix.replaceAll('\\', '/'), metadata.entry),
-            );
+        if (!File(p.join(staging.path, effectiveEntry)).existsSync()) {
+          throw PackageException(
+            'missing_entry',
+            '包里没有入口文件 $effectiveEntry（检查 metadata.json 的 entry）',
+          );
+        }
 
-      // ---- 5. 确认入口存在 ----
-      final File entryFile = File(p.join(target.path, effectiveEntry));
-      if (!entryFile.existsSync()) {
-        target.deleteSync(recursive: true);
-        throw PackageException(
-          'missing_entry',
-          '包里没有入口文件 $effectiveEntry（检查 metadata.json 的 entry）',
+        return await _commit(
+          staging: staging,
+          appId: safeId,
+          version: version.isEmpty ? '0' : version,
+          entry: effectiveEntry,
+          sha256: expected,
+          source: packageUrl,
+          zipBytes: bytes,
         );
+      } finally {
+        if (staging.existsSync()) {
+          try {
+            staging.deleteSync(recursive: true);
+          } catch (_) {}
+        }
       }
-
-      // ---- 6. 写完成标记 + 切 current ----
-      //
-      // 顺序很重要：先写 .complete，再更新 current 指针。
-      // 反过来的话，如果两步之间被杀，current 会指向一个没标记的目录 ——
-      // installed() 会把它当作「没装」，用户看到的是「白下了一次」。
-      File(
-        p.join(target.path, _kCompleteMarker),
-      ).writeAsStringSync(DateTime.now().toIso8601String());
-
-      File(p.join(dir.path, 'current')).writeAsStringSync(
-        jsonEncode(<String, dynamic>{
-          'version': safeVersion,
-          'entry': effectiveEntry,
-        }),
-      );
-
-      lemonLog('Package', '$appId 安装完成：v$safeVersion（$received 字节）');
-
-      return InstalledPackage(
-        appId: appId,
-        version: safeVersion,
-        entry: effectiveEntry,
-        dir: target.path,
-        metadata: metadata,
-      );
     } finally {
       if (tmp.existsSync()) tmp.deleteSync();
     }
@@ -474,8 +491,8 @@ class MiniappPackageService {
   //
   // 和上面 install() 的区别只在「包的来源」：
   //   * 不校验 sha256（包是用户自己选的，没有可比的期望值）；
-  //   * 不比对版本号（调试时就是要覆盖，版本固定 `dev-<时间戳>`）；
-  //   * 解压、路径穿越防护、入口确认、.complete 标记**完全复用**同一套 ——
+  //   * 不比对版本号（调试时就是要覆盖，版本带时间戳）；
+  //   * 解压、路径穿越防护、入口确认、换入、app.zip **完全复用同一套** ——
   //     本地包也是包，不该走一条更宽松的路径。
   //
   // appId 优先取包内 metadata.json 的 id（这样一个调试包和将来上架的同 id
@@ -484,7 +501,7 @@ class MiniappPackageService {
   /// 本地 zip 的大小上限。与服务端上传上限一致（20MB）。
   static const int maxLocalZipBytes = 20 * 1024 * 1024;
 
-  /// 从 zip 字节安装一个调试包，返回可打开的 [InstalledPackage]。
+  /// 从 zip 字节安装一个包，返回可打开的 [InstalledPackage]。
   Future<InstalledPackage> installLocalZip(
     Uint8List bytes, {
     String fileName = '',
@@ -552,23 +569,7 @@ class MiniappPackageService {
               p.posix.join(prefix.replaceAll('\\', '/'), metadata.entry),
             );
 
-      // 版本固定带时间戳：每次导入都是一个干净的目录，
-      // 不会出现「旧文件还留在里面，改了配置却没生效」这种诡异现象。
-      final String version = 'dev-$stamp';
-      final Directory appRoot = Directory(p.join(root.path, appId));
-      appRoot.createSync(recursive: true);
-      final Directory target = Directory(p.join(appRoot.path, version));
-      if (target.existsSync()) target.deleteSync(recursive: true);
-
-      onProgress?.call(0.9);
-      staging.renameSync(target.path);
-
-      if (!File(p.join(target.path, entry)).existsSync()) {
-        target.deleteSync(recursive: true);
-        // 顺手把刚建出来的空 <appId>/ 目录也删掉：
-        // 留着它无害，但会让「导入失败后磁盘上多了个空目录」变成
-        // 一个每次都要重新确认「这是不是上次失败留下的」的问题。
-        _removeIfEmpty(appRoot);
+      if (!File(p.join(staging.path, entry)).existsSync()) {
         throw PackageException(
           'missing_entry',
           '包里没有入口文件 $entry（检查 metadata.json 的 entry，'
@@ -576,25 +577,17 @@ class MiniappPackageService {
         );
       }
 
-      File(
-        p.join(target.path, _kCompleteMarker),
-      ).writeAsStringSync(DateTime.now().toIso8601String());
-      File(p.join(appRoot.path, 'current')).writeAsStringSync(
-        jsonEncode(<String, dynamic>{'version': version, 'entry': entry}),
-      );
-
-      // 只留这一次导入的结果：调试包没必要在磁盘上堆十个版本。
-      _pruneDevVersions(appRoot, keep: version);
-
-      onProgress?.call(1);
-      lemonLog('Package', '本地导入 $appId：$version（${bytes.length} 字节）');
-
-      return InstalledPackage(
+      onProgress?.call(0.9);
+      return await _commit(
+        staging: staging,
         appId: appId,
-        version: version,
+        version: (metadata?.version ?? '').isNotEmpty
+            ? metadata!.version
+            : 'dev-$stamp',
         entry: entry,
-        dir: target.path,
-        metadata: metadata,
+        sha256: crypto.sha256.convert(bytes).toString(),
+        source: 'local:${fileName.trim().isEmpty ? '-' : fileName.trim()}',
+        zipBytes: bytes,
       );
     } finally {
       // 成功时 staging 已经被 rename 走了，这里只剩失败路径要清
@@ -608,27 +601,143 @@ class MiniappPackageService {
     }
   }
 
-  void _removeIfEmpty(Directory dir) {
-    try {
-      if (dir.existsSync() && dir.listSync().isEmpty) dir.deleteSync();
-    } catch (_) {
-      /* 删不掉就算了，空目录不影响功能 */
+  /// 把暂存目录变成正式的 `app/<appId>/`（顺带存一份 app.zip）。
+  ///
+  /// 顺序：
+  ///   1. 在暂存目录里写好 app.zip 与 .install.json（换入后目录就是完整的）；
+  ///   2. 旧目录 rename 到 `.trash-<ts>`（原子，不会出现「两边都不在」）；
+  ///   3. 暂存目录 rename 成 `app/<appId>`；
+  ///   4. 删掉回收站。
+  /// 任一步之前被杀：目标目录还是旧的，下次启动清理 .staging-* 即可。
+  Future<InstalledPackage> _commit({
+    required Directory staging,
+    required String appId,
+    required String version,
+    required String entry,
+    required String sha256,
+    required String source,
+    required Uint8List zipBytes,
+  }) async {
+    final Directory root = await _root();
+    final Directory target = Directory(p.join(root.path, appId));
+    final String stamp = DateTime.now().millisecondsSinceEpoch.toString();
+
+    File(p.join(staging.path, kZipName)).writeAsBytesSync(zipBytes);
+    File(p.join(staging.path, _kInstallFile)).writeAsStringSync(
+      jsonEncode(<String, dynamic>{
+        'version': version,
+        'entry': entry,
+        'installedAt': DateTime.now().toIso8601String(),
+        'sha256': sha256,
+        'source': source,
+      }),
+    );
+
+    Directory? trash;
+    if (target.existsSync()) {
+      trash = Directory(p.join(root.path, '.trash-$stamp'));
+      target.renameSync(trash.path);
     }
+
+    staging.renameSync(target.path);
+
+    if (trash != null) {
+      try {
+        trash.deleteSync(recursive: true);
+      } catch (_) {
+        /* 删不掉就留给下次启动的清理 */
+      }
+    }
+
+    final InstalledPackage pkg = InstalledPackage(
+      appId: appId,
+      version: version,
+      entry: entry,
+      dir: target.path,
+      metadata: _tryReadMetadata(target, appId),
+      zipPath: p.join(target.path, kZipName),
+      installedAt: DateTime.now(),
+    );
+    lemonLog(
+      'Package',
+      '$appId 安装完成：v$version → ${target.path}'
+      '（${zipBytes.length} 字节，含 $kZipName）',
+    );
+    return pkg;
   }
 
-  /// 删掉同应用下旧的 `dev-*` 目录（不动正式安装的版本）
-  void _pruneDevVersions(Directory appRoot, {required String keep}) {
-    if (!appRoot.existsSync()) return;
-    for (final FileSystemEntity e in appRoot.listSync()) {
-      if (e is! Directory) continue;
+  /// 启动时清理上次中途失败留下的暂存 / 回收站 / 半截下载
+  void _sweepLeftovers(Directory root) {
+    if (!root.existsSync()) return;
+    for (final FileSystemEntity e in root.listSync()) {
       final String name = p.basename(e.path);
-      if (!name.startsWith('dev-') || name == keep) continue;
+      if (!name.startsWith('.staging-') &&
+          !name.startsWith('.trash-') &&
+          !name.startsWith('.download-') &&
+          !name.startsWith('.import-')) {
+        continue;
+      }
       try {
         e.deleteSync(recursive: true);
       } catch (_) {
-        /* 文件被占用时留到下次 */
+        /* 正在被占用：下次再说 */
       }
     }
+  }
+
+  /// 从旧的 `<files>/miniapps/<appId>/<version>/` 布局迁移到 `app/<appId>/`。
+  ///
+  /// 升级后不能让用户「所有小程序都变成没装」—— 那等于把离线可用这件事
+  /// 悄悄取消了。只迁移目标不存在的情况：新布局里已有的内容永远更权威。
+  /// 旧目录整体留着（迁移失败的条目下次还能重试），成功的会被删空。
+  @visibleForTesting
+  Future<int> migrateLegacyLayout(Directory legacy, Directory appRoot) async {
+    if (!legacy.existsSync()) return 0;
+
+    int migrated = 0;
+    for (final FileSystemEntity e in legacy.listSync()) {
+      if (e is! Directory) continue;
+      final String appId = p.basename(e.path);
+      final File pointer = File(p.join(e.path, 'current'));
+      if (!pointer.existsSync()) continue;
+
+      final Directory target = Directory(p.join(appRoot.path, appId));
+      if (target.existsSync()) continue;
+
+      try {
+        final Object? decoded = jsonDecode(pointer.readAsStringSync());
+        if (decoded is! Map) continue;
+        final String version = (decoded['version'] ?? '').toString();
+        final String entry = (decoded['entry'] ?? 'index.html').toString();
+        if (version.isEmpty) continue;
+
+        final Directory versionDir = Directory(p.join(e.path, version));
+        if (!File(p.join(versionDir.path, '.complete')).existsSync()) continue;
+        if (!File(p.join(versionDir.path, entry)).existsSync()) continue;
+
+        // 同盘 rename：把版本目录直接搬到 app/<appId>
+        versionDir.renameSync(target.path);
+        final File marker = File(p.join(target.path, '.complete'));
+        if (marker.existsSync()) marker.deleteSync();
+        File(p.join(target.path, _kInstallFile)).writeAsStringSync(
+          jsonEncode(<String, dynamic>{
+            'version': version,
+            'entry': entry,
+            'installedAt': DateTime.now().toIso8601String(),
+            'sha256': '',
+            'source': 'migrated',
+          }),
+        );
+        migrated++;
+      } catch (err) {
+        lemonLog('Package', '迁移旧布局失败（$appId）：$err');
+      }
+    }
+
+    if (migrated > 0) {
+      lemonLog('Package', '已从 miniapps/ 迁移 $migrated 个应用到 app/');
+    }
+    return migrated;
   }
 
   /// 没有 metadata.json 时用文件名推 appId。
@@ -706,11 +815,11 @@ class MiniappPackageService {
   }
 
   /// 宽松读取（打开已有包时用）：读坏了就当没有，不能让小程序打不开。
-  MiniappMetadata? _tryReadMetadata(Directory dir) {
+  MiniappMetadata? _tryReadMetadata(Directory dir, String appId) {
     final File? file = _findMetadataFile(dir);
     if (file == null) return null;
     try {
-      return _readMetadataFile(file, appId: p.basename(p.dirname(dir.path)));
+      return _readMetadataFile(file, appId: appId);
     } catch (_) {
       return null;
     }
@@ -774,32 +883,10 @@ class MiniappPackageService {
 
   // ---------------------------------------------------------------- 清理
 
-  /// 删掉某个应用的所有包
+  /// 删掉某个应用的所有包（含 app.zip）
   Future<void> remove(String appId) async {
     final Directory dir = await appDir(appId);
     if (dir.existsSync()) dir.deleteSync(recursive: true);
-  }
-
-  /// 清理「不是当前版本」的旧目录（升级后留下的）
-  Future<int> pruneOldVersions(String appId) async {
-    final InstalledPackage? current = await installed(appId);
-    if (current == null) return 0;
-    final Directory dir = await appDir(appId);
-    if (!dir.existsSync()) return 0;
-
-    int removed = 0;
-    final String currentName = p.basename(current.dir);
-    for (final FileSystemEntity e in dir.listSync()) {
-      if (e is! Directory) continue;
-      if (p.basename(e.path) == currentName) continue;
-      try {
-        e.deleteSync(recursive: true);
-        removed++;
-      } catch (err) {
-        lemonLog('Package', '清理旧版本失败（$err）');
-      }
-    }
-    return removed;
   }
 
   /// 所有包占用的磁盘空间
@@ -819,7 +906,7 @@ class MiniappPackageService {
     return total;
   }
 
-  /// 单个应用占用
+  /// 单个应用占用（含 app.zip）
   Future<int> appBytes(String appId) async {
     final Directory dir = await appDir(appId);
     if (!dir.existsSync()) return 0;

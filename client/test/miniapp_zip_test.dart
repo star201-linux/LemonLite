@@ -63,9 +63,12 @@ void main() {
     expect(pkg.version, startsWith('dev-'));
     expect(File(p.join(pkg.dir, 'index.html')).existsSync(), isTrue);
     expect(File(p.join(pkg.dir, 'style.css')).existsSync(), isTrue);
-    // 完成标记与 current 指针是「装好了」的唯一凭据
-    expect(File(p.join(pkg.dir, '.complete')).existsSync(), isTrue);
-    expect(File(p.join(root.path, pkg.appId, 'current')).existsSync(), isTrue);
+    // 装到 app/<appId>/：解压内容平铺在根，原包另存为 app.zip，
+    // .install.json 是「装好了」的唯一凭据
+    expect(p.normalize(pkg.dir), p.normalize(p.join(root.path, pkg.appId)));
+    expect(File(p.join(pkg.dir, '.install.json')).existsSync(), isTrue);
+    expect(File(p.join(pkg.dir, 'app.zip')).existsSync(), isTrue);
+    expect(pkg.hasZip, isTrue);
     expect(pkg.isUsable, isTrue);
   });
 
@@ -161,7 +164,7 @@ void main() {
     );
   });
 
-  test('同一个包再次导入会覆盖上一次，磁盘上只留一个 dev 版本', () async {
+  test('同一个包再次导入会覆盖上一次，目录里只有一份内容', () async {
     final Uint8List zip = makeZip(<String, String>{'index.html': 'v1'});
 
     final InstalledPackage first = await service.installLocalZip(
@@ -181,18 +184,17 @@ void main() {
     expect(second.version, isNot(first.version));
 
     final Directory appRoot = Directory(p.join(root.path, second.appId));
-    final List<String> dirs = appRoot.listSync()
-        .whereType<Directory>()
-        .map((Directory d) => p.basename(d.path))
-        .toList();
-    expect(dirs, <String>[second.version]);
+    // 没有版本子目录：解出来的文件就摊在应用目录里
+    expect(appRoot.listSync().whereType<Directory>(), isEmpty);
+    expect(second.dir, first.dir);
     // 新包的内容真的生效了
-    expect(
-      File(p.join(second.dir, 'index.html')).readAsStringSync(),
-      'v2',
-    );
-    // current 指向新版本
-    final String pointer = File(p.join(appRoot.path, 'current')).readAsStringSync();
-    expect(pointer, contains(second.version));
+    expect(File(p.join(second.dir, 'index.html')).readAsStringSync(), 'v2');
+    // 安装信息跟着换
+    final String manifest = File(
+      p.join(appRoot.path, '.install.json'),
+    ).readAsStringSync();
+    expect(manifest, contains(second.version));
+    // 原包也换成了这一版（app.zip 里就是刚导入的 v2）
+    expect(File(p.join(appRoot.path, 'app.zip')).lengthSync(), zip2.length);
   });
 }

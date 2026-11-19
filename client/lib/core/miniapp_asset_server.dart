@@ -30,18 +30,13 @@ typedef MiniappDocumentRenderer =
     Future<WebResourceResponse?> Function(Uri url, File file);
 
 class MiniappAssetServer {
-  MiniappAssetServer({
-    required this.root,
-    required this.appId,
-    required this.version,
-  });
+  MiniappAssetServer({required this.root, required this.appId});
 
-  /// miniapps/ 根目录
+  /// `app/` 根目录（每个小程序一个子目录）
   final Directory root;
 
-  /// 当前会话的包。只服务它的资源。
+  /// 当前会话的应用。只服务它的资源。
   final String appId;
-  final String version;
 
   /// 处理一个请求。[documentRenderer] 只对 .html 生效。
   Future<WebResourceResponse?> respond(
@@ -50,8 +45,8 @@ class MiniappAssetServer {
   }) async {
     if (!MiniappWebOrigin.owns(url)) return null;
 
-    // 包里的脚本可以随便拼 URL，但拼到别的应用 / 别的版本身上一律 404
-    if (!MiniappWebOrigin.belongsTo(url, appId: appId, version: version)) {
+    // 包里的脚本可以随便拼 URL，但拼到别的应用身上一律 404
+    if (!MiniappWebOrigin.belongsTo(url, appId: appId)) {
       lemonLog('Miniapp', '拒绝跨包资源：${url.path}');
       return notFound(url);
     }
@@ -83,8 +78,8 @@ class MiniappAssetServer {
         data: bytes,
         statusCode: 200,
         reasonPhrase: 'OK',
-        // 同一 URL 内容恒定（版本目录带版本号），但本地重新导入同名版本后
-        // 文件会变 —— 不让 WebView 拿旧缓存。
+        // 重新导入 / 升级之后同一个 URL 下面的文件会变，
+        // 不让 WebView 拿旧的内存缓存。
         headers: const <String, String>{'Cache-Control': 'no-store'},
       );
     } catch (e) {

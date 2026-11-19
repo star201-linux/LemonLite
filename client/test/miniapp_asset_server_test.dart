@@ -21,12 +21,12 @@ void main() {
   late MiniappAssetServer server;
 
   Uri asset(String path) => Uri.parse(
-    'https://miniapp.lemonlite.local/com.lemon.weather/1.0.0/$path',
+    'https://miniapp.lemonlite.local/com.lemon.weather/$path',
   );
 
   setUp(() {
     root = Directory.systemTemp.createTempSync('miniapp-assets-');
-    pkg = Directory(p.join(root.path, 'com.lemon.weather', '1.0.0'))
+    pkg = Directory(p.join(root.path, 'com.lemon.weather'))
       ..createSync(recursive: true);
     File(p.join(pkg.path, 'index.html')).writeAsStringSync(
       '<html><head></head><body>hi</body></html>',
@@ -39,11 +39,7 @@ void main() {
       <int>[0, 1, 2, 3, 255, 254],
     );
 
-    server = MiniappAssetServer(
-      root: root,
-      appId: 'com.lemon.weather',
-      version: '1.0.0',
-    );
+    server = MiniappAssetServer(root: root, appId: 'com.lemon.weather');
   });
 
   tearDown(() {
@@ -63,7 +59,7 @@ void main() {
     );
 
     expect(seenUrl, asset('index.html'));
-    expect(seenFile!.path, endsWith(p.join('1.0.0', 'index.html')));
+    expect(seenFile!.path, endsWith(p.join('com.lemon.weather', 'index.html')));
     // 返回值就是改写器的返回值：调用链没有偷偷把原文再包一层
     expect(response!.statusCode, 404);
   });
@@ -100,14 +96,12 @@ void main() {
 
   test('跨包 → 404：A 读不到 B 的文件', () async {
     final Directory other = Directory(
-      p.join(root.path, 'com.other.app', '1.0.0'),
+      p.join(root.path, 'com.other.app'),
     )..createSync(recursive: true);
     File(p.join(other.path, 'index.html')).writeAsStringSync('secret');
 
     final response = await server.respond(
-      Uri.parse(
-        'https://miniapp.lemonlite.local/com.other.app/1.0.0/index.html',
-      ),
+      Uri.parse('https://miniapp.lemonlite.local/com.other.app/index.html'),
     );
     expect(response!.statusCode, 404);
   });
@@ -115,7 +109,7 @@ void main() {
   test('越界路径 → 404', () async {
     // Uri 会把明文点段规范化掉，这里用编码形式确保「解码后才是 ..」也挡得住
     final Uri escaped = Uri.parse(
-      'https://miniapp.lemonlite.local/com.lemon.weather/1.0.0/%2e%2e/%2e%2e/%2e%2e/etc/passwd',
+      'https://miniapp.lemonlite.local/com.lemon.weather/%2e%2e/%2e%2e/etc/passwd',
     );
     expect((await server.respond(escaped))!.statusCode, 404);
   });

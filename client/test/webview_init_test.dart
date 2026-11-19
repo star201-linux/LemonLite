@@ -72,7 +72,7 @@ void main() {
           appId: 'pkg.test',
           version: '1.0.0',
           entry: 'index.html',
-          dir: '/tmp/pkg/1.0.0',
+          dir: '/tmp/pkg',
         ),
         isTransient: true,
       );
@@ -87,10 +87,13 @@ void main() {
         session.webUri.toString(),
         startsWith('https://miniapp.lemonlite.local/'),
       );
-      expect(session.webUri.toString(), endsWith('/pkg.test/1.0.0/index.html'));
+      expect(
+        session.webUri.toString(),
+        endsWith('/pkg.test/index.html?v=1.0.0'),
+      );
       // entry 仍是真实文件路径：排障时一眼能看到包装在哪
       expect(session.entry, startsWith('file://'));
-      expect(session.entry, endsWith('/pkg/1.0.0/index.html'));
+      expect(session.entry, endsWith('/pkg/index.html'));
     });
   });
 

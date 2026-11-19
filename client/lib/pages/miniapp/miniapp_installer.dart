@@ -103,14 +103,6 @@ class MiniappInstaller {
         },
       );
 
-      // 装完清掉旧版本目录（升级场景）
-      if (upgrading) {
-        final int removed = await service.pruneOldVersions(app.id);
-        if (removed > 0) {
-          lemonLog('Installer', '${app.id} 清理了 $removed 个旧版本目录');
-        }
-      }
-
       // 图标缓存：装好之后这个小程序就是「本机已安装」了，应用管理里要能
       // 不联网也显示它。缓存失败不影响安装结果（ensure 内部已吞异常）。
       await IconCacheService.instance.ensure(appId: app.id, url: app.icon);
@@ -194,7 +186,6 @@ class MiniappInstaller {
         entry: entry,
         onProgress: onProgress,
       );
-      await service.pruneOldVersions(appId);
       await IconCacheService.instance.ensure(appId: appId, url: iconUrl);
       await _registerInstalled(installed, fallbackName: appName);
       return true;

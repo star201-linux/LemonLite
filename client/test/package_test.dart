@@ -217,4 +217,122 @@ void main() {
       expect(s, isA<MiniappPackageService>());
     });
   });
+
+  // ========================================================== 安装布局
+
+  group('安装布局 app/<appId>/', () {
+    late Directory root;
+    final MiniappPackageService service = MiniappPackageService.instance;
+
+    setUp(() {
+      root = Directory.systemTemp.createTempSync('ll-app-layout-');
+      service.debugRootOverride = root;
+    });
+
+    tearDown(() {
+      service.debugRootOverride = null;
+      if (root.existsSync()) root.deleteSync(recursive: true);
+    });
+
+    /// 按生产布局手工铺一个应用目录
+    Directory layOut(String appId, {String? version}) {
+      final Directory dir = Directory(p.join(root.path, appId))
+        ..createSync(recursive: true);
+      File(p.join(dir.path, 'index.html')).writeAsStringSync('<h1>x</h1>');
+      File(p.join(dir.path, 'app.zip')).writeAsBytesSync(<int>[1, 2, 3]);
+      if (version != null) {
+        File(p.join(dir.path, '.install.json')).writeAsStringSync(
+          '{"version":"$version","entry":"index.html",'
+          '"installedAt":"2026-11-19T00:00:00.000Z","sha256":"","source":"test"}',
+        );
+      }
+      return dir;
+    }
+
+    test('读得出解压目录、原包与版本', () async {
+      final Directory dir = layOut('com.demo.app', version: '1.2.0');
+      final InstalledPackage? pkg = await service.installed('com.demo.app');
+      expect(pkg, isNotNull);
+      expect(pkg!.version, '1.2.0');
+      expect(p.normalize(pkg.dir), p.normalize(dir.path));
+      expect(pkg.entryPath, p.join(dir.path, 'index.html'));
+      expect(pkg.hasZip, isTrue);
+      expect(pkg.zipPath, p.join(dir.path, 'app.zip'));
+      // 入口地址不再带版本目录，版本退化成查询串
+      expect(
+        pkg.webUri.toString(),
+        'https://miniapp.lemonlite.local/com.demo.app/index.html?v=1.2.0',
+      );
+    });
+
+    test('缺 .install.json 的目录 = 没装（解压到一半被杀的残留）', () async {
+      layOut('com.half.app');
+      expect(await service.installed('com.half.app'), isNull);
+    });
+
+    test('.install.json 里的入口不存在 = 没装', () async {
+      final Directory dir = layOut('com.broken.app', version: '1.0.0');
+      File(p.join(dir.path, 'index.html')).deleteSync();
+      expect(await service.installed('com.broken.app'), isNull);
+    });
+
+    test('installedAll 跳过暂存 / 回收站目录', () async {
+      layOut('com.a', version: '1');
+      layOut('com.b', version: '1');
+      Directory(p.join(root.path, '.staging-123')).createSync();
+      Directory(p.join(root.path, '.trash-456')).createSync();
+      final List<InstalledPackage> all = await service.installedAll();
+      expect(all.map((InstalledPackage p) => p.appId).toSet(), <String>{'com.a', 'com.b'});
+    });
+
+    test('旧 miniapps/<appId>/<version>/ 会被迁移成 app/<appId>/', () async {
+      final Directory legacy = Directory(p.join(root.path, 'miniapps'))
+        ..createSync();
+      final Directory versionDir = Directory(p.join(legacy.path, 'com.old.app', '1.0.0'))
+        ..createSync(recursive: true);
+      File(p.join(versionDir.path, 'index.html')).writeAsStringSync('old');
+      File(p.join(versionDir.path, '.complete')).writeAsStringSync('done');
+      File(p.join(legacy.path, 'com.old.app', 'current')).writeAsStringSync(
+        '{"version":"1.0.0","entry":"index.html"}',
+      );
+
+      final Directory appRoot = Directory(p.join(root.path, 'app'))
+        ..createSync(recursive: true);
+      final int moved = await service.migrateLegacyLayout(legacy, appRoot);
+
+      expect(moved, 1);
+      final Directory target = Directory(p.join(appRoot.path, 'com.old.app'));
+      expect(File(p.join(target.path, 'index.html')).readAsStringSync(), 'old');
+      expect(File(p.join(target.path, '.install.json')).existsSync(), isTrue);
+      // 旧完成标记不该留在新目录里（它已经由 .install.json 取代）
+      expect(File(p.join(target.path, '.complete')).existsSync(), isFalse);
+      // 迁移后能直接读出来（把读目录指到刚迁移好的 app/ 上）
+      service.debugRootOverride = appRoot;
+      expect(await service.installed('com.old.app'), isNotNull);
+    });
+
+    test('迁移不动已经存在的应用目录（新布局更权威）', () async {
+      layOut('com.new.app', version: '2.0.0');
+      final Directory legacy = Directory(p.join(root.path, 'miniapps'))
+        ..createSync();
+      final Directory versionDir = Directory(
+        p.join(legacy.path, 'com.new.app', '1.0.0'),
+      )..createSync(recursive: true);
+      File(p.join(versionDir.path, 'index.html')).writeAsStringSync('old');
+      File(p.join(versionDir.path, '.complete')).writeAsStringSync('done');
+      File(p.join(legacy.path, 'com.new.app', 'current')).writeAsStringSync(
+        '{"version":"1.0.0","entry":"index.html"}',
+      );
+
+      final int moved = await service.migrateLegacyLayout(
+        legacy,
+        Directory(root.path),
+      );
+      expect(moved, 0);
+      expect(
+        File(p.join(root.path, 'com.new.app', 'index.html')).readAsStringSync(),
+        '<h1>x</h1>',
+      );
+    });
+  });
 }

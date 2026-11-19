@@ -26,7 +26,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../../core/globals.dart';
 import '../../core/native_bridge.dart';
 import '../../data/models/app_item.dart';
 import '../../data/models/app_version.dart';
@@ -35,6 +34,7 @@ import '../../data/models/miniapp_permission.dart';
 import '../../data/repositories/market_repository.dart';
 import '../../data/services/application_registry.dart';
 import '../../data/services/icon_cache_service.dart';
+import '../../data/services/installed_app_info.dart';
 import '../../data/services/miniapp_package_service.dart';
 import '../../data/services/update_service.dart';
 import '../../theme/app_theme.dart';
@@ -141,7 +141,13 @@ class _AppDetailPageState extends State<AppDetailPage> {
   Future<void> _loadInstalled() async {
     final InstalledPackage? pkg = await MiniappPackageService.instance
         .installed(app.id);
-    String? icon = await IconCacheService.instance.pathOf(app.id);
+    // 图标优先级：包内声明的图标 → 本机缓存的市场图标 → 网络
+    //
+    // 包内的那个才是「应用自己的图标」：作者换了包，这里立刻跟着变，
+    // 也不用为一个图标去联网。
+    final InstalledAppInfo info = await loadInstalledAppInfo(app.id);
+    String? icon = info.iconPath;
+    icon ??= await IconCacheService.instance.pathOf(app.id);
     icon ??= await IconCacheService.instance.ensure(
       appId: app.id,
       url: app.icon,
@@ -457,8 +463,17 @@ class _AppDetailPageState extends State<AppDetailPage> {
     setState(() => _busy = true);
 
     // 用全局更新状态里的最新版本（可能比这个页面打开时拿到的 app.version 更新）；
-    // 没有就退回详情数据里的版本。
-    final PackageUpdate? pending = UpdateService.instance.of(app.id);
+    // 没有就先问一次服务端 —— 应用管理里点进来的详情页没有市场数据，
+    // app.packageUrl 是空的，不查就只能报「没有安装包」。
+    PackageUpdate? pending = UpdateService.instance.of(app.id);
+    if (pending == null) {
+      await UpdateService.instance.checkOne(
+        app.id,
+        repository: context.read<MarketRepository>(),
+      );
+      pending = UpdateService.instance.of(app.id);
+    }
+    if (!mounted) return;
     final bool ok = pending == null
         ? await MiniappInstaller.ensureInstalled(
             context,
@@ -700,11 +715,15 @@ class _AppDetailPageState extends State<AppDetailPage> {
   }
 }
 
-/// 应用管理里点进来的「加载壳」：先取市场数据，再展示同一个详情页。
+/// 应用管理里点进来的详情页。
 ///
-/// 为什么不在列表里直接 await 完再 push：
-///   网络可能很慢（甚至超时 12 秒）。点一下之后干等着什么都不发生，
-///   用户会以为没点中。先 push 一个带标题的转圈页，数据回来后就地替换内容。
+/// **数据只来自本机**：包里的 metadata.json（名称 / 版本 / 简介 / 作者 /
+/// 权限）。应用管理管的是「这台设备上装了什么」，不是「市场上有什么」——
+/// 用市场数据回填会让两处显示对不上（作者改了包、市场还没刷新时尤其明显），
+/// 而且断网就什么都看不到。
+///
+/// 仍然先 push 一个转圈壳再读：读包要碰磁盘（可能还有解压残留），
+/// 点击后立刻有反应比省一层壳更重要。
 class _RegisteredAppDetailPage extends StatefulWidget {
   const _RegisteredAppDetailPage({
     required this.appId,
@@ -732,46 +751,26 @@ class _RegisteredAppDetailPageState extends State<_RegisteredAppDetailPage> {
   }
 
   Future<void> _load() async {
-    final MarketRepository repository = context.read<MarketRepository>();
-    AppItem? item;
-    try {
-      item = await repository.fetchApp(widget.appId);
-      // 顺手把市场里的最新名字 / 图标 / 分类回写到本机清单：
-      // 管理员换了图标后，应用管理列表要能跟着变（图标缓存也按新 URL 重下）。
-      // 回写失败不该让详情页退回本地兜底 —— 数据已经拿到了。
-      try {
-        await ApplicationRegistry.instance.record(
-          appId: item.id,
-          name: item.name,
-          icon: item.icon,
-          category: item.category,
-        );
-      } catch (e) {
-        lemonLog('AppDetail', '回写应用清单失败：$e');
-      }
-    } catch (e) {
-      // 下架 / 离线都走本地兜底：本机装过的东西仍然要能看、能开
-      final InstalledPackage? pkg = await MiniappPackageService.instance
-          .installed(widget.appId);
-      final RegisteredApp? registered = ApplicationRegistry.instance.byId(
-        widget.appId,
-      );
-      item = AppItem(
-        id: widget.appId,
-        name: registered?.displayName ?? widget.name,
-        description:
-            '这个应用已经不在市场里了。本机仍保留着它的安装包与数据，'
-            '可以继续打开，也可以在右上角的「扳手」里清除。',
-        category: registered?.category ?? '',
-        version: pkg?.version ?? '',
-        author: '',
-        packageUrl: '',
-        icon: widget.icon ?? registered?.icon,
-      );
-    }
+    final InstalledAppInfo info = await loadInstalledAppInfo(
+      widget.appId,
+      fallback: ApplicationRegistry.instance.byId(widget.appId),
+    );
     if (!mounted) return;
     setState(() {
-      _app = item;
+      _app = AppItem(
+        id: widget.appId,
+        name: info.name.isEmpty ? widget.name : info.name,
+        description: info.description.isEmpty
+            ? '这个包没有在 metadata.json 里写简介。'
+            : info.description,
+        // 分类只存在于市场数据里；本机不猜，留空就不显示
+        category: '',
+        version: info.version,
+        author: info.author,
+        // 没有可选下载的包：更新走 UpdateService（它自己查服务端）
+        packageUrl: '',
+        permissions: info.permissionIds,
+      );
       _loading = false;
     });
   }
