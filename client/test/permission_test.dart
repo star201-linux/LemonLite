@@ -21,6 +21,7 @@ import 'dart:io';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lemonlite/bridge/bridge_api.dart';
+import 'package:lemonlite/bridge/geo_policy_js.dart';
 import 'package:lemonlite/bridge/web_permission.dart';
 import 'package:lemonlite/core/native_bridge.dart';
 import 'package:lemonlite/data/models/bundle_manifest.dart';
@@ -1332,6 +1333,104 @@ void main() {
         }),
         throwsA(isA<BundleManifestException>()),
       );
+    });
+  });
+
+  // ======================================== 定位策略的三态
+  //
+  // 0.6 之前页面侧把「未决定」也当拒绝：navigator.geolocation 被静默挡掉，
+  // 用户从没被问过，权限管理里也没有记录。这里钉住三态的语义。
+
+  group('定位策略三态', () {
+    test('未决定 = ask：页面侧放行到 WebView，由宿主弹框', () {
+      const LocationGrant grant = LocationGrant.initial;
+      expect(grant.state, 'ask');
+      final Map<String, dynamic> js = grant.toJs(foreground: true);
+      expect(js['state'], 'ask');
+      expect(js['allowed'], isFalse);
+    });
+
+    test('已允许 / 已拒绝分别给出 granted / denied', () {
+      expect(
+        LocationGrant.initial
+            .copyWith(decision: PermissionDecision.granted)
+            .state,
+        'granted',
+      );
+      expect(
+        LocationGrant.initial
+            .copyWith(decision: PermissionDecision.denied)
+            .state,
+        'denied',
+      );
+    });
+
+    test('页面 shim 只在「已拒绝」或「后台未授权」时拦，不拦 ask', () {
+      final String source = GeoPolicyJs.source;
+      expect(source, contains("policy.state === 'denied'"));
+      expect(
+        source,
+        isNot(contains('if (!policy.allowed)')),
+        reason: '把 ask 当拒绝会让定位永远弹不出授权框',
+      );
+      expect(source, contains('lemonliteGeoPolicy'));
+    });
+  });
+
+  // ======================================== 未声明但运行时请求的权限
+
+  group('未声明权限也要留痕', () {
+    test('metadata 里没写 location，但页面真的调了定位 → 出现在权限页', () async {
+      // 这个包声明的是空数组（就是 lemon-weather 那种「我什么都没声明」）
+      await registry.ensureKnown(
+        appId: 'com.lemon.weather',
+        name: 'Lemon 天气',
+        permissions: const <String>[],
+      );
+
+      PermissionScanReport before = permissions.scan();
+      expect(
+        before.relevantOf('com.lemon.weather'),
+        isEmpty,
+        reason: '没声明、也没调用过 → 这一页不该凭空出现权限',
+      );
+
+      await permissions.recordUse('com.lemon.weather', MiniappPermission.location);
+      PermissionScanReport after = permissions.scan();
+
+      expect(
+        after.relevantOf('com.lemon.weather'),
+        <MiniappPermission>[MiniappPermission.location],
+      );
+      expect(after.usageOf('com.lemon.weather', MiniappPermission.location).used, isTrue);
+      // 「声明过」与「运行时请求过」是两件事：UI 靠这个标「运行时请求」
+      expect(
+        after.declaredOnlyOf('com.lemon.weather'),
+        isEmpty,
+      );
+      expect(after.appById('com.lemon.weather')!.declaredPermissions, isEmpty);
+    });
+
+    test('被拒绝的调用也留痕：用户能看到「它想要但被拦了」', () async {
+      await registry.ensureKnown(appId: 'x.app', name: 'X', permissions: const <String>[]);
+      await permissions.recordUse('x.app', MiniappPermission.camera, denied: true);
+      PermissionScanReport report = permissions.scan();
+      final MiniappUsage usage = report.usageOf('x.app', MiniappPermission.camera);
+      expect(usage.count, 0);
+      expect(usage.deniedCount, 1);
+      expect(usage.used, isTrue);
+      expect(report.relevantOf('x.app'), contains(MiniappPermission.camera));
+    });
+
+    test('清掉申请记录后，未声明的权限也从列表里消失', () async {
+      await registry.ensureKnown(appId: 'y.app', name: 'Y', permissions: const <String>[]);
+      await permissions.recordUse('y.app', MiniappPermission.microphone);
+      expect(
+        permissions.scan().relevantOf('y.app'),
+        contains(MiniappPermission.microphone),
+      );
+      await permissions.clearUsage('y.app');
+      expect(permissions.scan().relevantOf('y.app'), isEmpty);
     });
   });
 }

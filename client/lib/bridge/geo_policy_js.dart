@@ -31,6 +31,9 @@ class GeoPolicyJs {
 
   var DEFAULTS = {
     allowed: false,
+    // 'ask' | 'granted' | 'denied'。缺省按 ask：没问过用户不等于拒绝，
+    // 要放行到 WebView，由宿主弹授权框（见 miniapp_page 的定位回调）。
+    state: 'ask',
     precision: 'fine',
     background: false,
     foreground: true,
@@ -50,9 +53,19 @@ class GeoPolicyJs {
   var nativeWatch = geo.watchPosition.bind(geo);
   var nativeClear = geo.clearWatch.bind(geo);
 
-  /** 当前这次读位置是否被策略挡住（后台未授权时挡住） */
+  /**
+   * 当前这次读位置是否被策略挡住。
+   *
+   * 只有两种情况算「挡」：
+   *   1. 用户已经明确拒绝；
+   *   2. 小程序在后台，且没给后台定位。
+   *
+   * **「还没问过」不算挡**：放行到 WebView，Android 会回调
+   * onGeolocationPermissionsShowPrompt，宿主在那里弹授权框。之前把
+   * 「未决定」也当拒绝，结果是定位被静默拦掉、用户从没被问过。
+   */
   function blocked() {
-    if (!policy.allowed) { return true; }
+    if (policy.state === 'denied') { return true; }
     if (!policy.foreground && !policy.background) { return true; }
     return false;
   }
@@ -141,7 +154,8 @@ class GeoPolicyJs {
   /** 只读快照，方便小程序自己判断（例如提前提示「只能拿到大致位置」） */
   window.lemonliteGeoPolicy = function () {
     return {
-      allowed: policy.allowed,
+      allowed: policy.state === 'granted',
+      state: policy.state,
       precision: policy.precision,
       background: policy.background
     };

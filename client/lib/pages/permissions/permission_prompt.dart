@@ -371,8 +371,44 @@ class PermissionPromptService {
               PermissionRiskChip(risk: permission.risk, compact: true),
             ],
           ),
+          if (!_declared(appId, permission)) ...<Widget>[
+            const SizedBox(height: 10),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Icon(
+                  Icons.info_outline,
+                  size: 16,
+                  color: scheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '这个小程序没有在自己的 metadata.json 里声明这项权限，'
+                    '是运行时才来要的。允许之后它也会出现在「权限管理」里。',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
+    );
+  }
+
+  /// 这项权限有没有写在包里的 metadata.json（声明）里。
+  ///
+  /// 读应用清单就够了：安装 / 导入时会把包里的声明同步进去。拿不到清单
+  /// （未初始化的极端情况）时按「已声明」处理 —— 宁可少一句提示，
+  /// 也不要对每个小程序都喊「它没声明」。
+  bool _declared(String appId, MiniappPermission permission) {
+    final RegisteredApp? app = ApplicationRegistry.instance.byId(appId);
+    if (app == null) return true;
+    return app.permissionIds.any(
+      (String id) => MiniappPermission.byId(id) == permission,
     );
   }
 

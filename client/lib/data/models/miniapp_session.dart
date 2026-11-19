@@ -36,9 +36,9 @@ class MiniappSession {
 
   /// 本机已安装的小程序包（0.6 起主要入口）。
   ///
-  /// 它指向 `miniapps/<appId>/<version>/`，WebView 通过虚拟 https 源打开其中的
-  /// 入口文件（见 core/miniapp_web_origin.dart）—— 断网也能用，
-  /// 而且「装的是哪一版」是明确的。
+  /// 它指向 `app/<appId>/`，WebView 通过虚拟 https 源打开其中的入口文件
+  /// （见 core/miniapp_web_origin.dart）—— 断网也能用，
+  /// 而且「装的是哪一版」写在 `.install.json` 里，是明确的。
   final InstalledPackage? installedPackage;
 
   /// 本地 assets 入口

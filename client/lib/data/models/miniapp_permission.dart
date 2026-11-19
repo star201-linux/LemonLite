@@ -156,8 +156,25 @@ class LocationGrant {
   bool allows({required bool foreground}) => granted && (foreground || background);
 
   /// 给页面注入/下发的策略（见 bridge/geo_policy_js.dart）。
+  ///
+  /// `state` 是三态，`allowed` 只是它的布尔投影：
+  ///   * `ask`     —— 还没问过用户。**页面侧不能直接拒**，要放行到 WebView，
+  ///                  由 onGeolocationPermissionsShowPrompt 弹我们的授权框；
+  ///   * `granted` —— 已允许；
+  ///   * `denied`  —— 已拒绝，页面侧直接回 PERMISSION_DENIED，不打扰原生。
+  ///
+  /// 为什么要有 `ask`：0.6 之前页面侧把「未决定」当成「拒绝」，于是
+  /// navigator.geolocation 被静默挡掉 —— 用户从没被问过，却在权限管理里
+  /// 找不到任何记录。那既不是「拒绝」也不是「允许」，只是没问。
+  String get state => switch (decision) {
+    PermissionDecision.granted => 'granted',
+    PermissionDecision.denied => 'denied',
+    PermissionDecision.ask => 'ask',
+  };
+
   Map<String, dynamic> toJs({required bool foreground}) => <String, dynamic>{
     'allowed': granted,
+    'state': state,
     'precision': precision.id,
     'background': background,
     'foreground': foreground,

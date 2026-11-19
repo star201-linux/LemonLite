@@ -1068,6 +1068,15 @@ class BridgeApi {
         permission,
         appName: appName.isEmpty ? null : appName,
       );
+      // 留痕：桥接层的能力不一定写在 metadata.json 里，但「它真的调了」
+      // 这件事必须能在权限管理里看到（否则用户无法撤销一个看不见的授权）。
+      unawaited(
+        PermissionService.instance.recordUse(
+          appId,
+          permission,
+          denied: !answer.allowed,
+        ),
+      );
       if (!answer.allowed) {
         throw LemonBridgeException(
           BridgeErrorCode.permissionDenied,

@@ -210,6 +210,53 @@ void main() {
       expect(payload['cssVariables'], isA<Map<String, String>>());
     });
 
+    test('带 alpha 的颜色保留 alpha：遮罩不能变成纯黑', () {
+      // 之前的实现一律输出 #rrggbb，把 scrim 的 alpha 丢掉了 ——
+      // 小程序里 `background: var(--md-scrim)` 的弹层会变成纯黑一整屏。
+      expect(
+        ThemeInjector.toCss(const Color(0x52000000)),
+        anyOf('rgba(0, 0, 0, 0.322)', 'rgba(0, 0, 0, 0.320)'),
+      );
+      expect(ThemeInjector.toCss(const Color(0xFF6750A4)), '#6750a4');
+
+      final ColorScheme scheme = ColorScheme.fromSeed(
+        seedColor: const Color(0xFF6750A4),
+      );
+      final Map<String, String> vars = ThemeInjector.toCssVariableMap(scheme);
+      expect(vars['--md-scrim'], startsWith('rgba(0, 0, 0, 0.32'));
+      // 想要纯色遮罩的地方用这个
+      expect(vars['--md-scrim-solid'], ThemeInjector.toHex(scheme.scrim));
+    });
+
+    test('暗色不注入黑阴影，亮色给一套柔和阴影', () {
+      // 暗色下纯黑阴影就是一圈黑边（卡片比背景更黑），M3 的做法是
+      // 用更亮的容器表达高度，所以这里直接 none。
+      expect(
+        ThemeInjector.elevationVariables(Brightness.dark)['--md-elevation-2'],
+        'none',
+      );
+      expect(
+        ThemeInjector.elevationVariables(Brightness.light)['--md-elevation-2'],
+        contains('rgba(0, 0, 0, 0.10)'),
+      );
+
+      final Map<String, dynamic> payload = ThemeInjector.toThemePayload(
+        ColorScheme.fromSeed(
+          seedColor: const Color(0xFF6750A4),
+          brightness: Brightness.dark,
+        ),
+        themeModeLabel: 'dark',
+        source: 'seed',
+      );
+      final Map<String, String> vars = payload['cssVariables'] as Map<String, String>;
+      expect(vars['--md-elevation-1'], 'none');
+      // colors 里只有颜色角色，不该混进阴影
+      expect(
+        (payload['colors'] as Map<String, String>).containsKey('elevation-1'),
+        isFalse,
+      );
+    });
+
     test('注入脚本带上主题数据与 --md- 变量', () {
       final ColorScheme scheme = ColorScheme.fromSeed(
         seedColor: const Color(0xFF6750A4),

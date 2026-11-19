@@ -71,19 +71,73 @@ class ThemeInjector {
         (Match m) => '-${m.group(0)!.toLowerCase()}',
       );
 
-  /// Color → `#rrggbb`（CSS 变量里不需要 alpha，M3 的颜色角色都是不透明色）
+  /// Color → `#rrggbb`（丢掉 alpha）。给需要「纯色值」的地方用
+  /// （`primaryColor` / `seedColor` / 原生任务卡图标）。
   static String toHex(Color color) {
     final int argb = color.toARGB32();
     return '#${(argb & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}';
   }
 
+  /// Color → CSS 颜色。**保留 alpha**。
+  ///
+  /// 为什么不能一律 `#rrggbb`：`ColorScheme.scrim` 是纯黑色，而网页里
+  /// `--md-scrim` 的用法是 `background: var(--md-scrim)` 铺一层遮罩。
+  /// 把 alpha 丢掉 = 遮罩变成纯黑不透明 —— 弹层一开，整页变黑，
+  /// 看起来像「小程序崩了」。这类问题在小程序作者那边完全无法自查。
+  static String toCss(Color color) {
+    final int argb = color.toARGB32();
+    final int a = (argb >> 24) & 0xFF;
+    if (a == 0xFF) return toHex(color);
+    final int r = (argb >> 16) & 0xFF;
+    final int g = (argb >> 8) & 0xFF;
+    final int b = argb & 0xFF;
+    return 'rgba($r, $g, $b, ${(a / 255).toStringAsFixed(3)})';
+  }
+
+  /// 遮罩层的不透明度。
+  ///
+  /// M3 里 scrim 色值本身是纯黑，「多黑」由使用方决定；网页生态里
+  /// 普遍写成 `rgba(0,0,0,.32)`（Material Web 的 barrier 就是这个值）。
+  /// 这里直接把 `--md-scrim` 变成**带 alpha 的遮罩色**，让
+  /// `background: var(--md-scrim)` 这种最自然的写法得到正确结果；
+  /// 想要纯色的用 `--md-scrim-solid`。
+  static const double scrimOpacity = 0.32;
+
   /// `{ '--md-primary': '#6750a4', ... }`
   static Map<String, String> toCssVariableMap(ColorScheme s) {
     final Map<String, String> result = <String, String>{};
     colorRoles(s).forEach((String role, Color color) {
-      result['--md-${kebab(role)}'] = toHex(color);
+      result['--md-${kebab(role)}'] = toCss(color);
     });
+    final Color scrim = s.scrim.withValues(alpha: scrimOpacity);
+    result['--md-scrim'] = toCss(scrim);
+    result['--md-scrim-solid'] = toCss(s.scrim);
     return result;
+  }
+
+  /// 高度（阴影）令牌。
+  ///
+  /// 交给宿主提供的原因：暗色下**纯黑阴影就是一圈黑边**。小程序作者通常
+  /// 在 `:root` 里写死 `0 2px 6px rgba(0,0,0,.25)`，切到暗色时那张卡片
+  /// 周围会出现一圈比背景更黑的描边 —— 看起来像「只有部分卡片变黑了」。
+  ///
+  /// M3 的做法是：暗色下不用阴影表达高度，改用更亮的 surface 容器。
+  /// 所以这里暗色直接给 `none`，让卡片靠 `--md-surface-container-*` 分层。
+  static Map<String, String> elevationVariables(Brightness brightness) {
+    if (brightness == Brightness.dark) {
+      return const <String, String>{
+        '--md-elevation-0': 'none',
+        '--md-elevation-1': 'none',
+        '--md-elevation-2': 'none',
+        '--md-elevation-3': 'none',
+      };
+    }
+    return const <String, String>{
+      '--md-elevation-0': 'none',
+      '--md-elevation-1': '0 1px 2px rgba(0, 0, 0, 0.10), 0 1px 3px 1px rgba(0, 0, 0, 0.06)',
+      '--md-elevation-2': '0 2px 6px rgba(0, 0, 0, 0.10), 0 1px 2px rgba(0, 0, 0, 0.08)',
+      '--md-elevation-3': '0 4px 10px rgba(0, 0, 0, 0.10), 0 2px 4px rgba(0, 0, 0, 0.08)',
+    };
   }
 
   /// 完整的 `:root { ... }` 文本。
@@ -115,17 +169,22 @@ class ThemeInjector {
     required String themeModeLabel,
     required String source,
   }) {
-    final Map<String, String> vars = toCssVariableMap(s);
-    final Map<String, String> colors = <String, String>{};
-    vars.forEach((String name, String value) {
-      colors[name.replaceFirst('--md-', '')] = value;
+    final Map<String, String> colors = toCssVariableMap(s);
+    final Map<String, String> vars = <String, String>{
+      ...colors,
+      // 非颜色令牌（阴影）也走同一份 cssVariables，页面侧只认一个来源
+      ...elevationVariables(s.brightness),
+    };
+    final Map<String, String> colorOnly = <String, String>{};
+    colors.forEach((String name, String value) {
+      colorOnly[name.replaceFirst('--md-', '')] = value;
     });
     return <String, dynamic>{
       'mode': s.brightness == Brightness.dark ? 'dark' : 'light',
       'themeMode': themeModeLabel,
       'source': source,
       'seedColor': toHex(s.primary),
-      'colors': colors,
+      'colors': colorOnly,
       'cssVariables': vars,
     };
   }
