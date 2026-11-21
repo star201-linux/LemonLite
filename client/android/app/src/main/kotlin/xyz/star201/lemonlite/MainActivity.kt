@@ -483,23 +483,18 @@ open class MainActivity : FlutterActivity() {
         val decoded = path?.let { decodeTaskIcon(it) }
         val icon = decoded ?: lastTaskIcon ?: appIconBitmap()
         return try {
-            // Android 13 起直接 new TaskDescription(label, icon) 已废弃，
-            // 官方建议走 Builder（部分 ROM 在 T 之后只认 Builder 建出来的对象）。
+            // 这里**不用** TaskDescription.Builder。
             //
-            // 注意：Builder.setIcon 有两个重载（int resId / Bitmap）。在
-            // `apply { icon?.let { setIcon(it) } }` 里，Kotlin 会把内层 `it`
-            // 解析成 Int 重载，编译报「expected Int」。所以这里显式取一个
-            // Bitmap 变量再调 setIcon(bitmap)，避免重载歧义。
-            val description =
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    val builder = ActivityManager.TaskDescription.Builder().setLabel(title)
-                    val bitmap = icon
-                    if (bitmap != null) builder.setIcon(bitmap)
-                    builder.build()
-                } else {
-                    @Suppress("DEPRECATION")
-                    ActivityManager.TaskDescription(title, icon)
-                }
+            // 原因：`Builder.setIcon` 只暴露了 `setIcon(int iconRes)` 这一个
+            // 重载（拿资源 ID），没有接收 Bitmap 的版本 —— 传 Bitmap 会编译失败
+            // （actual type is 'Bitmap', but 'Int' was expected）。而我们手上的
+            // 图标是运行时解码出来的 Bitmap（本地文件/上次缓存），没有资源 ID 可用。
+            //
+            // 老构造器 `TaskDescription(label, bitmap)` 虽然被标了 deprecated，
+            // 但在所有 API 级别上都能用，且一直是设置「任务卡标题 + 位图图标」
+            // 的可靠方式。deprecated 只是警告，不影响行为。
+            @Suppress("DEPRECATION")
+            val description = ActivityManager.TaskDescription(title, icon)
             setTaskDescription(description)
             if (decoded != null) lastTaskIcon = decoded
             appliedTaskKey = key
