@@ -15,6 +15,11 @@ import android.os.Bundle
  *   并存，各自切换。要做到这一点，只能再起一个 Activity —— 而且是
  *   **另一个任务**（`FLAG_ACTIVITY_NEW_DOCUMENT` + `documentLaunchMode`）。
  *
+ * 「另一个任务」这件事在清单里还补了一道保险：本 Activity 显式声明了独立的
+ *   `taskAffinity`（宿主那条是空字符串）。只靠 NEW_DOCUMENT 不够 —— 部分 ROM
+ *   不认这个 flag，会把窗口塞进宿主任务栈，表现就是「打开小程序后主应用没了」。
+ *   独立 affinity 让系统按 affinity 分任务，绕开对 flag 的实现差异。
+ *
  * 为什么直接继承 MainActivity 而不是再写一个 FlutterActivity：
  *   `lemonlite/native` 那条通道（亮度 / 方向 / 常亮 / 运行时权限 / 下载 /
  *   蓝牙 / NFC / 任务卡片）全部注册在 MainActivity.configureFlutterEngine 里。
