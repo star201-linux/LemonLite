@@ -300,12 +300,14 @@ open class MainActivity : FlutterActivity() {
                     result.success(false)
                 } else {
                     result.success(true)
-                    // 只有「这张卡的根就是窗口自己」时才连带任务一起移除；
-                    // 万一把宿主 Activity 也算在同一条任务里（个别 ROM 不认
-                    // NEW_DOCUMENT，会把新 Activity 落到当前任务栈），
-                    // finishAndRemoveTask 会把宿主一起带走 —— 用户看到的就是
-                    // 「打开小程序后主应用没了」。这时只 finish 自己。
-                    if (isTaskRootOfDocumentTask()) {
+                    // 只有「这张卡的根就是窗口自己」时才连带任务一起移除。
+                    // isTaskRoot() 是 Activity 自带的、最直接的那个判断：
+                    // 它只看「本 Activity 是不是所在任务的栈底」，
+                    // 不依赖 appTasks 查询（个别 ROM 会返回空列表）。
+                    // 万一窗口真被塞进宿主任务（栈底是 MainActivity），
+                    // 这里为 false，只 finish 自己 —— 宁可留一张空卡，
+                    // 也不能把宿主一起带走。
+                    if (isTaskRoot()) {
                         finishAndRemoveTask()
                     } else {
                         android.util.Log.w(
@@ -459,15 +461,22 @@ open class MainActivity : FlutterActivity() {
      * @param iconPath 本地图片绝对路径（图标缓存里那张）；为空表示**图标不变**：
      *   沿用上一次写上去的那张（见 [lastTaskIcon]），第一次写卡片时还没有上次，
      *   才退回宿主自己的图标 —— 而不是留一个空白方块。
+     * @param force 内容没变也重写一次。窗口在 `onPostResume` 用它覆盖
+     *   ROM 在可见那一刻用 `ActivityInfo` 重置出来的标题（vivo 上会出现
+     *   「窗口卡写着 Lemon Lite」就是这条路径）。
      */
     @Suppress("DEPRECATION")
-    protected fun applyTaskDescription(label: String, iconPath: String?): Boolean {
+    protected fun applyTaskDescription(
+        label: String,
+        iconPath: String?,
+        force: Boolean = false,
+    ): Boolean {
         // 标题是给用户看的一行字：去掉首尾空白，并且限长。
         // 超长标题在最近任务里会被截断成一串省略号，不如我们自己收口。
         val title = label.trim().take(40).ifBlank { defaultLabel() }
         val path = iconPath?.takeIf { it.isNotBlank() }
         val key = "$title|${path ?: ""}"
-        if (key == appliedTaskKey) return true
+        if (!force && key == appliedTaskKey) return true
 
         // 有路径就按路径解码；解不出来（路径失效 / 不是图片）也**不要**降级成
         // 宿主图标 —— 那会让「小程序卡」突然变成「轻柠卡」，用户以为打开了别的东西。
@@ -589,25 +598,43 @@ open class MainActivity : FlutterActivity() {
      * 从已安装包重新加载那个小程序 —— 两边的运行状态互不干扰，
      * 这也正是「独立窗口」应有的语义。
      *
-     * `data` 用 `lemonlite://miniapp/<appId>`，配 manifest 里的
-     * `documentLaunchMode="intoExisting"`：同一个 appId 再次打开时
-     * 系统会把**已有那张卡**提到前台，而不是越开越多。
+     * 任务独立性不再依赖 `documentLaunchMode`：那套 document task 机制在
+     * 部分国产 ROM（vivo OriginOS 上被反复证实）里会被忽略，结果窗口落进
+     * 宿主任务栈 —— 卡片名变成「Lemon Lite」、关闭窗口回到主界面。
+     * 现在改用最古老、普及率最高的那两个 flag：
+     *
+     *   `NEW_TASK | MULTIPLE_TASK`
+     *
+     * `MULTIPLE_TASK` 的意思是「即使已有同 affinity 的任务，也再起一条」，
+     * 配合 manifest 里那个独立 taskAffinity，每个窗口必然是新任务。
+     *
+     * 「同一个 appId 只留一张卡」改由 [focusExistingWindow] 保证：
+     * 起新任务之前先看看有没有这张卡，有就 `moveToFront()`。
+     * 这比 documentLaunchMode 的复用更可控 —— 它是普通的任务查询与排序，
+     * 不依赖厂商对 document task 的实现。
      */
     private fun openMiniappWindow(appId: String, title: String, iconPath: String?): Boolean {
         if (appId.isBlank()) return false
+        // 文档标识：同一个小程序 = 同一个 data = 同一张卡
+        val documentUri = Uri.parse("lemonlite://miniapp/${Uri.encode(appId)}")
+
+        if (focusExistingWindow(documentUri)) {
+            // 已经有这张卡：提到前台即可。标题与图标不在这里重设 ——
+            // 窗口自己的 Dart 侧会按当前主题与 metadata 再刷一次，
+            // 宿主这边重设只会和它抢同一张卡的 TaskDescription。
+            return true
+        }
+
         return try {
             val intent =
                 Intent(this, MiniappTaskActivity::class.java).apply {
-                    // 文档标识：同一个小程序 = 同一份文档 = 复用同一个任务
-                    data = Uri.parse("lemonlite://miniapp/${Uri.encode(appId)}")
+                    data = documentUri
                     putExtra(MiniappTaskActivity.EXTRA_APP_ID, appId)
                     putExtra(MiniappTaskActivity.EXTRA_TITLE, title)
                     putExtra(MiniappTaskActivity.EXTRA_ICON, iconPath)
-                    // NEW_DOCUMENT 让这张卡成为一条**独立任务**（详情文档卡）；
-                    // NEW_TASK 显式带上：NEW_DOCUMENT 语义上包含它，但个别 ROM
-                    // 的启动器只看 NEW_TASK / affinity，漏了就会把窗口塞进宿主
-                    // 那条任务里 —— 表现为「打开小程序后主应用没了」。
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT or Intent.FLAG_ACTIVITY_NEW_TASK)
+                    // MULTIPLE_TASK 保证新任务；NEW_TASK 是它的前提条件。
+                    // 两个都是 API 1 就有的行为，不依赖任何厂商扩展。
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
                 }
             startActivity(intent)
             true
@@ -618,26 +645,30 @@ open class MainActivity : FlutterActivity() {
     }
 
     /**
-     * 当前 Activity 所在的那条任务，是不是「以窗口自己为根」的独立文档任务。
+     * 这个 appId 是否已经有一张打开着的卡；有就把那张卡提到前台。
      *
-     * 用来决定 [finishTask] 能不能连任务一起删：
-     *   * true  —— 这条任务就是小程序自己的，`finishAndRemoveTask()` 干净利落；
-     *   * false —— 说明窗口落在了宿主那条任务里（ROM 不认 NEW_DOCUMENT 时会这样），
-     *     此时 removeTask 会把宿主一起带走，只能 `finish()` 自己。
+     * 为什么用 `data` 而不是 extras 匹配：`TaskInfo.baseIntent` 不保证保留
+     * extras（不同 ROM 的裁剪程度不一样），而 data URI 是任务身份的一部分，
+     * 一直都会在。
      *
-     * 判定依据是任务的 baseIntent：我们自己起的那条，根组件一定是
-     * [MiniappTaskActivity]；宿主那条的根是带 LAUNCHER 的 MainActivity。
+     * `moveToFront()` 需要 `REORDER_TASKS`（normal 权限，已在清单里声明）。
+     * 查询失败时返回 false，让调用方正常起一个新任务 —— 最坏结果是一张多余的卡，
+     * 比「点了没反应」好。
      */
-    @Suppress("DEPRECATION")
-    private fun isTaskRootOfDocumentTask(): Boolean {
+    private fun focusExistingWindow(documentUri: Uri): Boolean {
         return try {
-            val tasks =
-                getSystemService(ActivityManager::class.java)?.appTasks ?: return false
-            val mine = tasks.firstOrNull { it.taskInfo.taskId == taskId } ?: return false
-            mine.taskInfo.baseIntent?.component?.className ==
-                MiniappTaskActivity::class.java.name
+            val manager = getSystemService(ActivityManager::class.java) ?: return false
+            val existing =
+                manager.appTasks.firstOrNull { task ->
+                    val base = task.taskInfo.baseIntent
+                    base != null &&
+                        base.component?.className == MiniappTaskActivity::class.java.name &&
+                        base.data == documentUri
+                } ?: return false
+            existing.moveToFront()
+            true
         } catch (e: Throwable) {
-            // 查询失败时按「不是独立任务」处理：宁可留一张空卡，也不要把宿主关掉
+            android.util.Log.w("LemonLite", "复用已有小程序任务失败：$documentUri", e)
             false
         }
     }

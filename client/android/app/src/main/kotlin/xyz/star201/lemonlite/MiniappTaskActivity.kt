@@ -89,8 +89,35 @@ class MiniappTaskActivity : MainActivity() {
 
         // 卡片在 Flutter 第一帧之前就要对：窗口一出现，最近任务里就该是
         // 小程序的名字和图标（Dart 起来之后还会再刷一次，值相同则跳过）。
-        applyTaskDescription(extraTitle, intent?.getStringExtra(EXTRA_ICON))
+        //
+        // 标题同时写进 Activity（`setTitle`）：部分国产 ROM 的最近任务卡
+        // 读的是窗口 / Activity 的 title，而不是 `TaskDescription.label`。
+        // 两处都写，覆盖到的机型最多。
+        setTitle(extraTitle)
+        applyTaskDescription(extraTitle, intent?.getStringExtra(EXTRA_ICON), force = true)
     }
+
+    /**
+     * 窗口真正可见之后，再把卡片强写一次。
+     *
+     * 为什么不在 `onCreate` 里写完就算：vivo 的最近任务会在「窗口进入可见」
+     * 那一刻用 `ActivityInfo`（也就是 application 的 label「轻柠」）
+     * 重建一次卡片，把 `onCreate` 里写的 TaskDescription 覆盖掉。
+     * 用户看到的就是「明明打开了柠檬天气，卡片上还是 Lemon Lite」。
+     *
+     * 只做一次：之后 Dart 侧的 `setTitle` 才是权威（小程序可以自己改标题），
+     * 这里反复写会把用户的操作抢回去。
+     */
+    override fun onPostResume() {
+        super.onPostResume()
+        if (cardRewrittenAfterVisible) return
+        cardRewrittenAfterVisible = true
+        setTitle(extraTitle)
+        applyTaskDescription(extraTitle, intent?.getStringExtra(EXTRA_ICON), force = true)
+    }
+
+    /** [onPostResume] 的「只强写一次」标记。 */
+    private var cardRewrittenAfterVisible = false
 
     /**
      * 从宿主再点一次同一个小程序时，系统会把已有任务提到前台并走这里。

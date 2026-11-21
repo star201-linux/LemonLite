@@ -16,6 +16,8 @@
 //   已安装小程序的图标会在安装 / 打开时缓存到本机（见 IconCacheService），
 //   这一页优先读本地文件 —— 断网时也能显示，不用每次进页面都拉一遍网络图。
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -77,25 +79,67 @@ class _ApplicationsPageState extends State<ApplicationsPage> {
   /// 正在刷新（底部导航的小红点会随更新检查变化，手动刷新要能重查一次）
   bool _refreshing = false;
 
+  /// 包集合 / 应用清单变化后的重载去抖。
+  ///
+  /// 为什么不能直接 setState：`_load()` 自己会调 `adoptOrphans()`，
+  /// 后者补进新条目时会 notifyListeners —— 不设闸就是「加载 → 通知 → 加载」。
+  /// 200ms 足够把一次安装引发的多次通知合并成一次重读。
+  Timer? _reloadTimer;
+
   @override
   void initState() {
     super.initState();
     _future = _load();
+    // 这一页在 IndexedStack 里保活，`initState` 一辈子只跑一次。
+    // 不订阅的话，装完小程序再切回来看到的还是安装前的快照 ——
+    // 用户以为「要重启 App 才有列表」。
+    ApplicationRegistry.instance.addListener(_onSourcesChanged);
+    MiniappPackageService.revision.addListener(_onSourcesChanged);
+  }
+
+  @override
+  void dispose() {
+    _reloadTimer?.cancel();
+    ApplicationRegistry.instance.removeListener(_onSourcesChanged);
+    MiniappPackageService.revision.removeListener(_onSourcesChanged);
+    super.dispose();
+  }
+
+  void _onSourcesChanged() {
+    _reloadTimer?.cancel();
+    _reloadTimer = Timer(const Duration(milliseconds: 200), () {
+      if (!mounted) return;
+      setState(() => _future = _load());
+    });
   }
 
   Future<_ApplicationsSnapshot> _load() async {
     final ApplicationRegistry registry = ApplicationRegistry.instance;
 
-    // 目录扫描发现的孤儿 appId 先补进清单：用户手工放进 appfiles 的东西
-    // 也占着磁盘，就该在这里看得见、清得掉。
+    // 应用管理的列表 = 清单 ∪ 磁盘上真实存在的包。
+    //
+    // 只看清单是不够的：安装登记是异步的（`ensureKnown` 不阻塞安装结果），
+    // 而且用户可能手工把包放进 app/ 目录。两种情况下清单里没有条目，
+    // 用户看到的就是「装好了却没有列表」。`installedAll()` 直接扫磁盘，
+    // 是「这台机器上到底有什么」的最终答案。
+    final Set<String> discovered = <String>{};
     try {
-      final List<String> orphans = await MiniappStorageService.instance
-          .allFilesAppIds();
-      await registry.adoptOrphans(orphans);
+      final List<InstalledPackage> installed = await MiniappPackageService
+          .instance
+          .installedAll();
+      discovered.addAll(installed.map((InstalledPackage p) => p.appId));
+    } catch (e) {
+      lemonLog('Applications', '扫描已安装包失败：$e');
+    }
+    try {
+      discovered.addAll(await MiniappStorageService.instance.allFilesAppIds());
     } catch (e) {
       // 存储不可用不该让应用管理打不开
       lemonLog('Applications', '补充孤儿应用失败：$e');
     }
+    // 目录扫描发现的孤儿 appId 先补进清单：用户手工放进 appfiles 的东西
+    // 也占着磁盘，就该在这里看得见、清得掉。
+    await registry.adoptOrphans(discovered);
 
     final List<RegisteredApp> apps = registry.all;
 

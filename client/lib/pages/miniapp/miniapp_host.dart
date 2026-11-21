@@ -422,8 +422,12 @@ class MiniappHost extends ChangeNotifier {
     });
   }
 
-  /// 把「最近任务」里的那张卡片刷成当前状态：前台是小程序就显示小程序，
-  /// 否则显示宿主自己。详见 NativeBridge.setTaskDescription 的注释。
+  /// 把「最近任务」里的那张卡片刷成当前状态。
+  ///
+  /// 只对独立窗口有意义：窗口那张卡代表的就是里面运行的小程序，卡片的标题
+  /// 与图标必须跟着它走。宿主自己的卡永远是「轻柠」—— 用户明确要求
+  /// 「主程序那张卡不变」，所以宿主（[windowMode] 为 false）直接返回，
+  /// 连 `resetTaskDescription` 都不调。
   Future<void> _syncTaskDescription() async {
     // 宿主那张卡永远是「轻柠」—— 用户明确要求「主程序不变」。
     // 只有独立窗口才需要把卡片刷成小程序（窗口本身代表那个小程序）。
@@ -431,7 +435,9 @@ class MiniappHost extends ChangeNotifier {
     if (!windowMode) return;
     final MiniappSession? session = foregroundSession;
     if (session == null) {
-      await NativeBridge.resetTaskDescription();
+      // 窗口没有「空窗口」这个状态：最后一个会话关掉之后这张卡马上就会被
+      // `finishTask` 移除。先把标题改回「轻柠」只会让用户看到一闪而过的
+      // 宿主卡 —— 那不是他打开过的东西。
       return;
     }
 

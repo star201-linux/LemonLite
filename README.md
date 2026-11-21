@@ -29,7 +29,7 @@ repo/
 | JSBridge：Storage / 网络 / 文件 / 下载 / 设备状态 / 蓝牙 / NFC | ✅ |
 | **蓝牙**（BLE + 经典扫描、连接、GATT 读写、notify、RSSI/MTU）与 **NFC**（读卡 / 写 Text） | ✅ |
 | **MD3E 样式拦截**（WebView 文档拦截 + DOM 拦截，只写原生 HTML 也自动变成 MD3） | ✅ |
-| **小程序独立窗口**（独立任务 + 独立 `taskAffinity`：最近任务里宿主一张、小程序一张，各自的卡片用各自的图标；宿主那张保持「轻柠」） | ✅ |
+| **小程序独立窗口**（`NEW_TASK｜MULTIPLE_TASK` + 独立 `taskAffinity`，不依赖 `documentLaunchMode`：最近任务里宿主一张、小程序一张，同一个 appId 只留一张卡；宿主那张保持「轻柠」） | ✅ |
 | 下载管理（交给系统下载器，存 `Download/`） | ✅ |
 | **插件体系**（给宿主加能力，多平台声明，ZIP 导入 / 停用 / 卸载） | ✅ |
 | 后台运行（页面保活，后台期间 JS 定时器挂起） | ✅ |

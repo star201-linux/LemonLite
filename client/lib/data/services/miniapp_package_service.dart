@@ -39,7 +39,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show ValueNotifier, visibleForTesting;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -212,6 +212,20 @@ class MiniappPackageService {
   MiniappPackageService._();
 
   static final MiniappPackageService instance = MiniappPackageService._();
+
+  /// 「本机包集合」的版本号：安装 / 导入 / 移除 / 迁移后 +1。
+  ///
+  /// 为什么需要它：应用管理页是 IndexedStack 里的常驻页面，`initState` 只跑
+  /// 一次。装完一个小程序再切回去，页面还停在安装前的快照上 —— 用户看到的是
+  /// 「要重启 App 才有列表」。页面订阅这里，就能在包集合变化时立刻重读。
+  ///
+  /// 用计数器而不是「包列表」本身：订阅方需要的是「变了」这个事实，
+  /// 具体数据仍以磁盘为准（`installedAll()`），免得两处各存一份真相。
+  static final ValueNotifier<int> revision = ValueNotifier<int>(0);
+
+  static void _bumpRevision() {
+    revision.value++;
+  }
 
   /// 安装信息文件名（应用目录里那个点文件）
   static const String _kInstallFile = '.install.json';
@@ -663,6 +677,8 @@ class MiniappPackageService {
       '$appId 安装完成：v$version → ${target.path}'
       '（${zipBytes.length} 字节，含 $kZipName）',
     );
+    // 换入之后才有「新包」，通知应用管理之类的常驻页面重读
+    _bumpRevision();
     return pkg;
   }
 
@@ -887,6 +903,7 @@ class MiniappPackageService {
   Future<void> remove(String appId) async {
     final Directory dir = await appDir(appId);
     if (dir.existsSync()) dir.deleteSync(recursive: true);
+    _bumpRevision();
   }
 
   /// 所有包占用的磁盘空间

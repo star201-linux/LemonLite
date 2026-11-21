@@ -76,6 +76,11 @@
     <!-- 网页 navigator.vibrate()（MiniappPermission.vibrate） -->
     <uses-permission android:name="android.permission.VIBRATE"/>
 
+    <!-- 把「已打开的小程序任务」提到前台（AppTask.moveToFront）。
+         这是 normal 权限，安装即授予；没有它就只能新开一张卡，
+         同一个 appId 会越开越多。 -->
+    <uses-permission android:name="android.permission.REORDER_TASKS"/>
+
     <!-- 摄像头/麦克风属于「硬件可选」：没有摄像头的设备也能装，
          装了之后调用 getUserMedia 会拿到 NotAllowedError，而不是装不上。 -->
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
@@ -122,22 +127,24 @@
             </intent-filter>
         </activity>
         <!-- 小程序独立窗口：一个 Activity = 一张独立的任务卡。
-             documentLaunchMode="intoExisting" 表示「同一个文档只留一张卡」——
-             MainActivity 把 data 设成 lemonlite://miniapp/<appId>，
-             所以再次打开同一个小程序是把已有那张卡提到前台，不会越开越多。
 
              taskAffinity 必须**显式给一个非空且与宿主不同**的值：
              宿主那条任务的 affinity 是空字符串（见上面 MainActivity），
              窗口若沿用包名默认值，部分 ROM 会把新 Activity 塞进宿主任务里，
              于是最近任务只剩一张卡、卡片还被改成小程序名 —— 用户看到的就是
-             「打开小程序后主应用没了」。独立 affinity 让「另起一条任务」这件事
-             不再依赖 ROM 是否正确实现 NEW_DOCUMENT。 -->
+             「打开小程序后主应用没了」。
+
+             这里**不用** documentLaunchMode：document task 是 Android 5 起的
+             机制，但部分国产 ROM（vivo 上被反复证实）会忽略它，窗口照样落进
+             宿主任务。改成 `NEW_TASK | MULTIPLE_TASK` + 独立 affinity ——
+             这是 API 1 就有的行为，没有任何厂商可以"没实现"。
+             「同一个 appId 只留一张卡」由 MainActivity.focusExistingWindow()
+             用 AppTask.moveToFront() 保证。 -->
         <activity
             android:name=".MiniappTaskActivity"
             android:exported="false"
             android:launchMode="standard"
             android:taskAffinity="xyz.star201.lemonlite.miniapp"
-            android:documentLaunchMode="intoExisting"
             android:theme="@style/LaunchTheme"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"

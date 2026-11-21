@@ -197,4 +197,20 @@ void main() {
     // 原包也换成了这一版（app.zip 里就是刚导入的 v2）
     expect(File(p.join(appRoot.path, 'app.zip')).lengthSync(), zip2.length);
   });
+
+  test('每次安装都会推进 revision（应用管理靠它自动刷新）', () async {
+    // revision 是进程级计数器，测试之间不清零 —— 只断言「变大了」
+    final int before = MiniappPackageService.revision.value;
+
+    await service.installLocalZip(
+      makeZip(<String, String>{'index.html': 'v1'}),
+      fileName: 'tick.zip',
+    );
+    expect(MiniappPackageService.revision.value, greaterThan(before));
+
+    // 移除也要通知：应用管理里那一行得跟着消失
+    final int mid = MiniappPackageService.revision.value;
+    await service.remove('dev.local.tick');
+    expect(MiniappPackageService.revision.value, greaterThan(mid));
+  });
 }

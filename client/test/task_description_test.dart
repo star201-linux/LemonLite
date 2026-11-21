@@ -112,21 +112,53 @@ void main() {
     expect(args['iconPath'], isNull);
   });
 
-  testWidgets('转后台：卡片恢复成宿主自己的样子', (WidgetTester tester) async {
+  testWidgets('关闭最后一个会话：不改回宿主卡片，直接结束这张任务卡', (
+    WidgetTester tester,
+  ) async {
     await MiniappHost.instance.open(
       appId: 'com.example.ledger',
       title: '记账本',
       isTransient: true,
     );
     await settle(tester);
+    final int before = taskCalls().length;
 
+    await MiniappHost.instance.close('com.example.ledger');
+    await settle(tester);
+
+    // 窗口没有「空窗口」状态：这张卡马上会被 finishTask 移除。
+    // 关之前先把它改回「轻柠」只会闪一下宿主卡 —— 用户会以为开错了东西。
+    expect(
+      taskCalls().length,
+      before,
+      reason: '关闭窗口时不该出现 resetTaskDescription',
+    );
+    expect(
+      calls.any((MethodCall c) => c.method == 'finishTask'),
+      isTrue,
+      reason: '最后一个会话关闭后必须结束这张任务卡',
+    );
+  });
+
+  testWidgets('宿主模式（内嵌 / 降级）：一张卡都不动', (WidgetTester tester) async {
+    // 宿主那张卡永远叫「轻柠」—— 用户明确要求「主程序不变」。
+    // 内嵌打开只是宿主里多一层页面，系统卡片不该被改成小程序名。
+    MiniappHost.instance.windowMode = false;
+    final int before = taskCalls().length;
+
+    await MiniappHost.instance.open(
+      appId: 'com.example.ledger',
+      title: '记账本',
+      isTransient: true,
+    );
+    await settle(tester);
     await MiniappHost.instance.sendToBackground('com.example.ledger');
     await settle(tester);
 
     expect(
-      taskCalls().last.method,
-      'resetTaskDescription',
-      reason: '屏幕上已经是宿主了，卡片还挂着小程序名字会让人以为它还在前台',
+      taskCalls().length,
+      before,
+      reason: '宿主模式下既不该 setTaskDescription，也不该 reset',
     );
   });
 
