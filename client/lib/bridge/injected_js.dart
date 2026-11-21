@@ -234,9 +234,22 @@ class LemonJsSdk {
 
   /**
    * 把主题快照写成 CSS 变量。
-   * 两种写法都做：
-   *   1) 注入一个 :root{...} 样式表 —— 页面样式表里可以直接 var(--md-primary)
-   *   2) 写到 <html> 的行内 style —— 优先级更高，且支持 runtime 覆盖
+   *
+   * 只写一条 `:root{...}` 样式表，**不写 <html> 的行内 style**。
+   *
+   * 早先这里两种都做（样式表 + 行内 setProperty），结果是行内变量把页面
+   * 自己的样式全压住了：小程序若在 `<style>` 里写
+   *     [data-theme="dark"] { --md-surface: #1C1B1F; }
+   * 来做自己的黑白切换，那条规则永远输给 `<html style="--md-surface:#FFFBFE">`，
+   * 于是「点了切换按钮什么也没变」（数据变了、像素没变）。
+   * 行内 style 的优先级高于任何选择器，页面无法在不写 !important 的情况下覆盖。
+   *
+   * 现在只留样式表，并且**插在 head 最前面**：页面自己的样式表在它之后，
+   * 同优先级（`:root` 与 `[data-theme]` 都是 0,1,0）时后来者胜 —— 这正好是
+   * 文档里承诺的「小程序想自定义主题，直接覆盖同名变量即可」。
+   * 页面完全不管主题时，这条 :root 就是唯一来源，宿主配色照常生效。
+   *
+   * color-scheme 也放进这条规则里（而不是行内）：页面要改也改得动。
    */
   function applyTheme(payload) {
     if (!payload || typeof payload !== 'object') { return; }
@@ -245,8 +258,10 @@ class LemonJsSdk {
     var root = document.documentElement;
     var vars = payload.cssVariables || {};
     var key;
+    var mode = payload.mode === 'dark' ? 'dark' : 'light';
 
-    var cssText = ':root{';
+    // color-scheme 必须在最前面：它决定表单控件、滚动条、系统色的基准
+    var cssText = ':root{color-scheme:' + mode + ';';
     for (key in vars) {
       if (Object.prototype.hasOwnProperty.call(vars, key)) {
         cssText += key + ':' + vars[key] + ';';
@@ -254,23 +269,19 @@ class LemonJsSdk {
     }
     cssText += '}';
 
+    var head = document.head || root;
     var styleEl = document.getElementById('lemonlite-theme-vars');
     if (!styleEl) {
       styleEl = document.createElement('style');
       styleEl.id = 'lemonlite-theme-vars';
-      (document.head || root).appendChild(styleEl);
+      // 插到最前：页面自己的 <style> / <link> 排在它后面，才能按「后来者胜」覆盖
+      head.insertBefore(styleEl, head.firstChild);
+    } else if (styleEl.parentNode !== head) {
+      head.insertBefore(styleEl, head.firstChild);
     }
     styleEl.textContent = cssText;
 
-    for (key in vars) {
-      if (Object.prototype.hasOwnProperty.call(vars, key)) {
-        root.style.setProperty(key, vars[key]);
-      }
-    }
-
-    var mode = payload.mode === 'dark' ? 'dark' : 'light';
     root.setAttribute('data-md-brightness', mode);
-    root.style.colorScheme = mode;
 
     for (var i = 0; i < themeListeners.length; i++) {
       try { themeListeners[i](currentTheme); } catch (e) { /* 页面回调异常不影响框架 */ }

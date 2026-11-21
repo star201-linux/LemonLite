@@ -112,6 +112,17 @@ open class MainActivity : FlutterActivity() {
     private var defaultTaskDescription: ActivityManager.TaskDescription? = null
 
     /**
+     * 上一次真正写给系统的卡片图标。
+     *
+     * 为什么要留着：Dart 侧刷新卡片时经常只有标题、没有图标（图标缓存异步、
+     * 或者这个包本来就没有市场图标）。早先的实现遇到 iconPath=null 就退回
+     * **宿主图标**，于是「窗口刚打开时卡片上是小程序图标，Dart 一刷新就变成
+     * 轻柠的图标」—— 用户看到的就是「小程序的卡显示的是 Lemon Lite 图标」。
+     * 现在 null 表示「图标不变」，沿用上一次那张。
+     */
+    private var lastTaskIcon: Bitmap? = null
+
+    /**
      * 上一次真正写给系统的 `label|icon` 组合。
      *
      * 小程序 setTitle 可能逐字改标题（比如做打字机效果），每次都跨 Binder 传
@@ -289,7 +300,20 @@ open class MainActivity : FlutterActivity() {
                     result.success(false)
                 } else {
                     result.success(true)
-                    finishAndRemoveTask()
+                    // 只有「这张卡的根就是窗口自己」时才连带任务一起移除；
+                    // 万一把宿主 Activity 也算在同一条任务里（个别 ROM 不认
+                    // NEW_DOCUMENT，会把新 Activity 落到当前任务栈），
+                    // finishAndRemoveTask 会把宿主一起带走 —— 用户看到的就是
+                    // 「打开小程序后主应用没了」。这时只 finish 自己。
+                    if (isTaskRootOfDocumentTask()) {
+                        finishAndRemoveTask()
+                    } else {
+                        android.util.Log.w(
+                            "LemonLite",
+                            "小程序窗口不在独立任务里（taskId=$taskId），只结束自己，保住宿主",
+                        )
+                        finish()
+                    }
                 }
             }
 
@@ -432,8 +456,9 @@ open class MainActivity : FlutterActivity() {
      * 根本分不清那是宿主还是刚才那个小程序，也和「小程序像独立应用」的预期不符。
      * TaskDescription 正好是系统给的、唯一的「这张卡叫什么、长什么样」的入口。
      *
-     * @param iconPath 本地图片绝对路径（图标缓存里那张）；为空表示没有图标，
-     *   此时用宿主自己的图标兜底，而不是留一个空白方块。
+     * @param iconPath 本地图片绝对路径（图标缓存里那张）；为空表示**图标不变**：
+     *   沿用上一次写上去的那张（见 [lastTaskIcon]），第一次写卡片时还没有上次，
+     *   才退回宿主自己的图标 —— 而不是留一个空白方块。
      */
     @Suppress("DEPRECATION")
     protected fun applyTaskDescription(label: String, iconPath: String?): Boolean {
@@ -444,9 +469,13 @@ open class MainActivity : FlutterActivity() {
         val key = "$title|${path ?: ""}"
         if (key == appliedTaskKey) return true
 
-        val icon = path?.let { decodeTaskIcon(it) } ?: appIconBitmap()
+        // 有路径就按路径解码；解不出来（路径失效 / 不是图片）也**不要**降级成
+        // 宿主图标 —— 那会让「小程序卡」突然变成「轻柠卡」，用户以为打开了别的东西。
+        val decoded = path?.let { decodeTaskIcon(it) }
+        val icon = decoded ?: lastTaskIcon ?: appIconBitmap()
         return try {
             setTaskDescription(ActivityManager.TaskDescription(title, icon))
+            if (decoded != null) lastTaskIcon = decoded
             appliedTaskKey = key
             true
         } catch (e: Throwable) {
@@ -465,6 +494,9 @@ open class MainActivity : FlutterActivity() {
                 defaultTaskDescription = it
             })
             appliedTaskKey = null
+            // 卡片回到宿主了，上一次那张小程序图标就过期了：
+            // 不清理的话，之后打开别的小程序、又恰好没图标时会把旧图贴上去。
+            lastTaskIcon = null
             true
         } catch (e: Throwable) {
             android.util.Log.w("LemonLite", "恢复最近任务卡片失败", e)
@@ -571,14 +603,41 @@ open class MainActivity : FlutterActivity() {
                     putExtra(MiniappTaskActivity.EXTRA_APP_ID, appId)
                     putExtra(MiniappTaskActivity.EXTRA_TITLE, title)
                     putExtra(MiniappTaskActivity.EXTRA_ICON, iconPath)
-                    // NEW_DOCUMENT 才会新开任务；MULTIPLE_TASK 会绕过
-                    // intoExisting（每次都新开），所以这里**不能**加。
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
+                    // NEW_DOCUMENT 让这张卡成为一条**独立任务**（详情文档卡）；
+                    // NEW_TASK 显式带上：NEW_DOCUMENT 语义上包含它，但个别 ROM
+                    // 的启动器只看 NEW_TASK / affinity，漏了就会把窗口塞进宿主
+                    // 那条任务里 —— 表现为「打开小程序后主应用没了」。
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_DOCUMENT or Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
             startActivity(intent)
             true
         } catch (e: Throwable) {
             android.util.Log.w("LemonLite", "打开小程序窗口失败：$appId", e)
+            false
+        }
+    }
+
+    /**
+     * 当前 Activity 所在的那条任务，是不是「以窗口自己为根」的独立文档任务。
+     *
+     * 用来决定 [finishTask] 能不能连任务一起删：
+     *   * true  —— 这条任务就是小程序自己的，`finishAndRemoveTask()` 干净利落；
+     *   * false —— 说明窗口落在了宿主那条任务里（ROM 不认 NEW_DOCUMENT 时会这样），
+     *     此时 removeTask 会把宿主一起带走，只能 `finish()` 自己。
+     *
+     * 判定依据是任务的 baseIntent：我们自己起的那条，根组件一定是
+     * [MiniappTaskActivity]；宿主那条的根是带 LAUNCHER 的 MainActivity。
+     */
+    @Suppress("DEPRECATION")
+    private fun isTaskRootOfDocumentTask(): Boolean {
+        return try {
+            val tasks =
+                getSystemService(ActivityManager::class.java)?.appTasks ?: return false
+            val mine = tasks.firstOrNull { it.taskInfo.taskId == taskId } ?: return false
+            mine.taskInfo.baseIntent?.component?.className ==
+                MiniappTaskActivity::class.java.name
+        } catch (e: Throwable) {
+            // 查询失败时按「不是独立任务」处理：宁可留一张空卡，也不要把宿主关掉
             false
         }
     }

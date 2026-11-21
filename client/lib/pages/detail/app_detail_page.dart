@@ -591,7 +591,13 @@ class _AppDetailPageState extends State<AppDetailPage> {
     // 图标先确保落盘再拉起窗口：窗口的卡片要在第一帧就显示小程序的图标，
     // 那是个原生 Bitmap，等窗口自己去下载就晚了，而且窗口里也没有
     // 「应用市场」那套网络上下文。
-    final String? iconPath = await IconCacheService.instance.ensure(
+    //
+    // 优先级：包内图标 → 已缓存的市场图标 → 现下载。包内那张是作者自己放的，
+    // 离线也有；只认市场图标的话，断网打开时卡片会退回宿主图标（看起来就像
+    // 「主应用」而不是这个包）。
+    String? iconPath = _localIcon;
+    iconPath ??= await IconCacheService.instance.pathOf(app.id);
+    iconPath ??= await IconCacheService.instance.ensure(
       appId: app.id,
       url: app.icon,
     );

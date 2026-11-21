@@ -22,9 +22,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:lemonlite/core/native_bridge.dart';
 import 'package:lemonlite/data/models/miniapp_session.dart';
 import 'package:lemonlite/data/services/application_registry.dart';
+import 'package:lemonlite/data/services/miniapp_package_service.dart';
 import 'package:lemonlite/data/services/permission_service.dart';
 import 'package:lemonlite/data/services/settings_service.dart';
 import 'package:lemonlite/pages/miniapp/miniapp_host.dart';
+import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// 图标缓存要用的应用支持目录通道（见 setUp 里为什么要 mock 它）
@@ -163,6 +165,54 @@ void main() {
     await settle(tester);
 
     expect(taskCalls(), isEmpty, reason: '宿主内嵌模式没有独立任务卡，不该改系统卡片');
+  });
+
+  testWidgets('包内有图标时，卡片用包内那张（而不是宿主图标）', (WidgetTester tester) async {
+    // 窗口的卡片代表的就是这个包：市场图标缓存里没有（离线装包 / 本地导入）时，
+    // 也该用包里 metadata.json 声明的图标。否则整张卡看着就是「轻柠」，
+    // 用户以为打开了主应用。
+    final Directory root = Directory.systemTemp.createTempSync('ll-task-');
+    addTearDown(() {
+      MiniappPackageService.instance.debugRootOverride = null;
+      root.deleteSync(recursive: true);
+    });
+    MiniappPackageService.instance.debugRootOverride = root;
+
+    final Directory dir = Directory(p.join(root.path, 'com.example.ledger'))
+      ..createSync(recursive: true);
+    File(p.join(dir.path, 'index.html')).writeAsStringSync('<h1>记账</h1>');
+    File(p.join(dir.path, 'icon.png')).writeAsBytesSync(<int>[0x89, 0x50, 0x4E, 0x47]);
+    File(p.join(dir.path, 'metadata.json')).writeAsStringSync(
+      '{"id":"com.example.ledger","name":"记账本","version":"1.0.0",'
+      '"entry":"index.html","icon":"icon.png"}',
+    );
+    File(p.join(dir.path, '.install.json')).writeAsStringSync(
+      '{"version":"1.0.0","entry":"index.html"}',
+    );
+
+    await MiniappHost.instance.open(
+      appId: 'com.example.ledger',
+      title: '记账本',
+      isTransient: true,
+    );
+    await settle(tester);
+
+    final Map<Object?, Object?> args =
+        taskCalls().last.arguments as Map<Object?, Object?>;
+    expect(args['iconPath'], endsWith('icon.png'));
+  });
+
+  testWidgets('没有任何图标时交 null，由原生沿用上一次那张', (WidgetTester tester) async {
+    await MiniappHost.instance
+        .open(appId: 'com.example.clock', title: '时钟', isTransient: true);
+    await settle(tester);
+    final Map<Object?, Object?> args =
+        taskCalls().last.arguments as Map<Object?, Object?>;
+    expect(
+      args['iconPath'],
+      isNull,
+      reason: 'null 的语义是「图标不变」；早先它会退回宿主图标，卡片看着像主应用',
+    );
   });
 
   testWidgets('没有前台会话时的重复重置是幂等的（不产生多余调用）', (WidgetTester tester) async {

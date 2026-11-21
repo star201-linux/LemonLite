@@ -9,6 +9,7 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:lemonlite/bridge/injected_js.dart';
 import 'package:lemonlite/data/models/app_item.dart';
 import 'package:lemonlite/data/models/category.dart';
 import 'package:lemonlite/data/models/market_feed.dart';
@@ -274,6 +275,30 @@ void main() {
         ThemeInjector.buildLiveUpdateScript(<String, dynamic>{'mode': 'light'}),
         contains('__applyTheme'),
       );
+    });
+  });
+
+  group('主题注入不压住页面自己的样式', () {
+    // 这一组守的是一个只有真机才看得出来的 bug：
+    // 宿主把 --md-* 同时写进 <style> 和 <html style="...">，行内那条优先级
+    // 高于任何选择器，于是小程序自己写的 [data-theme="dark"]{--md-surface:…}
+    // 永远不生效 —— 用户点黑白切换，data-theme 变了、像素没变。
+    test('SDK 不再往 documentElement 写行内变量', () {
+      expect(
+        LemonJsSdk.source.contains('style.setProperty'),
+        isFalse,
+        reason: '行内 style 会压住页面自己的样式表，小程序的黑白切换会失效',
+      );
+      expect(
+        LemonJsSdk.source.contains('style.colorScheme'),
+        isFalse,
+        reason: 'color-scheme 也该走 :root 规则，让页面改得动',
+      );
+    });
+
+    test('color-scheme 写在 :root 规则里，并插在 head 最前', () {
+      expect(LemonJsSdk.source, contains("':root{color-scheme:'"));
+      expect(LemonJsSdk.source, contains('insertBefore(styleEl, head.firstChild)'));
     });
   });
 }

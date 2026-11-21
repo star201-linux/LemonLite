@@ -49,6 +49,7 @@ import '../../core/native_bridge.dart';
 import '../../data/models/miniapp_permission.dart';
 import '../../data/models/miniapp_session.dart';
 import '../../data/services/icon_cache_service.dart';
+import '../../data/services/installed_app_info.dart';
 import '../../data/services/miniapp_package_service.dart';
 import '../../data/services/application_registry.dart';
 import '../../theme/app_theme.dart';
@@ -436,12 +437,22 @@ class MiniappHost extends ChangeNotifier {
 
     // 第一步：只用**本机已有**的图标立刻上卡，不等网络。
     // 标题是卡片上最要紧的信息，为了等一张图标把名字拖后几百毫秒不划算；
-    // 没有图标时原生会退到宿主图标，观感也说得过去。
+    // 没有图标时原生会沿用上一次那张，观感也说得过去。
     String? iconPath;
     try {
       iconPath = await IconCacheService.instance.pathOf(session.appId);
     } catch (e) {
       lemonLog('Host', '读小程序图标失败：$e');
+    }
+    // 市场图标缓存里没有（离线装包 / 本地导入的包 / 管理员没配图标）时，
+    // 用**包内** metadata.json 声明的图标。窗口这张卡代表的就是这个包，
+    // 包里有图就该用它 —— 否则卡片会显示成宿主图标，看起来像「主应用」。
+    if (iconPath == null) {
+      try {
+        iconPath = (await loadInstalledAppInfo(session.appId)).iconPath;
+      } catch (e) {
+        lemonLog('Host', '读包内图标失败：$e');
+      }
     }
     if (_foregroundId != session.appId) return;
     await NativeBridge.setTaskDescription(
