@@ -485,12 +485,17 @@ open class MainActivity : FlutterActivity() {
         return try {
             // Android 13 起直接 new TaskDescription(label, icon) 已废弃，
             // 官方建议走 Builder（部分 ROM 在 T 之后只认 Builder 建出来的对象）。
+            //
+            // 注意：Builder.setIcon 有两个重载（int resId / Bitmap）。在
+            // `apply { icon?.let { setIcon(it) } }` 里，Kotlin 会把内层 `it`
+            // 解析成 Int 重载，编译报「expected Int」。所以这里显式取一个
+            // Bitmap 变量再调 setIcon(bitmap)，避免重载歧义。
             val description =
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    ActivityManager.TaskDescription.Builder()
-                        .setLabel(title)
-                        .apply { icon?.let { setIcon(it) } }
-                        .build()
+                    val builder = ActivityManager.TaskDescription.Builder().setLabel(title)
+                    val bitmap = icon
+                    if (bitmap != null) builder.setIcon(bitmap)
+                    builder.build()
                 } else {
                     @Suppress("DEPRECATION")
                     ActivityManager.TaskDescription(title, icon)
