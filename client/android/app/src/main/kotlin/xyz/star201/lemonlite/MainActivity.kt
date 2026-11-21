@@ -483,7 +483,19 @@ open class MainActivity : FlutterActivity() {
         val decoded = path?.let { decodeTaskIcon(it) }
         val icon = decoded ?: lastTaskIcon ?: appIconBitmap()
         return try {
-            setTaskDescription(ActivityManager.TaskDescription(title, icon))
+            // Android 13 起直接 new TaskDescription(label, icon) 已废弃，
+            // 官方建议走 Builder（部分 ROM 在 T 之后只认 Builder 建出来的对象）。
+            val description =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    ActivityManager.TaskDescription.Builder()
+                        .setLabel(title)
+                        .apply { icon?.let { setIcon(it) } }
+                        .build()
+                } else {
+                    @Suppress("DEPRECATION")
+                    ActivityManager.TaskDescription(title, icon)
+                }
+            setTaskDescription(description)
             if (decoded != null) lastTaskIcon = decoded
             appliedTaskKey = key
             true

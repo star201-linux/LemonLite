@@ -95,6 +95,15 @@ class MiniappTaskActivity : MainActivity() {
         // 两处都写，覆盖到的机型最多。
         setTitle(extraTitle)
         applyTaskDescription(extraTitle, intent?.getStringExtra(EXTRA_ICON), force = true)
+
+        // 一行关键诊断：窗口是不是真的拿到了独立任务。
+        // `isTaskRoot() == true` 表示这张卡以窗口自己为根（独立任务）；
+        // 为 false 说明被 ROM 塞进了宿主任务栈 —— 卡片会被宿主那张卡盖掉。
+        // 用户反馈「卡片还是 Lemon Lite」时，adb logcat -s LemonLite 就能看出来。
+        android.util.Log.i(
+            "LemonLite",
+            "小程序窗口启动：appId=$extraAppId taskId=$taskId isTaskRoot=${isTaskRoot()} 标题=$extraTitle",
+        )
     }
 
     /**
