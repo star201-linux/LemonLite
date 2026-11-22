@@ -32,22 +32,8 @@ final GlobalKey<ScaffoldMessengerState> lemonMiniappMessengerKey =
 /// 正式包里它只是一个多余的 GlobalKey，没有任何行为副作用。
 final GlobalKey kAppCaptureBoundaryKey = GlobalKey();
 
-/// 「请外壳切回主页 Tab」的信号。
-///
-/// 为什么用信号而不是让 MiniappHost 直接改 Tab 索引：
-///   MiniappHost 在 pages/ 下，AppShell 在 app.dart —— 让 host 去操作
-///   AppShell 的状态会形成「下层驱动上层」的反向依赖。
-///   一个自增的 ValueNotifier 把方向理顺：host 只负责说「该回主页了」，
-///   怎么回由 AppShell 自己决定。
-///   用自增计数而不是 bool，是因为「连续两次返回主页」也要各触发一次。
 final ValueNotifier<int> shellHomeRequested = ValueNotifier<int>(0);
 
-/// 当前是否有小程序处于前台。
-///
-/// 由 MiniappHost 维护，AppTheme.showToast 读它来决定用哪个 ScaffoldMessenger。
-/// 之所以用一个裸 bool 而不是让 theme 层去 import 页面层：
-/// 那会形成 theme → pages 的反向依赖（pages 已经依赖 theme），
-/// 用一个小状态位把方向理顺，比引入回调注册表更直观。
 bool miniappForegroundActive = false;
 
 /// 框架名（getSystemInfo 会返回给小程序的 framework 字段）
@@ -74,15 +60,6 @@ const String kDefaultServerUrl = String.fromEnvironment(
   defaultValue: 'https://lemonlite.cc.cd',
 );
 
-/// 统一日志。
-///
-/// **两个去向**：
-///   1. debugPrint —— 只在 debug 包里（连着 adb 时能直接看到）
-///   2. RunLog 缓冲区 —— **release 包里也记**，用户可以一键导出
-///
-/// 为什么改成两边都记：release 包以前什么都不留，用户报「白屏」时
-/// 我手上没有任何信息，只能猜。缓冲区有上限（2000 条）且只在内存里，
-/// 代价可以忽略。
 void lemonLog(String tag, Object? message) {
   if (kDebugMode) {
     debugPrint('[$kFrameworkName/$tag] $message');

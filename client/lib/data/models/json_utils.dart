@@ -1,12 +1,3 @@
-// lib/data/models/json_utils.dart
-//
-// index.json 的宽松解析工具。
-//
-// 阶段一的原则：**单条数据出问题不能影响整体渲染**。
-// 所以字段一律走「带默认值的宽松读取」，只有结构性错误（apps 不是数组、顶层不是对象）
-// 才向上抛 FormatException，由 MarketRepository 统一转成给用户看的错误文案。
-
-/// 取字符串，缺失/类型不符时返回 [fallback]（会 trim）
 String asString(Object? value, {String fallback = ''}) {
   if (value == null) return fallback;
   if (value is String) {
@@ -135,11 +126,6 @@ String formatBytes(int bytes) {
   return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
 }
 
-/// 精确到分钟的时间：`2026-11-15 09:30`（本地时区）。
-///
-/// 与 [formatDateTimeLabel] 的分工：那个回答「多久以前」，适合列表里的
-/// 「上次同步」；公告要回答「哪天发的」，相对时间反而没用 ——
-/// 「3 天前」看不出这条是不是在某个版本发布之前。
 String formatDateTimeExact(DateTime? time) {
   if (time == null) return '时间未知';
   final DateTime local = time.toLocal();

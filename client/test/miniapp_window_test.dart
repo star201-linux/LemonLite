@@ -1,15 +1,3 @@
-// test/miniapp_window_test.dart
-//
-// 「小程序独立窗口」的两条契约：
-//
-//   1. 路由解析：原生用 `/miniapp-window?appId=…&title=…` 启动第二个进程，
-//      解析失败必须**安静地退回宿主**（而不是抛异常黑屏）。
-//   2. 窗口语义：窗口模式下「关闭 = 结束这张任务卡」，不是宿主里的
-//      「转后台」。这两件事在同一个 MiniappHost 上靠 windowMode 分流，
-//      分错了会出现「点关闭，窗口还在」或者「在宿主里点关闭，App 没了」。
-//
-// 原生侧（MiniappTaskActivity / FLAG_ACTIVITY_NEW_DOCUMENT）没法在单测里
-// 验证，所以这里只钉住 Dart 能决定的那部分；Kotlin 靠编译 + 真机验证。
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';

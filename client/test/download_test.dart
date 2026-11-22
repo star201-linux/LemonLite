@@ -1,11 +1,3 @@
-// test/download_test.dart
-//
-// 下载管理的纯逻辑测试。
-//
-// 这里只测**不碰平台通道**的部分：文件名推断/清洗、记录序列化、状态映射、
-// 下载子目录清洗。真正的下载走系统 DownloadManager，单元测试环境里没有，
-// 必须在真机上验（见 docs §15.17）—— 也正因为这样，"哪些名字能被写进
-// 公共下载目录"这条安全边界必须在纯函数层被钉死。
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lemonlite/data/services/download_service.dart';

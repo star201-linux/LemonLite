@@ -1,15 +1,3 @@
-// lib/core/nfc_bridge.dart
-//
-// NFC 原生能力的 Dart 侧封装。
-//
-// 为什么读卡是「一次调用等一张卡」而不是持续回调：
-//   JSBridge 目前只有请求/响应，没有服务端推送；与其发一套事件通道，
-//   不如让页面明确地说「我现在要读一张卡，最多等 N 秒」——这正是
-//   Android Reader Mode 的模型，也不会出现「页面已经退出还在监听」的泄漏。
-//   （蓝牙的 notify 用到了桌面/移动端通用的事件通道，见 injected_js.dart。）
-//
-// 跨平台：公共 API 只依赖 [NfcBackend]，Android 用 `lemonlite/nfc` 通道实现；
-// 将来 iOS（CoreNFC）/ 桌面只要注册一个实现即可。
 
 import 'dart:async';
 

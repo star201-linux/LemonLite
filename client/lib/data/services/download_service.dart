@@ -1,21 +1,3 @@
-// lib/data/services/download_service.dart
-//
-// 下载管理的数据层：一条记录 = 系统 DownloadManager 里的一个任务。
-//
-// 设计上有一条硬约束：**文件落在公共「下载」目录，由系统下载器负责写**。
-// 原因是 Android 10 起应用不能直接往 Download/ 写文件（要么 MediaStore、
-// 要么 SAF、要么 MANAGE_EXTERNAL_STORAGE）。宿主不申请「所有文件」，
-// 所以下载必须是「交给系统」，这也正是用户要的「网页下载调用下载器」。
-//
-// 由此产生的两个后果，都在这里处理：
-//   1. 宿主读不了那些文件 → 记录里只存元数据（名字/大小/时间/状态），
-//      「打开 / 删除」都走 DownloadManager 自己的 API（见 Kotlin DownloadBridge）。
-//   2. DownloadManager 的 id 是系统分配的，重启 app 仍然有效 → 记录落盘，
-//      启动时按 id 回查真实状态；查不到（用户清了数据、重装）就当失败条目留着，
-//      由用户自己删掉，而不是悄悄消失。
-//
-// 平台：只有 Android 有通道。其它平台 `isSupported == false`，enqueue 直接抛
-// DownloadException（界面据此显示「当前平台不支持下载」），不会静默不动。
 
 import 'dart:async';
 import 'dart:convert';
@@ -51,8 +33,6 @@ enum DownloadStatus {
 
   bool get isFinished => this == DownloadStatus.success;
 
-  /// 宽松解析：认不出来就回落到 failed —— 一个不认识的系统状态
-  /// 更可能是出错，而不是"完成了"。
   static DownloadStatus parse(
     Object? raw, {
     DownloadStatus fallback = DownloadStatus.failed,
@@ -195,11 +175,6 @@ class DownloadException implements Exception {
   String toString() => message;
 }
 
-/// 下载服务（单例）。
-///
-/// 为什么是 ChangeNotifier + 单例：下载进度要在「小程序页面（触发）」与
-/// 「下载管理页（展示）」之间共享，而且要能跨页面存活。轮询只在这一层做，
-/// 页面只消费快照。
 class DownloadService extends ChangeNotifier {
   DownloadService._(this._settings);
 
@@ -607,11 +582,6 @@ class DownloadService extends ChangeNotifier {
     }
   }
 
-  /// 清掉失败 / 已取消的**记录**（不动正在下载的，也不动已完成的）。
-  ///
-  /// 为什么不顺手把已完成的也清掉：清记录不删文件 —— 那会让文件留在
-  /// Download/ 里却查不到来源，是比"记录多"糟糕得多的问题；
-  /// 而删除文件需要用户明确点一次（管理页每条都有删除按钮）。
   Future<int> clearFinished() async {
     final int before = _tasks.length;
     _tasks.removeWhere(
@@ -739,9 +709,6 @@ class DownloadService extends ChangeNotifier {
           .where((String s) => s.isNotEmpty)
           .toList(growable: false);
       if (segments.isEmpty) return null;
-      // pathSegments **已经做过百分号解码**，这里不能再 decodeComponent 一次：
-      // 二次解码遇到中文会直接抛 Illegal percent encoding（旧实现的 bug），
-      // 结果所有带中文文件名的 URL 都会退化成时间戳文件名。
       return segments.last;
     } catch (_) {
       return null;

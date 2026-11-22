@@ -1,16 +1,3 @@
-// lib/core/native_bridge.dart
-//
-// 「音量 / 亮度 / 屏幕常亮 / 屏幕方向」四类原生能力的 Dart 侧封装（Android）。
-//
-// 为什么放在 core/：这些是「宿主机 / 设备」级能力，不属于某个小程序，也不依赖小程序上下文
-// （没有 appId、不需要 themeController）。小程序 API 层、设置页、播放器页面都可能直接调用，
-// 放在 core/ 可以避免它们反向依赖 bridge/ 或 pages/。
-//
-// 调用方约定（很重要）：
-//   1. 只有 Android 走平台通道；其它平台 isSupported == false，所有方法直接返回
-//      null / false 而**不抛异常**，调用方自己降级（例如 iOS 上交给系统音量键处理）。
-//   2. 通道调用失败（原生抛错、插件未注册）只记一行 lemonLog 并返回 null / false，
-//      绝不把平台异常抛给调用方 —— 一次调音量失败不该把白屏甩给用户。
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -215,14 +202,6 @@ class NativeBridge {
     }
   }
 
-  /// 把「最近任务」里的卡片改成 [label] + [iconPath]（本地图片绝对路径）。
-  ///
-  /// 为什么需要：宿主只有一个任务，用户打开小程序后按 Home，
-  /// 最近任务里原本只有一个写着「轻柠」的卡片 —— 点回来时分不清那是什么，
-  /// 也不像「小程序是一个独立应用」。改成小程序自己的名字和图标后，
-  /// 从后台切回来看到的就是刚才那个小程序，和微信小程序的做法一致。
-  ///
-  /// [iconPath] 为空时原生用宿主图标兜底；读不到文件同样兜底，不会留空白。
   static Future<bool> setTaskDescription({
     required String label,
     String? iconPath,
@@ -267,15 +246,6 @@ class NativeBridge {
     }
   }
 
-  /// 把小程序**作为独立任务**打开（Android「最近任务」里多一张卡）。
-  ///
-  /// 与 `MiniappHost.open()` 的区别是根本性的：
-  ///   * `MiniappHost.open` 是宿主进程里的一个层，最近任务里只有宿主那张卡；
-  ///   * 这个方法是新 Activity + 新 Flutter 引擎 + 新任务卡，宿主那张卡不变，
-  ///     两张卡在切换器里并存（微信小程序就是这么做的）。
-  ///
-  /// 返回 false 表示原生侧没接这个请求（非 Android / 通道不可用），
-  /// 调用方应当退回宿主内嵌的打开方式，而不是什么都不做。
   static Future<bool> openMiniappWindow({
     required String appId,
     required String title,
@@ -325,18 +295,6 @@ class NativeBridge {
     }
   }
 
-  /// 申请 Android **运行时权限**（CAMERA / RECORD_AUDIO 等）。
-  ///
-  /// 为什么必须由宿主来做：WebView 的 `onPermissionRequest` 只告诉宿主
-  /// 「网页想要摄像头」，它**不会**替宿主去申请系统权限。而 Chromium 真正
-  /// 打开采集设备时，Android 仍然会按运行时权限拦一道。所以顺序必须是
-  /// **先拿到系统权限，再回 ALLOW** —— 反过来会出现「用户明明点了允许，
-  /// 摄像头却打不开，而且没有任何报错」这种最难查的故障。
-  ///
-  /// 返回**全部**权限是否都已授予。任一被拒绝就返回 false，
-  /// 调用方据此回 DENY（而不是放行一个注定失败的请求）。
-  ///
-  /// 非 Android 平台返回 true（没有这层概念，不该拦住调用方）。
   static Future<bool> requestRuntimePermissions(
     List<String> permissions,
   ) async {
@@ -360,11 +318,6 @@ class NativeBridge {
     }
   }
 
-  /// 跳到本应用在系统设置里的详情页。
-  ///
-  /// 用于用户已经「拒绝且不再询问」之后的兜底：那时应用再也弹不出系统框，
-  /// 只能引导用户自己去设置里打开。打不开（部分 ROM 没有这个 Activity）
-  /// 时返回 false，调用方自己决定怎么提示。
   static Future<bool> openAppSettings() async {
     if (!isSupported) return false;
     try {

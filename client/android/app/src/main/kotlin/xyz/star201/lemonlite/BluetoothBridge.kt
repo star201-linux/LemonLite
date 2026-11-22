@@ -33,29 +33,6 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.max
 
-/**
- * 蓝牙原生桥。
- *
- * 能力范围：
- *   * 适配器状态 / 请求打开 / 已配对列表 / 当前连接列表；
- *   * 扫描：BLE（可带服务 UUID 过滤）+ 经典蓝牙发现，实时 `scanResult` 事件；
- *   * GATT：连接、服务发现、特征值 read/write、notify/indicate 订阅、
- *     RSSI、MTU、连接状态事件；
- *   * 经典蓝牙：`createBond()` 配对 + `bondState` 事件。
- *
- * 为什么经典蓝牙只做「发现 + 配对」而不做 SPP 数据流：
- *   经典蓝牙的串口（SPP）没有统一的 UUID 语义，每个设备的服务/串口参数
- *   都不一样，做成通用 JS API 只会得到一个只能连特定型号的半成品。
- *   BLE 的 GATT 模型才是小程序真正能用的那一层。
- *
- * 跨平台：Dart 侧通过 `BluetoothBackend` 接口调用；本类只实现 Android 通道
- * `lemonlite/bluetooth`。iOS / 桌面实现同一个方法/事件契约即可。
- *
- * 权限：
- *   * Android 12+：BLUETOOTH_SCAN / BLUETOOTH_CONNECT（运行时）
- *   * Android 11 及以下：BLUETOOTH / BLUETOOTH_ADMIN（安装期）+ 扫描需要定位
- * 应用内是否允许某个小程序使用蓝牙，由 Dart 的权限弹窗负责；这里只处理系统层。
- */
 class BluetoothBridge(private val activity: Activity) {
 
     companion object {
@@ -253,8 +230,6 @@ class BluetoothBridge(private val activity: Activity) {
         val a = adapter
         val bleSupported =
             activity.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
-        // Android 12+ 的 isEnabled() 也需要 BLUETOOTH_CONNECT：没授权时不能去问，
-        // 否则会抛 SecurityException，让一个「只想知道设备有没有蓝牙」的调用失败。
         val hasConnect = connectPermissionOk()
         val enabled = if (hasConnect) {
             try {

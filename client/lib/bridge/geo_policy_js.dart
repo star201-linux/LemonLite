@@ -1,21 +1,3 @@
-// lib/bridge/geo_policy_js.dart
-//
-// 定位策略注入脚本（页面侧）。
-//
-// 为什么需要它：WebView 的 `onGeolocationPermissionsShowPrompt` 只能回答
-// 「给不给」，**改不了坐标**。而框架的定位授权有两个独立维度：
-//   * 精度：精确 / 近似（近似要模糊到约 3 平方公里）；
-//   * 后台：小程序切到后台后还能不能读位置。
-// 这两件事只能在页面侧做 —— 把 `navigator.geolocation` 包一层：
-//   1. 页面被宿主标记为「后台且不允许后台定位」时，直接回 PERMISSION_DENIED；
-//   2. 精度是「近似」时，把坐标按 0.02° 网格取整、精度至少报 1500m，
-//      并抹掉海拔 / 速度 / 方向（Android 的近似位置也是这么给的）。
-//
-// 策略从哪来：宿主在建 WebView 时先注入 `window.__LEMONLITE_GEO__`（快照），
-// 之后任何变化都通过 `window.__lemonliteApplyGeo({...})` 推下来。
-// 这样页面里读到的永远是**当前**策略，不需要页面自己去问。
-
-/// 页面侧的定位包装脚本。必须在页面脚本之前注入（AT_DOCUMENT_START）。
 class GeoPolicyJs {
   const GeoPolicyJs._();
 
@@ -31,8 +13,6 @@ class GeoPolicyJs {
 
   var DEFAULTS = {
     allowed: false,
-    // 'ask' | 'granted' | 'denied'。缺省按 ask：没问过用户不等于拒绝，
-    // 要放行到 WebView，由宿主弹授权框（见 miniapp_page 的定位回调）。
     state: 'ask',
     precision: 'fine',
     background: false,
@@ -53,17 +33,6 @@ class GeoPolicyJs {
   var nativeWatch = geo.watchPosition.bind(geo);
   var nativeClear = geo.clearWatch.bind(geo);
 
-  /**
-   * 当前这次读位置是否被策略挡住。
-   *
-   * 只有两种情况算「挡」：
-   *   1. 用户已经明确拒绝；
-   *   2. 小程序在后台，且没给后台定位。
-   *
-   * **「还没问过」不算挡**：放行到 WebView，Android 会回调
-   * onGeolocationPermissionsShowPrompt，宿主在那里弹授权框。之前把
-   * 「未决定」也当拒绝，结果是定位被静默拦掉、用户从没被问过。
-   */
   function blocked() {
     if (policy.state === 'denied') { return true; }
     if (!policy.foreground && !policy.background) { return true; }

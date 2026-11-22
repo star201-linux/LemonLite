@@ -1,34 +1,3 @@
-// lib/data/services/miniapp_storage_service.dart
-//
-// 小程序的「数据面」：进程内 storage（SharedPreferences 键值）+ 磁盘文件沙箱。
-//
-// 每个小程序有**两个**文件根目录，小程序自己选调用哪个（FileScope）：
-//
-//   files（共享目录，默认）
-//     <getExternalStorageDirectory()>/appfiles/<appId>/
-//     Android 上 getExternalStorageDirectory() = /storage/emulated/0/Android/data/<包名>/files
-//     → /storage/emulated/0/Android/data/xyz.star201.lemonlite/files/appfiles/<小程序 id>
-//     用户在系统文件管理器里能直接看到、能拷出来，适合放用户要拿走的文件。
-//
-//   private（私有目录）
-//     <getApplicationSupportDirectory()>/appfiles/<appId>/
-//     Android 上 getApplicationSupportDirectory() = /data/user/0/<包名>/files
-//     → data/data/xyz.star201.lemonlite/files/appfiles/<小程序 id>
-//     只有本应用（同一个 uid）读得到，卸载即消失，适合放缓存与内部状态。
-//
-// storage : SharedPreferences，key = `miniapp.storage.<appId>.<用户的 key>`
-//           （键值存储不分作用域：它本来就在应用私有目录里）
-//
-// 为什么给每个小程序单独一个文件夹：
-//   1. 卸载式清理只要删一个目录（clearFiles），不用遍历判断归属；
-//   2. 路径穿越防护只需要在「小程序根」上做一次，子路径怎么折腾都出不去；
-//   3. 用户能在系统文件管理器里按 id 找到对应数据。
-//
-// 两个根目录共用同一套路径校验（normalizeRelativePath + isWithin 复核），
-// 所以「换个 scope」不会削弱任何一条安全约束 —— 逃逸出哪一个都不行。
-//
-// 这里同时也是「设置 → 存储」的数据层：占用统计、单 App 清理、键级清理都在这里，
-// 页面只负责渲染。
 
 import 'dart:convert';
 import 'dart:io';
@@ -784,8 +753,6 @@ class MiniappStorageService {
   Future<bool> removeStorageEntry(String rawKey) =>
       SettingsService.instance.removeRaw(rawKey);
 
-  /// 「清除数据」= storage + 两个文件目录 + 用量记录。
-  /// 刻意**不**动授权设置：那是用户对该小程序的信任决定，清数据不该顺手重置。
   Future<void> clearAllData(String appId) async {
     await clearStorage(appId);
     for (final FileScope scope in FileScope.values) {

@@ -1,21 +1,3 @@
-// server/src/config.js
-//
-// 配置的唯一入口：**读 config.yaml**，缺项用内置默认值，环境变量可临时覆盖。
-//
-// 为什么从 .env 换成 YAML：
-//   * 配置是**分层的**（`mail.smtp.host` 属于「邮件 → SMTP → 主机」），
-//     而 .env 是一层扁平键，只能靠 `MAIL_SMTP_HOST` 这种前缀硬编码层级；
-//     层级一多，键名就开始互相撞（`MAIL_CODE_TTL` 到底是验证码有效期还是别的？）。
-//   * YAML 能写注释、能表示布尔与数字，不需要「把 'true' 和 'on' 都当 true」。
-//   * 一个文件就能看懂全部可配项，不用在 README 和 .env.example 之间来回翻。
-//
-// 优先级：**环境变量 > config.yaml > 内置默认值**。
-//   保留环境变量覆盖是为了容器 / CI：`DB_PASSWORD=xxx npm start` 能临时改一项，
-//   不必挂载整个配置文件。它不是让你把配置拆两处写。
-//
-// config.yaml 不存在时：自动从 config.example.yaml 复制一份。
-//   「clone 下来就能跑」很重要 —— 第一次部署的人不该先读三页文档才知道
-//   有个文件没建。
 
 import { copyFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -29,11 +11,6 @@ const ROOT = join(__dirname, '..');
 export const CONFIG_PATH = join(ROOT, 'config.yaml');
 export const EXAMPLE_CONFIG_PATH = join(ROOT, 'config.example.yaml');
 
-// ================================================================ 内置默认值
-//
-// 这份对象有两个作用：config.yaml 缺项时的兜底，以及「哪些键是合法的」的定义。
-// 它必须与 config.example.yaml 的键集合完全一致 —— 有测试盯着这件事
-// （test/config_file.test.js），否则迟早出现「文档里有、代码不认」的配置项。
 
 export const CONFIG_DEFAULTS = {
   http: { host: '0.0.0.0', port: 3000, trustProxy: false },
@@ -125,9 +102,6 @@ const configCreated = ensureConfigFile();
 
 const loaded = readConfigFile(CONFIG_PATH);
 if (loaded.error) {
-  // 配置写坏时**直接退出**，而不是带着半套默认值继续跑。
-  // 带病运行的后果是「服务起来了但连错库 / 发不出邮件」，那比启动失败
-  // 难排查得多 —— 启动失败至少指得清是哪一行。
   console.error(`\x1b[31m✗ config.yaml 解析失败：${loaded.error}\x1b[0m`);
   console.error(`  文件：${CONFIG_PATH}`);
   console.error('  改好之后重新启动。如果只是想重来：');
@@ -137,11 +111,6 @@ if (loaded.error) {
 
 const FILE = loaded.data;
 
-// ================================================================ 类型收敛
-//
-// YAML 里 `port: "3000"`（带引号）会读成字符串，`secure: yes` 会读成 true。
-// 配置是手写的，不能指望类型永远正确 —— 这里统一收敛成代码期望的类型，
-// 顺带把「写成了离谱的值」夹回合法区间。
 
 function str(value, fallback) {
   if (value === undefined || value === null) return fallback;
@@ -228,8 +197,6 @@ export const config = {
     // 牺牲一点「token 被偷后的窗口期」是划算的；面向公网的多租户场景请改回 7d。
     sessionTtl: ttl(authRaw.sessionTtl, d.auth.sessionTtl),
 
-    // 注册是否要邮箱验证码。关掉只适合内网/自测 —— 邮箱不是秘密，
-    // 没有验证就等于谁都能用别人的邮箱开号。
     registerCode: bool(authRaw.registerCode, d.auth.registerCode),
 
     // 登录是否再要一次邮箱验证码（二次验证）。
@@ -381,8 +348,6 @@ export const config = {
       1024,
       20 * 1024 * 1024,
     ),
-    // data.json 大小上限（字节）。这是「一大块不透明 JSON」，
-    // 上限设大一点（16MB）但绝不能无上限 —— 否则一个用户就能把磁盘写满。
     maxDataBytes: int(
       userdataRaw.maxDataBytes,
       d.userdata.maxDataBytes,
@@ -394,13 +359,6 @@ export const config = {
   root: ROOT,
 };
 
-// ================================================================ 环境变量覆盖
-//
-// 保留这一层是为了容器部署：`docker run -e DB_PASSWORD=...` 比挂载并改写
-// 一个 YAML 文件方便得多。键名沿用 1.0 的 .env 变量名，老部署不用改。
-//
-// 类型写在每一项里：环境变量天生是字符串，"false" 必须变成 false，
-// 否则 `trustProxy: "false"` 会被当成真值（所有非空字符串都是真值）。
 
 const ENV_MAP = [
   // http
@@ -510,8 +468,6 @@ for (const [envKey, path, kind] of ENV_MAP) {
   envOverrides.push(`${envKey} → ${path}`);
 }
 
-// config.admin.sessionTtlMs 是内部用的毫秒值，由小时换算。
-// 用 getter 而不是快照：面板改 hours 之后，下一次签 cookie 就该用新值。
 Object.defineProperty(config.admin, 'sessionTtlMs', {
   enumerable: true,
   get: () => config.admin.sessionTtlHours * 3600 * 1000,

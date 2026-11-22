@@ -1,17 +1,3 @@
-// server/src/routes/announcements.js
-//
-// 站点公告（公开，不需要登录）。
-//
-//   GET /api/announcements?limit=20&offset=0   历史公告（按发布时间倒序）
-//   GET /api/announcements/latest              最新一条（客户端启动时用）
-//
-// 为什么不需要登录：公告就是「贴在大门口的通知」——
-// 未登录的用户更需要看到它（比如「服务维护中」「注册已关闭」）。
-//
-// **只返回 published_at <= 现在 的公告**。这一条让「定时发布」变成免费功能：
-// 面板里把发布时间填成明天早上 9 点，到点客户端自然就能拉到，
-// 不需要任何定时任务去「上架」它。
-// 代价是「发布时间」必须可信 —— 面板允许改它（写错日期是常态）。
 
 import { Router } from 'express';
 import { query, queryOne } from '../db.js';
@@ -46,13 +32,6 @@ function offsetOf(raw) {
   return n;
 }
 
-/**
- * GET /api/announcements
- *
- * 分页用 offset 而不是游标：公告是**只增不改的短列表**，
- * 一年也就几十条，客户端一次性翻到底（limit 50）就结束了。
- * 游标分页在这里只会增加双方的复杂度。
- */
 announcementsRouter.get(
   '/',
   wrap(async (req, res) => {

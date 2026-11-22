@@ -139,8 +139,6 @@ export async function storePackage({ appId, version, buffer }) {
     relUrl: `packages/${appId}/${version}.zip`,
     file,
     metadata: meta.metadata,
-    // 包声明的入口（已带上外层目录前缀）。写库时以它为准：
-    // 否则客户端按 metadata 打开、市场数据却指向另一个文件。
     metadataEntry: meta.metadata ? meta.entry : null,
     hasMetadata: Boolean(meta.metadata),
   };

@@ -1,44 +1,3 @@
-// lib/pages/miniapp/miniapp_host.dart
-//
-// 小程序「多会话 + 后台运行」管理器。
-//
-// 为什么不能继续用「一个路由装一个小程序」：
-//   「后台运行」要求在退出页面之后**页面状态还在**（WebView 不重载、JS 不重启），
-//   而路由一旦 pop 就会 dispose，WebView 随之销毁。所以小程序不能是路由，
-//   必须是一个**比路由活得久**的层。
-//
-// 做法：把全部会话放进一个宿主外壳内部的 Stack 层（见 MiniappLayer），
-//   由 AppShell 把这一层叠在「底部导航 + 当前 Tab」**之上**。
-//   * 它盖住底部导航与外壳内容；
-//   * 但它自己不是路由，不参与 pop，所以能一直存活；
-//   * 从它里面 push 出来的页面（权限管理等）是真实路由，
-//     **天然压在它之上**，返回时回到小程序 —— 这正是我们要的层序。
-//
-// ⚠️ 为什么不用 OverlayEntry（这是 0.3 之前踩过的坑，别再改回去）：
-//   Navigator 每次路由变化都会执行 overlay.rearrange(_allRouteOverlayEntries)，
-//   而我们的 entry 不在那个列表里 —— 它会被当成「多余条目」重新插到
-//   _entries 的最顶端（insertAll(_entries.length, old)）。
-//   于是 push 权限管理页之后，那个页面落在覆盖层**下面**：
-//   菜单点了「看起来没反应」，其实页面已经打开，只是被 WebView 盖住了。
-//   把层放进 AppShell 的 Stack 就没有这个问题 —— 路由管理器管不到它，
-//   而 Stack 的 z 序是写死的。
-//
-// 多个会话之间用 IndexedStack 切换：
-//   IndexedStack 会**布局**所有子节点但只**绘制**选中的那个，
-//   所以后台会话的 WebView 尺寸不会塌成 0（不会触发页面 resize 重排），
-//   同时又不会被画到屏幕上、也收不到点击。
-//
-// 保活的诚实边界（README 里也写了）：
-//   这是**进程内**保活。切到后台的会话不会被销毁、不会重新加载，
-//   页面状态（DOM / 滚动位置 / 表单内容）都还在，但 JS 定时器会被
-//   显式挂起（pauseTimers），回到前台再恢复 —— 后台继续跑 setInterval
-//   会让前台掉帧并白白耗电。Android 在内存紧张时仍可能回收整个进程，
-//   那不是框架能保证的。
-//
-// 依赖方向：miniapp_host → miniapp_page（要用会话视图）。
-// miniapp_page 又会 import 本文件（菜单里的关闭/后台运行）。
-// 这两个文件确实互相 import —— Dart 允许循环 import，且它们本就是
-// 「同一个功能的管理层与视图层」，把视图工厂外置只会让调用方更啰嗦。
 
 import 'dart:async';
 
@@ -64,14 +23,6 @@ class MiniappHost extends ChangeNotifier {
 
   String? _foregroundId;
 
-  /// 当前进程是不是「小程序独立窗口」（而不是宿主本体）。
-  ///
-  /// 由 `miniapp_window.dart` 在启动时置位。同一个 App 的第二个任务会跑一个
-  /// **独立引擎**，所以这个标记在两边各自为政 —— 正好符合语义：
-  /// 窗口里的 `MiniappHost` 只服务这一个窗口。
-  ///
-  /// 它影响三处「退出」语义（见 handleSystemBack / goHome / close）：
-  /// 宿主里是「转后台 / 回主页」，窗口里是「关掉这张任务卡」。
   bool windowMode = false;
 
   /// 当前全部会话（顺序 = 打开顺序）
@@ -96,10 +47,6 @@ class MiniappHost extends ChangeNotifier {
 
   bool isRunning(String appId) => _sessionOf(appId) != null;
 
-  /// 这个会话是不是当前显示在最前面的那个。
-  ///
-  /// 定位策略要用它：小程序之间有层级，被压在下面的那个虽然在运行，
-  /// 但对用户来说是「后台」—— 没有后台定位授权时不该继续读位置。
   bool isForeground(String appId) => _foregroundId == appId;
 
   MiniappSession? _sessionOf(String? appId) {
@@ -110,12 +57,6 @@ class MiniappHost extends ChangeNotifier {
     return null;
   }
 
-  // -------------------------------------------------------------- 打开/关闭
-
-  /// 打开一个小程序。
-  ///
-  /// 同一个 appId 只会有一个会话：重复打开等于把已有会话切到前台，
-  /// 这样「后台运行中的小程序被再次点开」不会出现两份状态互相覆盖。
   Future<MiniappSession> open({
     required String appId,
     required String title,
@@ -240,9 +181,6 @@ class MiniappHost extends ChangeNotifier {
     _syncToastTarget();
     // 屏幕上又变回宿主了：卡片恢复成「轻柠」
     _scheduleTaskDescriptionSync(immediate: true);
-    // 挂起 JS 定时器。后台的小程序只保留页面状态（DOM、滚动位置、
-    // 表单内容都在），但不该继续跑 setInterval —— 那会让前台掉帧、
-    // 也会让「后台运行」变成「后台耗电」。回前台时再 resumeTimers。
     try {
       await session.onPauseTimers?.call();
     } catch (e) {
@@ -282,18 +220,9 @@ class MiniappHost extends ChangeNotifier {
     }
   }
 
-  /// **仅供测试**：把宿主恢复到「没有任何会话」的干净状态。
-  ///
-  /// 为什么需要它：MiniappHost 是全局单例，而 close() 的销毁是「等下一帧」
-  /// 的（addPostFrameCallback）—— 在没有持续帧的测试环境里，
-  /// 上一条用例的会话会残留到下一條，导致断言互相污染。
-  ///
-  /// 生产代码不该调用它（它不走正常的关闭流程，不会通知 UI）。
   @visibleForTesting
   void resetForTest() {
     _taskDescriptionTimer?.cancel();
-    // 窗口标记是进程级的「模式」，测试之间必须复位，否则上一条用例
-    // 把 Host 切成窗口模式后，下一条用例的「转后台」会变成「关窗口」。
     windowMode = false;
     for (final MiniappSession s in _sessions) {
       s.titleNotifier.removeListener(notifyListeners);
@@ -329,12 +258,6 @@ class MiniappHost extends ChangeNotifier {
     session.lastActiveAt = DateTime.now();
   }
 
-  // ------------------------------------------------------------ 返回键接管
-
-  /// 系统返回键。返回 true 表示已被小程序消费，宿主不再处理。
-  ///
-  /// 语义：先在 WebView 内部回退历史；退无可退就**转后台**而不是销毁 ——
-  /// 这正是「后台运行」这条能力存在的意义，用户可以从「后台应用」里回来或关掉。
   Future<bool> handleSystemBack() async {
     final MiniappSession? session = foregroundSession;
     if (session == null) return false;
@@ -356,17 +279,6 @@ class MiniappHost extends ChangeNotifier {
     return true;
   }
 
-  // -------------------------------------------------------------- Overlay
-
-  /// 由 AppShell 把这一层叠在「底部导航 + 当前 Tab」之上（见 app.dart）。
-  ///
-  /// ⚠ 空判断必须放在 ListenableBuilder **里面**。
-  /// 之前它在外面：打开第一个小程序时 `_sessions` 从空变非空，
-  /// 但 AppShell 没有理由重建（它不监听 MiniappHost），于是 buildLayer()
-  /// 不会重跑，这一层**永远停在那块 SizedBox.shrink()**。
-  /// 症状就是「点小程序没反应 / 白屏 / 一进去像崩了」。
-  /// 现在无论有没有会话都返回一个会监听 rebuild 的 builder，
-  /// 空→非空、非空→空都会正确刷新。
   Widget buildLayer() {
     return ListenableBuilder(
       listenable: this,
@@ -435,9 +347,6 @@ class MiniappHost extends ChangeNotifier {
     if (!windowMode) return;
     final MiniappSession? session = foregroundSession;
     if (session == null) {
-      // 窗口没有「空窗口」这个状态：最后一个会话关掉之后这张卡马上就会被
-      // `finishTask` 移除。先把标题改回「轻柠」只会让用户看到一闪而过的
-      // 宿主卡 —— 那不是他打开过的东西。
       return;
     }
 
@@ -450,9 +359,6 @@ class MiniappHost extends ChangeNotifier {
     } catch (e) {
       lemonLog('Host', '读小程序图标失败：$e');
     }
-    // 市场图标缓存里没有（离线装包 / 本地导入的包 / 管理员没配图标）时，
-    // 用**包内** metadata.json 声明的图标。窗口这张卡代表的就是这个包，
-    // 包里有图就该用它 —— 否则卡片会显示成宿主图标，看起来像「主应用」。
     if (iconPath == null) {
       try {
         iconPath = (await loadInstalledAppInfo(session.appId)).iconPath;

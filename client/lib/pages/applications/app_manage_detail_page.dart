@@ -1,13 +1,3 @@
-// lib/pages/applications/app_manage_detail_page.dart
-//
-// 「应用管理」里单个应用的详情页：权限 + 数据。
-//
-// 权限那一块是**嵌入**的：直接把 PermissionControllerPage 的单应用视图
-// 复用过来（而不是再写一份权限开关）。这样「应用管理 → 某个应用 → 权限」
-// 与「权限管理器 → 某个应用」看到的是同一个界面、同一套语义 ——
-// 两处各写一份必然会出现某一边漏了新状态。
-//
-// 数据那一块复用 MiniappDataPage（存储页的单应用视图），同理。
 
 import 'package:flutter/material.dart';
 
@@ -112,8 +102,6 @@ class _AppManageDetailPageState extends State<AppManageDetailPage> {
                 await Navigator.of(context).push(
                   MiniappDataPage.route(appId: widget.appId, appName: name),
                 );
-                // 在数据页里清过东西，回来后占用必须重新算一次，
-                // 否则头部会一直显示进去之前的数字
                 if (!mounted) return;
                 setState(() {
                   _usageFuture = MiniappStorageService.instance.usageOf(

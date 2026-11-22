@@ -111,8 +111,6 @@ class ThemeController extends ChangeNotifier {
 
   Future<void> setThemeMode(ThemeMode mode) => _settings.setThemeMode(mode);
 
-  /// 手动选主色：会自动关闭动态取色，
-  /// 否则用户点了色块却看不到变化（动态色优先级更高），那才是真的困惑。
   Future<void> setSeedColor(Color color) async {
     if (useDynamicColor && _dynamicAvailable) {
       await _settings.setUseDynamicColor(false);

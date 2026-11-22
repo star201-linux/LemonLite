@@ -1,8 +1,3 @@
-// 加载指示器的尺寸策略：手机 / 行内 / 父级紧约束三种情况必须落在预期像素上。
-//
-// 为什么要专门测尺寸：M3E 指示器的形状是画在容器里的（活动形状约 0.79 倍），
-// 容器一旦取错，视觉上只是「好像小了点」，很难在截图里发现；
-// 而在按钮里取大了会直接压到文字上。
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';

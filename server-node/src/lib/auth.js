@@ -1,23 +1,3 @@
-// server/src/lib/auth.js
-//
-// token 签发 / 校验 / 撤销。
-//
-// **0.4 起 token 是有状态会话，不是纯 JWT。**
-//
-// 为什么改：纯 JWT 签出去就没法收回 —— 用户点「退出登录」、
-// 或者手机丢了想踢掉某台设备，服务端只能等到过期。现在每次鉴权都查
-// login_sessions 表，撤销是一条 UPDATE 就生效。
-//
-// token 长什么样：
-//   32 字节加密随机数 → base64url（43 字符）
-//   形如 `lmn_3q2-7wXb...`
-//   前缀 `lmn_` 是为了让人在日志/截图里一眼认出来「这是本服务的 token」，
-//   也方便将来换格式时做区分。
-//
-// 数据库里存的是它的 **SHA-256**（不存明文）：
-//   * 数据库泄露时，攻击者拿到哈希也算不出 token（输入是 256 位随机值）
-//   * 不需要盐：随机 token 熵足够高，彩虹表无意义
-//   * 校验时对收到的 token 做同样哈希再查主键，一次 B 树查找
 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import bcrypt from 'bcryptjs';
@@ -29,8 +9,6 @@ import { parseSqlTime, toSqlTime } from './sql_time.js';
 
 const TOKEN_PREFIX = 'lmn_';
 
-/** 「永不过期」会话的过期时间。用一个明确的上限日期而不是 NULL：
- *  列是 NOT NULL，且所有查询都用 `expires_at > now` 判断，语义不用改。 */
 const NEVER_EXPIRES = new Date('9999-12-31T00:00:00.000Z');
 const TOKEN_BYTES = 32;
 
@@ -64,12 +42,6 @@ export function verifyPassword(plain, hash) {
   return bcrypt.compare(plain, hash);
 }
 
-/**
- * 把一个「无效哈希」喂给 bcrypt。
- *
- * 用于登录时用户不存在的情况：仍然跑一次 bcrypt，让两种失败的耗时接近。
- * 否则「响应快 = 用户名不存在」本身就是一个用户名枚举信道。
- */
 const DUMMY_HASH =
   '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
 
@@ -100,13 +72,6 @@ export async function createSession(userId, { ip = '', device = '' } = {}) {
   return { token, expiresAt };
 }
 
-/**
- * 会话有效期（毫秒）。null = 永不过期。
- *
- * `TOKEN_TTL=never`（或 0）是默认值：客户端只要没卸载、本地 token 还在，
- * 就一直处于登录态。撤销仍然立刻生效 —— 用户能在「登录设备」里踢掉某一台，
- * 改密码也会把其它设备全踢掉，所以「永不过期」并不等于「不可收回」。
- */
 export function sessionTtlMs() {
   const raw = String(config.auth.sessionTtl ?? '').trim().toLowerCase();
   if (raw === 'never' || raw === 'forever' || raw === '0') return null;
@@ -135,19 +100,11 @@ export async function resolveSession(token) {
   );
   if (!row) return null;
   if (row.revoked) return null;
-  // 封禁：`banBlocks` 而不是 `status !== 'active'` ——
-  // 临时封禁到期后即使清理任务还没跑，这里也必须放行（见 lib/ban.js）。
   if (banBlocks(row)) return null;
 
-  // 注销冷静期已到期但清理任务还没跑到：直接把这张票当作失效。
-  // 清理是「最多晚 30 分钟」的事，但「到期后还能用」是不能接受的语义。
   const deletionDue = parseSqlTime(row.deletion_scheduled_at);
   if (deletionDue && deletionDue.getTime() <= Date.now()) return null;
 
-  // 过期判断放在 JS 里而不是 SQL 的 `expires_at > NOW()`：
-  // 数据库时区与应用服务器时区可能不一致，用 JS 的 Date 比较
-  // 至少两边用的是同一个时钟。datetime 是 dateStrings=true 读出来的字符串，
-  // 这里显式按 UTC 解析（写入时 mysql2 也是按 UTC 序列化的）。
   const expires = new Date(row.expires_at.replace(' ', 'T') + 'Z');
   if (Number.isNaN(expires.getTime()) || expires.getTime() <= Date.now()) {
     return null;
@@ -206,16 +163,6 @@ export async function listSessions(userId) {
   );
 }
 
-/**
- * 历史登录记录：已撤销 + 已过期 + 仍然有效的**全部**会话。
- *
- * 为什么「历史」里也包含当前有效的：客户端把它分成「当前 / 其它在线 /
- * 历史」三组显示，分组的依据是 active/revoked/expired 三个标记 ——
- * 让服务端一次给全，客户端就不必再发两次请求，也不会出现
- * 「在线列表刚刷新、历史列表还是旧的」这种不一致。
- *
- * 不返回 token，只返回前 16 位句柄（与 /sessions 一致）。
- */
 export async function listSessionHistory(userId, { limit = 100 } = {}) {
   const { query } = await import('../db.js');
   return query(
@@ -313,14 +260,6 @@ function maybeTouch(session) {
     });
 }
 
-/**
- * 滑窗续期：有限有效期的会话，在「剩余不足一半」时自动往后推一个完整周期。
- *
- * 为什么要有它：`TOKEN_TTL=7d` 的语义如果是「7 天后无差别踢下线」，
- * 那用户每周都要重新输一次密码，而真正想防的是「token 被偷后能一直用」。
- * 续期让「经常用的人不掉线，丢掉的那份慢慢过期」，两个目标都照顾到了。
- * 永不过期的会话（默认）直接跳过 —— 不需要写这次库。
- */
 async function renewIfNeeded(session) {
   const ttlMs = sessionTtlMs();
   if (ttlMs === null) return;

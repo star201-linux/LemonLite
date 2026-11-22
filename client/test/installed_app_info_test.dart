@@ -1,12 +1,3 @@
-// test/installed_app_info_test.dart
-//
-// 「应用管理里显示什么」这件事只认包自己的 metadata.json。
-//
-// 这里钉三件事：
-//   1. 名称 / 版本 / 简介 / 作者 / 权限来自 metadata.json，
-//      而不是市场 API（否则作者改了包、市场没刷新时两处会对不上）；
-//   2. 图标优先用包内声明的那个文件，越界声明一律忽略；
-//   3. 没有 metadata.json 的老包退回应用清单里的名字，不显示成空白。
 
 import 'dart:io';
 

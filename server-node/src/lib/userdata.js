@@ -1,19 +1,3 @@
-// server/src/lib/userdata.js
-//
-// 用户私有数据的磁盘布局：
-//
-//   userdata/<id>/data.json    用户的一整块 JSON（任意结构，服务端不解释）
-//   userdata/<id>/avatar.png   头像（固定文件名，覆盖式更新）
-//
-// 为什么放磁盘而不是 MySQL：
-//   这两个东西都是「一整块不透明数据」。塞进数据库的话每次读写都是
-//   「读一行 → 解析 JSON → 改 → 再序列化」，而磁盘上是原子的文件替换；
-//   用户要备份/迁移时直接拷目录就行，不用 mysqldump 再解析。
-//
-// 为什么头像固定叫 avatar.png：
-//   需求原文就是这个名字。固定文件名让「上传」变成「覆盖」，
-//   不需要维护「当前是哪个文件」的记录；缓存失效用 users.avatar_ver
-//   做版本戳（客户端拿它当缓存键）。
 
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
@@ -60,15 +44,6 @@ export async function ensureUserDir(userId) {
   return dir;
 }
 
-// ---------------------------------------------------------------- data.json
-
-/**
- * 读 data.json。
- *
- * 文件不存在 → 返回 `{}`（**不是** 404）。
- * 理由：客户端第一次读用户数据是正常流程，不该被当成错误；
- * 返回空对象让客户端拿到一个「可以往上写」的起点。
- */
 export async function readUserData(userId) {
   const path = dataJsonPath(userId);
   if (!existsSync(path)) return { exists: false, data: {} };
@@ -200,14 +175,6 @@ export function avatarVersion(user) {
   return String(user.avatar_ver ?? '');
 }
 
-/**
- * 拼出客户端可下载的绝对 URL。
- *
- * 为什么要「绝对」：客户端在 Android 上要直接拿这个 URL 去请求，
- * 相对路径它没有 base 可拼（它不是浏览器，没有当前页面的 origin）。
- *
- * 没有头像时返回空串 —— 客户端据此画占位图，而不是去请求一个 404。
- */
 export function absoluteAvatarUrl(req, user) {
   if (!user) return '';
   if (!avatarVersion(user)) return '';

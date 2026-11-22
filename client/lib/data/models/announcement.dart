@@ -57,11 +57,6 @@ class Announcement {
     );
   }
 
-  /// 宽容读 level：`3`、`"3"` 都认，认不出就当 1。
-  ///
-  /// 不直接写 `as num?` —— 那个在遇到字符串时会**抛 TypeError**，
-  /// 一条字段类型不对的公告就能让整个列表解析失败。公告是通知，
-  /// 宁可把它降级成「安静的红点」，也不能让 App 打不开公告页。
   static int _parseLevel(Object? raw) {
     final int value;
     if (raw is num) {

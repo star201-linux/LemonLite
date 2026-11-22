@@ -13,28 +13,6 @@ import io.flutter.plugin.common.BinaryMessenger
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 
-/**
- * `lemonlite/downloads` 通道：把「下载」这件事交给系统的 [DownloadManager]。
- *
- * 为什么用系统下载器，而不是自己在 Dart 里拉流写文件：
- *   1. **落盘权限**：Android 10 起，应用不能直接往公共「下载」目录写文件，
- *      要么走 MediaStore、要么走 SAF、要么就要 MANAGE_EXTERNAL_STORAGE
- *      （那是「管理所有文件」级别的授权，正是本项目要避免的）。而
- *      DownloadManager 是系统组件，由它把文件写进 Download 目录**不需要**
- *      我们申请任何存储权限 —— 这正是用户要的「安卓那样」的行为。
- *   2. **后台存活**：下载在系统进程里跑，宿主被切到后台甚至被杀掉都不影响，
- *      下完还有系统通知。
- *   3. **免写状态机**：续传、限速、失败重试都在系统侧，宿主只查进度。
- *
- * 代价（有意接受）：宿主不能直接读这些文件 —— 安卓 11+ 公共下载目录里的
- * 文件对外部应用是不可读的。所以「打开」走 DownloadManager 自己发的
- * content:// Uri（带临时读授权），「删除」走 DownloadManager.remove()。
- * 管理页展示的文件名 / 大小 / 时间全部来自我们自己的记录 + query 结果，
- * 不去 stat 公共目录。
- *
- * 线程：DownloadManager 的调用本身是线程安全的，但 MethodChannel.Result
- * 必须回到主线程回，所以统一 post 到主线程。
- */
 class DownloadBridge(private val activity: FlutterActivity) {
 
     private companion object {
@@ -177,12 +155,6 @@ class DownloadBridge(private val activity: FlutterActivity) {
         else -> "unknown"
     }
 
-    /**
-     * 失败原因的**人话**版本。
-     *
-     * DownloadManager 只给一个 int，直接丢给用户等于什么都没说；
-     * 这里把最常见的几种翻成中文，剩下的原样带上编号方便排障。
-     */
     private fun reasonText(status: Int, reason: Int): String {
         if (status == DownloadManager.STATUS_FAILED) {
             return when (reason) {
@@ -269,15 +241,6 @@ class DownloadBridge(private val activity: FlutterActivity) {
         }
     }
 
-    // ---------------------------------------------------------------- info
-
-    /**
-     * 下载目录信息。
-     *
-     * 注意 `writable` 只是「当前进程能不能直接写这个目录」的提示：
-     * API 29+ 上它几乎总是 false，但那**不影响**下载，因为落盘是
-     * DownloadManager 干的（见类注释）。
-     */
     private fun info(): Map<String, Any?> {
         val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         return mapOf(

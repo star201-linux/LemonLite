@@ -1,29 +1,3 @@
-// lib/data/services/announcement_service.dart
-//
-// 站点公告的客户端出口 + 「谁已经被告知过」的本地状态。
-//
-// 接口（都不需要登录）：
-//   GET /api/announcements?limit&offset      已发布的公告，按发布时间倒序
-//   GET /api/announcements/latest            最新一条（老接口，仍保留）
-//
-// 为什么这个类是 ChangeNotifier 而不是一堆纯函数：
-//   公告的提醒方式**取决于用户读没读过**，而「读过」是本机状态。
-//   红点（设置页）、横幅（市场页）、弹窗（启动）三处显示同一个数字/同一条内容，
-//   若由三个页面各自去拉数据、各自判断，必然出现「红点没了但弹窗又弹一次」。
-//   状态集中在这里，三个地方只负责画。
-//
-// 四级提醒的规则（服务端 announcements.level）：
-//   1  只挂红点。进公告页就全清。
-//   2  市场页顶部横幅。**展示即算告知**：点 × 或下次启动都不再出现。
-//   3  启动弹窗。点确定后这台设备不再弹。
-//   4  启动弹窗，每次都弹 —— 直到下一条公告发布（也就是「只有最新一条能是 4」）。
-//
-// 统一用一个 `ann.seen` 集合表示「这台设备已经被告知过哪些公告」：
-//   * 红点 = 没被告知过的条数；
-//   * L2 展示、L3 确认、进公告页都往里加；
-//   * L4 **不看**这个集合（它的语义是「直到下一条」，不是「直到读过」）。
-//
-// 服务器地址每次请求都从 SettingsService 实时读，开发者改完地址立刻生效。
 
 import 'dart:convert';
 
@@ -65,9 +39,6 @@ PendingAnnouncement? pickPendingAnnouncement(
     if (a.level == AnnouncementLevel.quiet) continue;
 
     if (a.level == AnnouncementLevel.sticky) {
-      // 已经有更新公告发布了 → 这条不再弹。
-      // 用 continue 而不是 return：更旧的未读 L3 仍然该提醒，
-      // 「这个 L4 退役了」不等于「所有老公告都不用管了」。
       if (a.id != latestId) continue;
       return PendingAnnouncement(a, asPopup: true);
     }
@@ -164,12 +135,6 @@ class AnnouncementService extends ChangeNotifier {
   /// 启动时要弹的窗；null 表示不弹。
   Announcement? get popup => _popup;
 
-  // ---------------------------------------------------------------- 启动
-
-  /// 拉一次公告并按级别决定横幅 / 弹窗。AppShell 启动时调一次。
-  ///
-  /// 失败**静默**：断网、服务器没起、地址填错都很常见，
-  /// 不该在打开 App 的第一秒甩一个错误弹窗。公告页自己有错误态。
   Future<void> bootstrap() async {
     if (_bootstrapping) return;
     _bootstrapping = true;
@@ -206,17 +171,9 @@ class AnnouncementService extends ChangeNotifier {
     }
 
     _banner = pending.announcement;
-    // 展示即算告知：用户看到横幅 = 这条公告已经送达。
-    // 这样「没点 × 直接杀 App」也不会在下次启动又冒出来。
     markSeen(pending.announcement.id);
   }
 
-  // ---------------------------------------------------------------- 测试注入
-
-  /// 直接塞入一份「服务器已经返回过的列表」，跳过网络。
-  ///
-  /// 只给测试与预览用：四级提醒的判定（谁弹、谁挂横幅、红点几）全靠
-  /// `_pickPending`，而那部分不该只能靠「起一个假 HTTP 服务」来验证。
   @visibleForTesting
   void debugSeed(
     List<Announcement> items, {
@@ -273,8 +230,6 @@ class AnnouncementService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 公告页拉到新数据后同步进内存：红点要以「服务器现在的列表」为准，
-  /// 否则用户在别处刚发了一条公告，这台设备还按旧列表算未读。
   void syncHistory(List<Announcement> items) {
     if (items.isEmpty) return;
     final Map<int, Announcement> merged = <int, Announcement>{

@@ -1,20 +1,3 @@
-// server/src/lib/configfile.js
-//
-// 读写 config.yaml。
-//
-// 为什么要单独一个模块、而不是在 config.js 里 readFileSync 两行：
-//
-//   1. **读要用 `parse`，写要用 `Document`**。面板保存时如果直接
-//      `stringify(对象)`，用户在 config.yaml 里写的全部注释会被抹掉 ——
-//      而这个文件本身就是部署文档，那等于每次点一下「保存」就毁掉一份说明书。
-//      `Document.setIn()` 只改目标那一个标量节点，其余节点的注释原样保留。
-//
-//   2. **写之前必须自校验**。配置文件写坏的后果是「下次启动直接起不来」，
-//      比「保存失败」严重得多。所以先序列化成字符串、再解析回来、
-//      确认目标值真的落进去了，最后才落盘。
-//
-//   3. 原子写（临时文件 + rename）。进程在写一半时被杀，留下的半截 YAML
-//      可能语法合法但**少了一半配置** —— 那比启动失败更难排查。
 
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { Document, parse, parseDocument } from 'yaml';
@@ -81,13 +64,6 @@ function writeAtomic(path, text) {
   }
 }
 
-/**
- * 把一个标量序列化成 YAML 文本（单行）。
- *
- * 用 `Document` 而不是自己拼引号：字符串里可能有冒号、井号、引号、中文，
- * 手写的引号规则迟早会在某个值上出错，而那种错误只会表现为
- * 「配置文件下次启动解析失败」——离出错的地方已经很远了。
- */
 function formatScalar(value) {
   const text = new Document(value).toString({ lineWidth: 0 }).trimEnd();
   // 多行字符串会被序列化成 block scalar（`|` / `>`），插到行内会破坏缩进。
@@ -96,24 +72,6 @@ function formatScalar(value) {
   return text;
 }
 
-/**
- * 更新 config.yaml 里的若干项，**保留注释、空行、缩进与键顺序**。
- *
- * 做法是「就地改那一段文本」，而不是 `doc.toString()` 整份重写：
- * 后者虽然能保住注释，但会把所有空行吃掉 —— 而这个文件里空行是分段的手段，
- * 一节七八个键挤在一起就没法读了。第一次保存之后文件就再也不是人写的样子。
- *
- * 所以：先用 `getIn(path, true)` 拿到目标标量节点的 `range`，
- * 只替换 range 覆盖的那几个字符。其余字节一个都不动。
- *
- * 只有「这个键压根不在文件里」时才退化到整份重新序列化 —— 那意味着
- * 用户手工删过键（或者从很旧的版本升级上来），此时格式已经不完整了，
- * 保它也没意义。
- *
- * @param {string} path                 config.yaml 的绝对路径
- * @param {Record<string, any>} patch   键是点分路径（`mail.smtp.host`），值是标量
- * @returns {{updated: string[], added: string[], reserialized: boolean}}
- */
 export function updateConfigFile(path, patch) {
   const existed = existsSync(path);
   const text = existed ? readFileSync(path, 'utf8') : '';

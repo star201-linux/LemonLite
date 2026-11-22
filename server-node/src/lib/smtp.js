@@ -1,23 +1,3 @@
-// server/src/lib/smtp.js
-//
-// 一个**够用就好**的 SMTP 客户端。
-//
-// 为什么不用 nodemailer：
-//   这个项目从第一天起就是「clone 下来 npm install 就能跑」，依赖越少越好。
-//   而我们需要的只是：连接 → EHLO → (STARTTLS) → AUTH → MAIL/RCPT/DATA。
-//   为了这一百来行协议对话引入一个带 8 个传递依赖的库，不划算。
-//
-// 支持：
-//   * 明文 25/587（可再升级 STARTTLS）与隐式 TLS 465
-//   * AUTH PLAIN / AUTH LOGIN（自建 Postfix、企业邮箱、QQ/163 授权码都够）
-//   * UTF-8 主题与发件人名称（RFC 2047 编码）
-//   * multipart/alternative（纯文本 + HTML 双份）
-//
-// 不支持（也用不上）：
-//   * 附件、DKIM 签名、SMTPUTF8、8BITMIME 裸传输
-//
-// 正文一律 base64 传输：中文邮件走 8bit 会被不少老 MTA 截断，
-// 而 base64 是 ASCII 安全的，也就顺便绕开了「行首点号要转义」的坑。
 
 import net from 'node:net';
 import tls from 'node:tls';
@@ -103,9 +83,6 @@ class ReplyReader {
   }
 }
 
-// ---------------------------------------------------------------- MIME 拼装
-
-/** 非 ASCII 头字段要按 RFC 2047 编码，否则中文主题会变成乱码 */
 function encodeHeader(value) {
   const text = String(value ?? '');
   // eslint-disable-next-line no-control-regex
@@ -319,8 +296,6 @@ export async function sendSmtp(opts) {
         });
         caps = parseCapabilities(ehlo2);
       } else if (port === 587) {
-        // 587 端口必须加密；服务器不支持 STARTTLS 时继续裸奔等于把密码
-        // 明文发出去 —— 宁可失败。
         throw new SmtpError('服务器不支持 STARTTLS，拒绝在 587 上明文认证', {
           stage: 'starttls',
         });

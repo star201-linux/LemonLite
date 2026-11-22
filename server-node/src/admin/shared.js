@@ -27,13 +27,6 @@ export function parseJsonArray(value) {
   }
 }
 
-/**
- * 把 GROUP_CONCAT 出来的 `id\u0001name\u0002id\u0001name` 还原成对象数组。
- *
- * 为什么用两个不可见分隔符而不是 JSON：MySQL 的 JSON_ARRAYAGG 在
- * 空集时返回 NULL、且有长度限制；GROUP_CONCAT + 两个控制字符最省事。
- * \u0001 分隔 id 与 name，\u0002 分隔条目 —— 应用名里不可能出现这两个字符。
- */
 export function parseCategoryPairs(value) {
   if (!value) return [];
   return String(value)

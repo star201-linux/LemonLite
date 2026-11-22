@@ -1,22 +1,3 @@
-// test/webview_init_test.dart
-//
-// 「小程序页面到底有没有真的把 WebView 建出来」的回归测试。
-//
-// 这个文件存在的理由是一个真实白屏 bug（0.6.0）：
-//
-//   _webViewWidget ??= _buildWebViewWidget(payload);   // 只执行一次
-//
-// 内置资源（自检页）的 HTML 是**异步**从 asset 读的。第一次 build 时 _localHtml 还是
-// null，WebView 就以 initialData: null 建好了；之后 setState 也不会重建它。
-// 结果：页面上只剩那颗悬浮「更多」按钮，WebView 区域永远空白。
-//
-// 0.5 及之前被 initialUrlRequest（远程 url）掩盖了，删掉远程入口后暴露。
-//
-// ⚠ 测试环境的限制：flutter_inappwebview 没有测试用的平台实现，
-// 一旦真的构建 InAppWebView 就会抛 assert。所以这里的断言全部
-// **停在 WebView 之前**（检查 Loading 状态、检查 session 的 webUri），
-// 而不是去检查 WebView 内部字段。这已经能覆盖那个 bug：
-// bug 的本质是「数据没就绪就往下走」，而「往下走」就是构建 WebView。
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';

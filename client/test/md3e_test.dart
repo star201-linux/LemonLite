@@ -1,11 +1,3 @@
-// test/md3e_test.dart
-//
-// MD3E 拦截器的纯函数部分：文档改写规则与注入内容。
-//
-// 这些断言看起来琐碎，但它们守的是三条容易回归的约定：
-//   1. 注入必须发生在**作者样式之前**（否则首帧还是浏览器默认样式）；
-//   2. 改写必须**幂等**（刷新 / 重载不能层层嵌套）；
-//   3. 没有 <html> 的片段也要变成完整文档（否则拦截器等于没生效）。
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lemonlite/theme/md3e_interceptor.dart';

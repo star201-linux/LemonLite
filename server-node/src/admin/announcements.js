@@ -1,13 +1,3 @@
-// server/src/admin/announcements.js
-//
-// 面板的「公告」页：增删改查。
-//
-// 只要四样东西：标题、内容、级别、发布时间。发布时间**可改** ——
-// 运营最常见的两个动作是「写错日期了」和「这条提前发」，
-// 若只能在创建时设一次，就得删了重建（id 会变，客户端已经显示过的记录就对不上了）。
-//
-// 与公开接口的区别：这里**不过滤** published_at，
-// 未来时间的公告也要能看到并修改，否则「定时发布」的稿子在发出前就消失了。
 
 import { Router } from 'express';
 import { execute, query, queryOne } from '../db.js';
@@ -73,8 +63,6 @@ function readContent(raw) {
  */
 function readLevel(raw, fallback = 1) {
   if (raw === undefined || raw === null || raw === '') return fallback;
-  // 用 Number 而不是 parseInt：parseInt('2.5') 会静默变成 2，
-  // 一个手抖的小数就变成「选了第 2 级」而不是「你填错了」。
   const n = Number(raw);
   if (!Number.isInteger(n) || !LEVELS.includes(n)) {
     throw ApiError.badRequest('bad_level', '公告级别只能是 1、2、3、4');

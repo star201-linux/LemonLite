@@ -1,22 +1,3 @@
-// lib/pages/storage/storage_page.dart
-//
-// 设置 → 存储：占用统计与「单 App 数据管理」。
-//
-// 两类数据都要能看到、能单独清：
-//   1. 键值存储（SharedPreferences）：`miniapp.storage.<appId>.<key>`
-//   2. 共享目录：`Android/data/<包名>/files/appfiles/<appId>/`
-//   3. 私有目录：`data/data/<包名>/files/appfiles/<appId>/`
-//
-// 为什么按 App 分而不是给一个「清空全部」了事：
-//   小程序之间共享同一个宿主进程与同一个存储后端，如果没有按 App 的视图，
-//   用户遇到「某个小程序出问题了想重置它」时唯一的手段就是把所有小程序的数据
-//   一起删掉 —— 那是不可接受的代价。所以这里的最小操作粒度是**单个键**。
-//
-// 两个文件目录（共享 / 私有）分开统计、分开清：它们的可见性完全不同，
-// 混成一个数字会让人不知道删掉的到底是「用户能拷走的那份」还是「只有宿主能读的那份」。
-//
-// 「清除数据」不会重置权限授权：授权是用户对该应用的信任决定，
-// 清数据是数据面的事，两者混在一起会让「清完数据还得重新授权」变得莫名其妙。
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;

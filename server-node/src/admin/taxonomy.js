@@ -1,13 +1,3 @@
-// server/src/admin/taxonomy.js
-//
-// 分类与标签（面板里的「分类标签」页）。
-//
-// 几个刻意的规则：
-//   * **分类自带 id**（VARCHAR），因为它出现在 URL 里（?category=tools）。
-//     中文名转不出 id 时用随机 `cat_xxxxxxxx`，而不是把中文塞进 URL。
-//   * 删除默认**拒绝**：分类/标签还在被应用使用时，先告诉你有几个应用在用，
-//     确认后才带 ?force=1 再删。面板上一个误点就清空整类应用，代价太大。
-//   * 标签的 slug 唯一，改名不影响 slug（旧的分享链接不会突然失效）。
 
 import { Router } from 'express';
 import { execute, query, queryOne, transaction } from '../db.js';

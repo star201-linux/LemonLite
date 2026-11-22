@@ -1,19 +1,3 @@
-// lib/core/run_log.dart
-//
-// 运行日志缓冲区：**release 包也记**，并支持导出。
-//
-// 为什么需要它：
-//   之前所有日志都走 `lemonLog()`，而它在 `if (kDebugMode)` 里 —— 正式包
-//   什么都不记。用户报「白屏」时，我手上没有任何信息，只能猜。
-//   这个缓冲区把最近 N 条日志留在内存里，用户可以一键导出成文件发回来。
-//
-// 三条设计约束：
-//   1. **有上限**（默认 2000 条）。不设上限的话，一个跑几小时的小程序
-//      能把内存吃光。
-//   2. **只在内存里**。不持续写盘：写盘有 IO 成本，而绝大多数会话
-//      不需要日志。用户点「导出」时才落盘。
-//   3. **不记录敏感内容**。密码、token 之类的字符串在写入前会被打码
-//      （见 _redact）。
 
 import 'dart:async';
 import 'dart:convert';
@@ -103,8 +87,6 @@ class RunLog {
       LogEntry(at: DateTime.now(), tag: tag, message: text, level: level),
     );
 
-    // 超上限时从头部砍掉。一次砍 10% 而不是 1 条：
-    // 每条都 removeAt(0) 会让列表反复搬移，代价随长度线性增长。
     if (_entries.length > maxEntries) {
       _entries.removeRange(0, (maxEntries * 0.1).ceil());
     }
@@ -128,14 +110,6 @@ class RunLog {
   void error(String tag, Object? message) =>
       add(tag, message, level: LogLevel.error);
 
-  /// 捕获 Flutter 全局异常到日志。
-  ///
-  /// **这是排障最重要的一步**：release 包里，build / 布局阶段的异常
-  /// 会被静默吞掉（那一块子树渲染成空白，其余正常）——
-  /// 用户看到「白屏但按钮正常」，而日志里连一行错误都没有。
-  /// 接上这两个钩子之后，异常会原样进缓冲区、跟着导出文件回来。
-  ///
-  /// 在 main() 里调用一次。
   void installErrorHooks() {
     FlutterError.onError = (FlutterErrorDetails details) {
       FlutterError.presentError(details); // 保留原本为（debug 红屏 / release 静默）
@@ -236,17 +210,6 @@ class RunLog {
 
   static String pad2(int v) => v.toString().padLeft(2, '0');
 
-  // ---------------------------------------------------------------- 脱敏
-
-  /// 把明显的敏感值打码。
-  ///
-  /// 这里**不是**安全边界（真正的边界是「不打印敏感值」），
-  /// 只是兜底：万一某处把 token 拼进了日志，导出文件里也不该有它。
-  ///
-  /// 规则（宁可多打一点，也不要漏）：
-  ///   * `Bearer xxx` / `token=xxx` / `token: xxx`
-  ///   * 长得像 JWT 的三段式
-  ///   * 本服务的 `lmn_` 前缀 token
   static String _redact(String input) {
     String out = input;
 

@@ -1110,8 +1110,6 @@ void main() {
 
   group('桥接层（这一版没有权限闸门）', () {
     test('音量/亮度不再因为「权限被关闭」而返回 40001', () async {
-      // 旧版本这里会被权限闸门拦住；现在这些能力一律直接放行，
-      // 测试环境没有平台通道 → 降级成 10003（能力不可用），而不是 40001。
       await permissions.setAllDecisions('a', PermissionDecision.denied);
       final BridgeApi api = apiFor('a');
       final LemonBridgeException e = await captureBridgeError(
@@ -1336,10 +1334,6 @@ void main() {
     });
   });
 
-  // ======================================== 定位策略的三态
-  //
-  // 0.6 之前页面侧把「未决定」也当拒绝：navigator.geolocation 被静默挡掉，
-  // 用户从没被问过，权限管理里也没有记录。这里钉住三态的语义。
 
   group('定位策略三态', () {
     test('未决定 = ask：页面侧放行到 WebView，由宿主弹框', () {

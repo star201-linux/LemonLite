@@ -1,10 +1,3 @@
-// test/run_log_test.dart
-//
-// 运行日志缓冲区的单元测试。
-//
-// 这块的用途是「用户报障时把日志发回来」，所以两个属性最重要：
-//   1. **有上限** —— 否则一个跑很久的小程序能把内存吃光
-//   2. **脱敏** —— 导出文件会被贴到聊天窗口里，绝不能带 token
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lemonlite/core/run_log.dart';

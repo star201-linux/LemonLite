@@ -1,14 +1,3 @@
-// lib/pages/settings/run_log_page.dart
-//
-// 开发者选项 →「运行日志」。
-//
-// 这个页面存在的唯一目的：让用户把「刚才到底发生了什么」发回来。
-// 所以它的第一优先级是**导出**，而不是好看。
-//
-// 三件事：
-//   1. 实时显示日志（带级别筛选）
-//   2. 导出成 .log 文件 / 复制到剪贴板
-//   3. 显示导出文件的路径（用户要能找到它）
 
 import 'dart:io';
 
@@ -73,12 +62,6 @@ class _RunLogPageState extends State<RunLogPage> {
     return all.where((LogEntry e) => e.level == _levelFilter).toList(growable: false);
   }
 
-  /// 导出文本日志并**弹系统分享面板**。
-  ///
-  /// 为什么必须分享而不是只写文件：文件落在应用私有目录
-  ///（`/data/data/<pkg>/files/logs/…`），未 root 的机器上连文件管理器
-  /// 都进不去，用户拿不到 —— 那等于没导出。分享面板能把文件交给
-  /// 微信 / 邮件 / 保存到「下载」，这才算真的导出。
   Future<void> _export() async {
     await _share(() => RunLog.instance.export(), '运行日志');
   }

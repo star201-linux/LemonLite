@@ -1,20 +1,3 @@
-// lib/pages/applications/applications_page.dart
-//
-// 「应用管理」—— 底部导航的第二个入口，管理设备上出现过的全部应用。
-//
-// 这一页的职责：
-//   * 列出全部已装应用（图标 / 名字 / 占用 / 最近打开 / 是否可更新）
-//   * 点某一个 → 进**应用详情页**（与主页点卡片看到的是同一页）；
-//     权限、数据、移除这些管理动作收在详情页右上角的扳手里。
-//   * 有更新时显示小红点（列表项 + 底部导航的「应用管理」）
-//
-// 为什么点进去改成详情页而不是权限页：
-//   用户从「应用管理」进一个应用，最常想确认的是「我装的是哪一版、怎么打开」，
-//   权限开关是低频动作。详情页 + 扳手把两件事分开，主页与应用管理也能共用一套页面。
-//
-// 图标的来源：
-//   已安装小程序的图标会在安装 / 打开时缓存到本机（见 IconCacheService），
-//   这一页优先读本地文件 —— 断网时也能显示，不用每次进页面都拉一遍网络图。
 
 import 'dart:async';
 
@@ -79,11 +62,6 @@ class _ApplicationsPageState extends State<ApplicationsPage> {
   /// 正在刷新（底部导航的小红点会随更新检查变化，手动刷新要能重查一次）
   bool _refreshing = false;
 
-  /// 包集合 / 应用清单变化后的重载去抖。
-  ///
-  /// 为什么不能直接 setState：`_load()` 自己会调 `adoptOrphans()`，
-  /// 后者补进新条目时会 notifyListeners —— 不设闸就是「加载 → 通知 → 加载」。
-  /// 200ms 足够把一次安装引发的多次通知合并成一次重读。
   Timer? _reloadTimer;
 
   @override
@@ -116,12 +94,6 @@ class _ApplicationsPageState extends State<ApplicationsPage> {
   Future<_ApplicationsSnapshot> _load() async {
     final ApplicationRegistry registry = ApplicationRegistry.instance;
 
-    // 应用管理的列表 = 清单 ∪ 磁盘上真实存在的包。
-    //
-    // 只看清单是不够的：安装登记是异步的（`ensureKnown` 不阻塞安装结果），
-    // 而且用户可能手工把包放进 app/ 目录。两种情况下清单里没有条目，
-    // 用户看到的就是「装好了却没有列表」。`installedAll()` 直接扫磁盘，
-    // 是「这台机器上到底有什么」的最终答案。
     final Set<String> discovered = <String>{};
     try {
       final List<InstalledPackage> installed = await MiniappPackageService
@@ -524,9 +496,6 @@ class _ErrorBody extends StatelessWidget {
   }
 }
 
-/// 这个权限是否与该应用有关：声明过，或真的被调用过。
-///
-/// 应用管理页与权限页用同一条口径，否则两处数字对不上，用户会以为其中一处坏了。
 bool _isRelevant(
   PermissionService permissions,
   RegisteredApp app,

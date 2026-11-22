@@ -1,12 +1,3 @@
-// test/miniapp_asset_server_test.dart
-//
-// 拦截回调的业务逻辑：虚拟源请求 → 文件响应。
-//
-// 这里是「小程序能不能真的跑起来」的那一层，所以钉得细一点：
-//   * 页面要交给 MD3E 改写（样式必须先进解析器）；
-//   * 脚本 / 字体要给对 MIME，二进制不能声明 utf-8；
-//   * 缺文件 / 跨包 / 越界一律 404 —— 返回 null 会让 WebView 去 DNS 解析
-//     miniapp.lemonlite.local，错误信息会变成「网络不可用」，没法排障。
 
 import 'dart:convert';
 import 'dart:io';

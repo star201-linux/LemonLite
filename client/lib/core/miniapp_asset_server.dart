@@ -1,20 +1,3 @@
-// lib/core/miniapp_asset_server.dart
-//
-// 把「虚拟源的请求」翻译成「本地文件的响应」。
-//
-// 这层单独拎出来有两个原因：
-//   1. 它是 WebView 拦截回调的**全部业务逻辑**，放在 State 里没法测；
-//   2. 它必须能回答「这个请求能不能出、出什么 MIME、缺文件怎么办」，
-//      而这些问题跟 Widget 生命周期毫无关系。
-//
-// 约定：
-//   * 不属于虚拟源（外链 / 其它 scheme）→ 返回 null，交回 WebView 默认流程；
-//   * 属于虚拟源但路径不合法 / 文件不存在 / 跨包 → 返回 404，**绝不返回 null**。
-//     返回 null 会让 Chromium 去 DNS 解析 miniapp.lemonlite.local，
-//     页面会变成莫名其妙的网络错误，而不是一个可以说清楚的 404。
-//
-// 页面（.html）的改写由调用方注入 [documentRenderer]：core 不认识主题系统，
-// 主题也不该反过来 import 这里。测试里传一个替身就能验证「页面确实被改写」。
 
 import 'dart:convert';
 import 'dart:io';
@@ -72,8 +55,6 @@ class MiniappAssetServer {
           mime.contains('svg');
       return WebResourceResponse(
         contentType: mime,
-        // 二进制（字体 / 图片 / wasm）不要声明编码：Chromium 会按文本解码，
-        // 1MB 的 ttf 直接被当垃圾读，字体就静默失效了。
         contentEncoding: textual ? 'utf-8' : null,
         data: bytes,
         statusCode: 200,

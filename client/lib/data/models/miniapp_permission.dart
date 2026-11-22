@@ -1,36 +1,3 @@
-// lib/data/models/miniapp_permission.dart
-//
-// 框架级「权限」定义。
-//
-// 权限分两类：
-//
-//   1) **浏览器的受控资源**：摄像头、麦克风、屏幕捕获、定位、传感器、剪贴板、
-//      文件、通知、MIDI、蓝牙、USB、串口、NFC、WebAuthn……
-//      小程序就是 WebView 里的网页，网页请求它们的途径是**标准 Web API**
-//      （`getUserMedia()`、`getDisplayMedia()`、`navigator.geolocation`、
-//      `new Accelerometer()`、`navigator.bluetooth`、File System Access API…）。
-//      宿主在 Chromium 弹出默认授权框之前把它拦下来，换成自己的权限模型 ——
-//      拦截点见 bridge/web_permission.dart 与 bridge/geo_policy_js.dart。
-//
-//   2) **宿主原生能力**：Android WebView 没有实现的那几个标准 API
-//      （Web Bluetooth / Web USB / Web Serial / Web NFC），小程序只能通过
-//      JSBridge 的 `lemonlite.bluetooth.*` / `lemonlite.nfc.*` 调用。
-//      桥接层在真正调用原生通道之前同样会过这一道权限确认。
-//
-// 命名原则：**枚举的 id 尽量就是浏览器的权限名**（camera / microphone /
-//   clipboard / notifications / midi / nfc …），这样 metadata.json 里写的
-//   名字与 `navigator.permissions.query({name})` 是同一套词汇，作者不用记两套。
-//
-// 定位刻意**不拆成两项权限**，而是「一项权限 + 两个正交维度」：
-//   * 时间维度：仅前台（应用在用的时候）/ 允许后台；
-//   * 精度维度：精确 / 近似（Android 的近似位置精度范围约 3 平方公里）。
-//   这与 Android 12+ 的模型一致（FINE / COARSE + ACCESS_BACKGROUND_LOCATION），
-//   并且有一条硬规则：**后台精度永远受限于前台授权** —— 只给了近似，后台也
-//   只能是近似。见 [LocationGrant]。
-//
-// 这份清单同时就是权限管理器与「应用管理」里权限页的真相来源：
-// 展示的条目、风险分级、分组全部由它推导。以后要纳入新的浏览器资源，
-// 在这里加一个枚举值、并在 web_permission.dart 的映射表里接上即可。
 
 import 'package:flutter/material.dart';
 
@@ -62,16 +29,6 @@ enum PermissionGroup {
   final String label;
 }
 
-/// 用户对某个权限的决定。
-///
-/// 三态而不是布尔：
-///   * [ask]     —— 还没问过用户。默认就是这个状态，于是受控权限
-///                  第一次被调用时都必须弹窗，宿主绝不替用户做主；
-///   * [granted] —— 用户点了「允许」且勾掉了「仅本次生效」；
-///   * [denied]  —— 用户点了「拒绝」且勾掉了「仅本次生效」。
-///
-/// 「仅本次生效」（默认勾选）不写进这里 —— 它压根不落盘，
-/// 于是下一次调用时状态仍然是 [ask]，会重新问一遍。
 enum PermissionDecision {
   ask('询问', '下次调用时弹窗询问'),
   granted('允许', '已经允许，不再询问'),
@@ -125,11 +82,6 @@ enum LocationPrecision {
   double get reportedAccuracy => this == LocationPrecision.coarse ? 1500 : 0;
 }
 
-/// 一个应用的定位授权：决定 + 精度 + 是否允许后台。
-///
-/// 关键规则（与 Android 一致）：**后台精度永远受限于前台授权**。
-/// 所以这里只有一个 `precision` 字段 —— 后台不存在「比前台更精确」的状态，
-/// 这条规则是被数据结构保证的，而不是靠某处 if 记得写。
 @immutable
 class LocationGrant {
   const LocationGrant({
@@ -155,17 +107,6 @@ class LocationGrant {
   /// 当前这次读取位置是否放行。[foreground] 表示小程序此刻是否在前台。
   bool allows({required bool foreground}) => granted && (foreground || background);
 
-  /// 给页面注入/下发的策略（见 bridge/geo_policy_js.dart）。
-  ///
-  /// `state` 是三态，`allowed` 只是它的布尔投影：
-  ///   * `ask`     —— 还没问过用户。**页面侧不能直接拒**，要放行到 WebView，
-  ///                  由 onGeolocationPermissionsShowPrompt 弹我们的授权框；
-  ///   * `granted` —— 已允许；
-  ///   * `denied`  —— 已拒绝，页面侧直接回 PERMISSION_DENIED，不打扰原生。
-  ///
-  /// 为什么要有 `ask`：0.6 之前页面侧把「未决定」当成「拒绝」，于是
-  /// navigator.geolocation 被静默挡掉 —— 用户从没被问过，却在权限管理里
-  /// 找不到任何记录。那既不是「拒绝」也不是「允许」，只是没问。
   String get state => switch (decision) {
     PermissionDecision.granted => 'granted',
     PermissionDecision.denied => 'denied',
@@ -204,18 +145,6 @@ class LocationGrant {
   int get hashCode => Object.hash(decision, precision, background);
 }
 
-/// 一次授权询问的答案。
-///
-/// [remember] 就是弹窗里那个**默认勾选**的「仅本次生效」的反面：
-///   * remember == true  → 用户把复选框取消了，决定落盘，之后不再问；
-///   * remember == false → 默认状态，只对这一次调用有效，下次照问。
-///
-/// 之所以把「仅本次」做成默认：权限弹窗最容易被用户当成一个必须点掉的拦路虎，
-/// 手一快就点了「允许」，而这个决定会一直生效。默认不记住，
-/// 就把「长期授权」变成一次需要用户主动取消勾选的、有意识的选择。
-///
-/// [precision] / [background] 只在定位权限上有值：它们回答的是
-/// 「这次给多大范围的位置、后台还要不要给」，与「允不允许」是两件事。
 @immutable
 class PermissionAnswer {
   const PermissionAnswer({
@@ -352,15 +281,6 @@ enum MiniappPermission {
     runtimePermissions: <String>[],
   ),
 
-  // -------------------------------------------------------------------- 位置
-  /// 位置信息：**一项权限，两个维度**。
-  ///
-  /// 为什么不是「精确位置 / 大致位置」两个开关：
-  ///   两者不是并列的能力，而是同一份数据的不同精度档。拆成两个枚举会逼出
-  ///   一个假状态 —— 两项都允许、精度算哪个？Android 12+ 的做法是
-  ///   一个授权里带一个精度选择，后台是另一个独立开关，这里照搬。
-  ///
-  /// 实际生效的精度与后台开关存放在 [LocationGrant] 里（见 PermissionService）。
   location(
     id: 'location',
     label: '位置信息',
@@ -464,20 +384,6 @@ enum MiniappPermission {
     runtimePermissions: <String>[],
   ),
 
-  // ------------------------------------------------------------- 连接与近场
-  /// 蓝牙（BLE 扫描 / 连接 / 读写特征值）。
-  ///
-  /// Android WebView 没有实现 Web Bluetooth，所以走 `lemonlite.bluetooth.*`；
-  /// 能力本身仍对应标准的 Web Bluetooth 语义（设备发现 → 连接 → GATT 读写）。
-  ///
-  /// 为什么仍然要应用内授权：蓝牙能拿到附近设备的名称、地址与广播数据，
-  /// 连接后还能读写设备特征值 —— 这是一条真实的旁路通道（附近的信标、
-  /// 可穿戴设备、共享单车锁……）。Android 12+ 把扫描/连接拆成了运行时权限，
-  /// 但「应用内先问一次」仍然是必要的：系统权限只说「App 能不能用蓝牙」，
-  /// 没说「这个小程序现在为什么要用」。
-  ///
-  /// Android 11 及以下的扫描还需要定位权限，由 MainActivity 在申请时
-  /// 按系统版本自动映射（Dart 侧只写 Android 12+ 的权限名）。
   bluetooth(
     id: 'bluetooth',
     label: '蓝牙',
@@ -660,23 +566,8 @@ enum MiniappPermission {
   final PermissionGroup group;
   final PermissionRisk risk;
 
-  /// 这一项对应的**标准 Web API**。UI 与文档都用它来说明
-  /// 「小程序该写哪一行代码」，而不是「调哪个桥接方法」。
   final String webApi;
 
-  /// 这一项在 Android 侧还需要哪些**运行时权限**。
-  ///
-  /// 这是「两层授权」里的第二层，绕不过去：
-  ///   1. 应用内授权 —— 用户在权限弹窗里点「允许」（本文件的模型）；
-  ///   2. 系统运行时权限 —— Chromium 打开采集设备前，Android 自己还会拦一道。
-  ///
-  /// **关键点**：WebView 的 `onPermissionRequest` 只告诉宿主「网页想要摄像头」，
-  /// 它**不会**替宿主去申请 Android 运行时权限。所以宿主在放行之前必须先
-  /// 把这一层拿到（见 NativeBridge.requestRuntimePermissions），
-  /// 否则会出现「用户在弹窗里点了允许，摄像头却仍然打不开且没有报错」。
-  ///
-  /// 为空表示不需要系统层授权（例如 File System Access API 由 Chromium
-  /// 自己弹文件选择器）。定位的运行时权限按精度动态计算，所以这里是空的。
   final List<String> runtimePermissions;
 
   /// 是否需要 Android 运行时权限
@@ -694,10 +585,6 @@ enum MiniappPermission {
   /// 是否算敏感权限（风险等级高于「常规」）
   bool get isSensitive => risk != PermissionRisk.normal;
 
-  /// 用户拒绝过系统运行时权限后，是否只能去系统设置里改回来。
-  ///
-  /// Android 的运行时权限一旦被「拒绝且不再询问」，应用就再也弹不出系统框了，
-  /// 唯一出路是跳系统设置。所以这一项用来决定要不要给用户一个跳转入口。
   bool get needsSystemSettings => needsRuntimePermission;
 
   IconData get icon => switch (this) {
@@ -729,13 +616,6 @@ enum MiniappPermission {
     MiniappPermission.print => Icons.print_outlined,
   };
 
-  /// 旧 id → 当前枚举的别名。
-  ///
-  /// 为什么需要别名而不是直接把 id 改掉：用户在过去版本里对 `allFiles`
-  /// 做过的「允许/拒绝」还躺在 SharedPreferences 里，市场数据里也有
-  /// 应用在声明 `allFiles`。改 id 等于让这些记录全部失效、并且让那些
-  /// 应用在详情页被标成「未知权限」。别名把两件事都接住了：
-  /// 声明照旧能识别，旧决定也会被当作新权限的决定读出来。
   static const Map<String, MiniappPermission> aliases =
       <String, MiniappPermission>{
         'allFiles': MiniappPermission.sdcard,
@@ -783,14 +663,6 @@ enum MiniappPermission {
       .where((MiniappPermission p) => p.isSensitive)
       .toList(growable: false);
 
-  /// 曾经是权限、但这一版**已经不再需要授权**的能力 id。
-  ///
-  /// 保留这份清单是为了把两种情况分开：
-  ///   * `network` 这类 → 老数据里写着很正常，只是它现在不需要授权了，
-  ///     不该在市场数据上打一个"写错了"的警告；
-  ///   * 真正拼错的 id（例如 `camra`）→ 那才需要提醒维护者。
-  ///
-  /// 这些能力现在由桥接层直接放行，所以「不再需要授权」不等于「不能用了」。
   static const Set<String> retiredIds = <String>{
     'network',
     'storage',

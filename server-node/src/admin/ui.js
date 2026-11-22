@@ -1,31 +1,3 @@
-// server/src/admin/ui.js
-//
-// 管理面板的页面（整块 HTML + CSS + 原生 JS）。
-//
-// 为什么不引前端框架、不挂 CDN：
-//   * 这个面板要在**没有外网**的内网服务器上用 —— 任何外链都是单点故障；
-//   * 它一共就八屏（概览 / 应用 / 分类标签 / 用户 / 公告 / 管理员 / 邮件 / 站点），
-//     引入构建工具只会让「改一行文案」也要重新编译。
-// 所以这里是纯静态字符串，浏览器直接吃。
-//
-// 注意：内层 <script> 里**不用模板字符串**（反引号 + ${}），也不用反引号写注释 ——
-// 它们都会被外层这个 JS 模板字符串先求值：
-//   * 反引号会直接**截断**外层字符串（整页语法错误 → 面板白屏）；
-//   * ${...} 会被外层求值（轻则内容消失，重则抛异常）；
-//   * 单个反斜杠 + n 会被外层吃成真换行，写在 JS 单引号字符串里就是「未闭合字符串」。
-// 内层一律用字符串拼接；要换行得在源文件里写成两个反斜杠加 n（外层求值后剩反斜杠 + n）。
-//
-// 页面自己是「空壳」：加载后先请求 /api/session，返回
-//   { setup: true }        → 显示「创建第一个管理员」
-//   { setup: false, user: null } → 显示登录
-//   { setup: false, user: {...} } → 显示面板
-// 这样服务端不需要为三种状态渲染三份 HTML，也不会把「有没有账号」
-// 写进缓存住的页面里。
-
-/**
- * @param {{version: string}} opts
- * @returns {string} 完整 HTML
- */
 export function renderAdminPage({ version }) {
   return `<!doctype html>
 <html lang="zh-CN">
@@ -778,13 +750,6 @@ export function renderAdminPage({ version }) {
     }).catch(function () { showLogin(); });
   });
 
-  // ---------------- Tab
-  //
-  // 面板名单**从 DOM 里读**，不再手写第二份数组。
-  // 之前那个手写数组漏了 'site'：点「站点」时循环只把名单里的七块设为隐藏，
-  // 而 tab-site 从来没被显式显示过 —— 于是整页空白。
-  // 用 DOM 当唯一来源之后，加一个 tab 就不会再漏（漏了也只是一块永远隐藏的 div，
-  // 而不是一个点进去什么都没有的按钮）。
   var TAB_BUTTONS = Array.prototype.slice.call(document.querySelectorAll('.tab'));
 
   function switchTab(name) {
@@ -1224,11 +1189,6 @@ export function renderAdminPage({ version }) {
       .finally(function () { $('iconUploadBtn').disabled = false; });
   });
 
-  // ================================================================ 用户
-  //
-  // 列表只回答「有哪些人、现在能不能登录」；所有改动都在详情弹窗里做。
-  // 之前在表格行里排了五个按钮，屏幕窄一点就换行成三排，
-  // 而且「封禁」这个动作根本没有地方填时长与原因。
   var userCache = [];
 
   // 时间戳 → 本地 'YYYY-MM-DD HH:mm'

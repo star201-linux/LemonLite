@@ -1,11 +1,3 @@
-// lib/pages/settings/personalization_page.dart
-//
-// 个性化（二级页面）：主题模式、动态取色、主题主色。
-//
-// 为什么从设置页拆出来：设置页负责「有哪些地方可以改」，
-// 而颜色是三项会互相影响的东西（模式 / 动态取色 / 种子色），
-// 挤在一级页面里既占地方，又把「账号」「权限」这些更常用的入口往下压。
-// 拆出来之后，设置页第一屏就是账号，颜色只在需要时点进去。
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';

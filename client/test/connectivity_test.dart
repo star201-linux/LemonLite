@@ -1,14 +1,3 @@
-// test/connectivity_test.dart
-//
-// 蓝牙 / NFC 这两条「宿主原生能力」的接线测试。
-//
-// 重点不是真的连设备（测试环境没有平台通道），而是确认三件事：
-//   1. 它们被算进权限模型，且 NFC 不会被误标成需要 Android 运行时权限；
-//   2. 小程序调用时**先过应用内授权**，未授权一律 fail closed（40001）；
-//   3. 已授权后，在非 Android 环境里会安全降级（返回空设备 / supported=false），
-//      而不是抛一个让页面白屏的异常。
-//
-// 真实蓝牙/NFC 的收发由 Kotlin 侧负责，这里用不到。
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';

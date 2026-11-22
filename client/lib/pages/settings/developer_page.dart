@@ -86,15 +86,6 @@ class _DeveloperPageState extends State<DeveloperPage> {
     return value;
   }
 
-  /// 手动探一次服务端。
-  ///
-  /// 为什么要单独一个探测按钮：「为什么没走服务端」几乎总是连通性问题
-  /// （没开服务、地址填错、手机与电脑不在同一网络），
-  /// 让用户当场点一下看到具体错误，比让他猜有用得多。
-  ///
-  /// 这里直连 `/api/health`，不经过 MarketRepository ——
-  /// 调试时用户需要的是「不管上次怎样，现在立刻再探一次」，
-  /// 而业务层可能会缓存/复用连接，不适合做一次性检查。
   Future<void> _probeApi(String base) async {
     final String url = _healthUrlOf(base);
     setState(() => _probing = true);
@@ -210,8 +201,6 @@ class _DeveloperPageState extends State<DeveloperPage> {
   Widget build(BuildContext context) {
     final SettingsService settings = context.watch<SettingsService>();
     final ThemeController theme = context.watch<ThemeController>();
-    // 主页当前用的是哪种后端 —— 展示在这里，用户排查「为什么没走服务端」时
-    // 第一眼就能看到答案。
     final HomeController home = context.watch<HomeController>();
     final ColorScheme scheme = Theme.of(context).colorScheme;
     final TextTheme textTheme = Theme.of(context).textTheme;
@@ -340,8 +329,6 @@ class _DeveloperPageState extends State<DeveloperPage> {
               ),
             ),
             const Divider(height: 1, indent: 16, endIndent: 16),
-            // 两种后端的探测地址都列出来 —— 排查「为什么没走服务端」时
-            // 用户需要能直接点开 / 复制这两个地址自己验证。
             ListTile(
               leading: const Icon(Icons.health_and_safety_outlined),
               title: const Text('服务端健康检查'),
@@ -386,10 +373,6 @@ class _DeveloperPageState extends State<DeveloperPage> {
             ),
           ]),
 
-          // ---------------- 运行日志 ----------------
-          //
-          // 放在测试工具之上：用户报障时第一件事就是「去开发者选项导出日志」，
-          // 不该藏在二级菜单里。
           _section(context, '诊断', <Widget>[
             ListTile(
               leading: const Icon(Icons.receipt_long_outlined),

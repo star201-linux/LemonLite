@@ -40,11 +40,6 @@ function userIdParam(req) {
   return id;
 }
 
-/**
- * 头像上传接收器（内存里接，落盘前先验魔数）。
- *
- * 与 /api/upload/avatar 用同一个上限配置：面板不该拥有比客户端更大的口子。
- */
 const avatarUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: config.userdata.maxAvatarBytes, files: 1, fields: 2 },
@@ -90,13 +85,6 @@ usersRouter.get(
   }),
 );
 
-/**
- * GET /api/users/:id
- *
- * 详情页要在一个屏幕里答完「这个人是谁、能不能登录、占多大空间」，
- * 所以这里顺带带上会话数、data.json 大小与头像大小 ——
- * 分别再去点三个接口对运维来说是没必要的往返。
- */
 usersRouter.get(
   '/api/users/:id',
   wrap(async (req, res) => {
@@ -131,17 +119,6 @@ usersRouter.get(
   }),
 );
 
-/**
- * PUT /api/users/:id
- * body: { username?, email? }
- *
- * 只改传了的字段。**邮箱在这里可以直接改**（客户端不行）：
- * 管理员代改是「用户写信来说邮箱填错了」这类场景，本来就绕过了本人验证；
- * 客户端那条路要密码 + 新邮箱验证码，两条路的信任前提不同。
- *
- * 改名不需要踢会话（token 里没有用户名）；改邮箱也不踢 ——
- * 用户下次打开 App 拉一次 /me 就拿到新邮箱，没必要把他踢出去。
- */
 usersRouter.put(
   '/api/users/:id',
   wrap(async (req, res) => {
@@ -184,12 +161,6 @@ usersRouter.put(
   }),
 );
 
-/**
- * POST /api/users/:id/avatar  multipart，字段名 file
- *
- * 落盘逻辑与客户端上传完全一样（saveAvatar + 版本戳），
- * 区别只是 userId 来自 URL 而不是当前登录态。
- */
 usersRouter.post(
   '/api/users/:id/avatar',
   avatarUpload.single('file'),
@@ -232,16 +203,6 @@ usersRouter.delete(
   }),
 );
 
-/**
- * POST /api/users/:id/ban
- * body: { durationHours | durationDays, reason? }
- *
- * 两个时长字段二选一，`durationHours` 优先：
- *   durationHours：正整数 = 小时数，面板「x 天 x 小时」合成后传这个；
- *   durationDays ：正整数 = 天数，老脚本与旧面板还在用，保留兼容。
- * 两者都用 `-1` 表示永久。
- * 封禁立刻撤销全部会话 —— 否则被踢的人手里那张 token 还能用到过期。
- */
 usersRouter.post(
   '/api/users/:id/ban',
   wrap(async (req, res) => {

@@ -1,14 +1,3 @@
-// server/src/lib/slug.js
-//
-// 分类 id / 标签 slug 的生成规则。
-//
-// 为什么不让用户随便填 id：这两个值会出现在 URL 与接口参数里
-// （`/api/market/feed?category=tools`），任意字符串既不好看也不安全。
-// 规则统一成「小写字母数字 + _ -」，最长 32。
-//
-// 中文名没法直接转成 ASCII：`slugify('效率')` 返回空串，
-// 调用方就退回 `randomId('cat')` —— 一个稳定的随机 id 也比
-// 「中文拼进 URL 再被各种编码」好排查。
 
 import { randomBytes } from 'node:crypto';
 

@@ -1,22 +1,3 @@
-// lib/data/services/permission_service.dart
-//
-// 权限管理器的数据层。
-//
-// 三件事都在这里：
-//   1. **授权状态**：`perm.decision.<appId>.<permissionId>` → 'granted' | 'denied'。
-//      **没写过 = 还没问过用户**（PermissionDecision.ask），
-//      于是任何受控权限第一次被调用时都必须弹窗确认 —— 宿主不替用户做主。
-//      弹窗里「仅本次生效」默认勾选，那种情况**不落盘**，下次照问。
-//   2. **申请记录**：`perm.usage.<appId>.<permissionId>` → JSON。
-//      记录这个小程序申请过哪些权限、被拒过几次、最近一次是什么时候。
-//   3. **小程序注册表**：`perm.known_apps` → JSON 数组。
-//
-// 关于注册表与「应用管理」的关系（这一版的改动）：
-//   注册表**不再是权限管理器自己的那份应用清单**。应用清单的唯一真相来源是
-//   「应用管理」页（ApplicationRegistry），权限管理器只按它给出的 appId 逐项
-//   展示与设置权限。这样「应用管理里删掉一个应用」就等于把它从权限管理里
-//   一并移除，不会再出现两处清单各说各话。
-//   为了兼容旧数据，注册表仍然被读取并作为 appId 的补充来源之一。
 
 import 'dart:convert';
 
@@ -200,15 +181,6 @@ class PermissionScanReport {
   PermissionDecision decisionOf(String appId, MiniappPermission permission) =>
       decisions[appId]?[permission] ?? permission.defaultDecision;
 
-  /// 这个小程序**该被展示**的权限：声明过的 ∪ 实际申请过的。
-  ///
-  /// 为什么不是全部九项：Android 的权限页只列 AndroidManifest 里声明过的，
-  /// 用户一屏就能看完，也知道「它要什么」。把宿主支持的权限全摊开，
-  /// 等于让用户自己从九项里找那两项 —— 而且会让「没申请」看起来像
-  /// 「申请了但被拒绝」。
-  ///
-  /// 反过来，声明没写但运行时真的调用了（作者漏写 / 老包）也必须出现，
-  /// 否则用户没法给这个实际发生过的请求做决定。
   List<MiniappPermission> relevantOf(String appId) {
     final Set<MiniappPermission> set = <MiniappPermission>{};
     final KnownMiniapp? app = appById(appId);
@@ -268,10 +240,6 @@ class PermissionService extends ChangeNotifier {
 
   static PermissionService? _instance;
 
-  /// 未初始化时返回 null。
-  ///
-  /// 给「可能在 main() 之前就被构建的 UI」用（widget 测试、启动早期的
-  /// 预渲染）：拿不到服务时按「还没问过用户」处理，而不是抛异常。
   static PermissionService? get maybeInstance => _instance;
 
   static PermissionService get instance {
@@ -292,10 +260,6 @@ class PermissionService extends ChangeNotifier {
   static const String _kUsagePrefix = 'perm.usage.';
   static const String _kKnownApps = 'perm.known_apps';
 
-  /// 定位的两个维度（精度 / 后台）存在一个键里：`perm.location.<appId>`
-  /// → `{"p":"fine|coarse","b":true|false}`。
-  /// 单独一个键而不是两个，是为了「要么全在，要么全无」——
-  /// 半份记录（只有精度没有后台）会让迁移逻辑猜来猜去。
   static const String _kLocationPrefix = 'perm.location.';
 
   static String _locationKey(String appId) => '$_kLocationPrefix$appId';
@@ -305,11 +269,6 @@ class PermissionService extends ChangeNotifier {
   static String _usageKey(String appId, MiniappPermission p) =>
       '$_kUsagePrefix$appId.${p.id}';
 
-  /// 某个权限在盘上的所有 decision key：当前 id 在前，历史 id 在后。
-  ///
-  /// 历史 id 只读不写（见 [MiniappPermission.aliases]）：
-  /// 升级前用户对 `allFiles` 点过的「允许」要能继续生效，
-  /// 但不能让新旧两份记录同时存在、以后谁也说不清哪个算数。
   static List<String> _decisionKeys(String appId, MiniappPermission p) => <String>[
     _decisionKey(appId, p),
     for (final String legacy in p.legacyIds) '$_kDecisionPrefix$appId.$legacy',
@@ -377,11 +336,6 @@ class PermissionService extends ChangeNotifier {
     }
   }
 
-  /// 只对给定的一组权限做决定。
-  ///
-  /// 权限页的「全部允许」用这个而不是 [setAllDecisions]：对一个小程序
-  /// 只声明了两项权限的应用，把剩下七项也设成「允许」等于凭空授权 ——
-  /// 它以后临时多要一项（声明漏写）就会静默通过。
   Future<void> setDecisions(
     String appId,
     Iterable<MiniappPermission> permissions,
@@ -451,14 +405,6 @@ class PermissionService extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ---------------------------------------------------------------- 定位
-
-  /// 某个小程序的定位授权（决定 + 精度 + 后台）。
-  ///
-  /// 迁移规则（0.3 之前是 geolocationFine / geolocationCoarse 两项）：
-  ///   * 决定沿用旧 key（[PermissionService.decisionOf] 会回退到 legacy id）；
-  ///   * 精度按「当时究竟给了哪一档」还原：给过精确就是精确，
-  ///     只给过大致就是近似，都没给过则默认精确（弹窗里也默认精确）。
   LocationGrant locationOf(String appId) {
     final PermissionDecision decision = decisionOf(
       appId,
@@ -507,11 +453,6 @@ class PermissionService extends ChangeNotifier {
     return PermissionDecision.byId(raw) ?? PermissionDecision.ask;
   }
 
-  /// 改定位的精度 / 后台开关。
-  ///
-  /// **不会**顺手把决定改成「允许」：这两个维度只在已经允许的前提下有意义，
-  /// 但「用户点了一下精确/近似」不等于「同意给定位」。决定仍然由
-  /// [setDecision] 单独管。
   Future<void> setLocationOptions(
     String appId, {
     LocationPrecision? precision,
@@ -532,12 +473,6 @@ class PermissionService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 定位需要的 Android 运行时权限：精度决定 FINE / COARSE，
-  /// 允许后台时再加一条 ACCESS_BACKGROUND_LOCATION。
-  ///
-  /// 注意后台定位在 Android 11+ 不能和前台权限一起申请 —— 系统会忽略它，
-  /// 用户必须去系统设置里选「始终允许」。调用方（miniapp_page）负责在
-  /// 前台权限拿到之后再单独申请一次，失败了也不影响前台定位。
   List<String> locationRuntimePermissions(LocationGrant grant) {
     if (!grant.granted) return const <String>[];
     return <String>[
@@ -702,15 +637,6 @@ class PermissionService extends ChangeNotifier {
     );
   }
 
-  // ------------------------------------------------------------------ 扫描
-
-  /// 扫一遍：应用清单以**应用管理**（ApplicationRegistry）为准，
-  /// 再补上 storage 里出现过的 appId 与调用方补充的 appId，然后带上全部授权与申请记录。
-  /// UI 只消费这个快照。
-  ///
-  /// 为什么应用清单要从应用管理取：权限管理器里列出的应用必须与
-  /// 「应用管理」里的一致 —— 那边删掉一个应用，这边就不该再看到它。
-  /// 两处各自维护一份清单是上一版最容易产生不一致的地方。
   PermissionScanReport scan({
     Map<String, String> nameHints = const <String, String>{},
     Iterable<String> extraIds = const <String>[],

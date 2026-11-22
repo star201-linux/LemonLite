@@ -1,14 +1,3 @@
-// lib/pages/home/search_page.dart
-//
-// 搜索页：关键词 + 标签筛选 + 分页。
-//
-// 为什么单独一页而不是继续在主页的搜索框上做本地过滤：
-//   搜索是**服务端筛的**（不会把全部应用拉到本地），
-//   而「标签 chip」需要服务端返回的命中标签计数 —— 这两件事都超出
-//   「在已有列表上 filter 一下」的范围。放在独立页面里，
-//   主页保持「推荐流」的单一职责。
-//
-// 0.5 起没有任何「本地搜索」分支：只有服务端一种后端。
 
 import 'dart:async';
 
@@ -288,8 +277,6 @@ class _SearchPageState extends State<SearchPage> {
 
   List<MarketTag> get _tagsToShow {
     final MarketSearchPage? page = _page;
-    // 已经选了标签：显示全量（否则用户被自己选中的标签锁死，
-    // 只能先点「全部」才能换 —— 很别扭）
     if (_activeTag.isNotEmpty) {
       return _allTags.isNotEmpty
           ? _allTags

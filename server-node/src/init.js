@@ -1,19 +1,3 @@
-// server/src/init.js
-//
-// 一键初始化：建库 → 建表 → 灌基础数据（分类 / 标签）。
-//
-// 用法：
-//   npm run init            # 只在库/表不存在时创建，不会清空已有数据
-//   npm run init -- --seed  # 额外灌入基础分类与标签（**不含任何小程序**）
-//   npm run init -- --reset # **危险**：DROP 整个库再重建（会二次确认）
-//
-// 现在种子数据里没有任何小程序：默认市场是空的，应用只能由管理员
-// 在 /admin 面板里添加。这样部署完不用先删一堆演示应用。
-//
-// 为什么把「建库」和「建表」放同一个脚本：
-//   MySQL 的 `CREATE TABLE` 必须在 USE 之后，而 USE 需要库已存在。
-//   拆成两个脚本的话，第一次部署的人一定会漏跑其中一个，
-//   然后拿到一个「表不存在」的错误 —— 那是最没必要浪费时间的错误。
 
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';

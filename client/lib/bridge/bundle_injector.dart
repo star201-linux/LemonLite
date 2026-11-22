@@ -1,17 +1,3 @@
-// lib/bridge/bundle_injector.dart
-//
-// 把模块包的内容变成可以注入 WebView 的 JS。
-//
-// 注入位置与主题、SDK 一起排在 document-start / document-end 两个 UserScript 里：
-//   主题数据 → JS SDK → 模块
-// 放在 SDK 之后，是为了让模块脚本一上来就能用 window.lemonlite.*。
-//
-// 几个刻意的取舍：
-//   * 模块的 JS 一律包进 IIFE —— 模块作者不该能把变量漏到页面全局上互相污染
-//   * 模块的 JS/CSS 用「建 <script>/<style> 再插入」的方式执行，而不是拼进主脚本：
-//     这样模块代码自己抛错时，宿主框架仍然正常，错误落到 window.onerror 而不是崩掉注入
-//   * 模块声明的桥接方法生成 `lemonlite.<name>()` 包装，脚本仍走同一条 callHandler 通道，
-//     不额外开后门
 
 import 'dart:convert';
 
@@ -112,11 +98,6 @@ class BundleInjector {
     }
   }
 
-  /// 注入辅助函数。
-  ///
-  /// 为什么需要 `__inject`：runAt = documentStart 时页面往往还没解析出 `<head>`，
-  /// 直接 appendChild 会抛错，连带整个模块脚本都不执行。
-  /// 这里统一兜底 —— 元素还没就绪就等 DOMContentLoaded。
   static const String _preamble = r'''
   function __inject(make) {
     function apply() {

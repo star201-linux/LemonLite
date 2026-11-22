@@ -1,22 +1,3 @@
-// lib/data/services/application_registry.dart
-//
-// 「应用管理」的数据层：**应用清单的唯一真相来源**。
-//
-// 为什么要有这么一个东西：
-//   在这之前，应用清单散在三处 —— 权限服务里的 known_apps 注册表、
-//   SharedPreferences 里出现过的 appId、以及两个 appfiles 目录名。
-//   每一处都只能看到一部分真相，于是「权限管理器里列着某个小程序、
-//   应用管理里却没有」这种不一致迟早会发生。
-//   现在统一成一份：谁要列应用，就问这里。
-//
-// 记录什么：
-//   id / name / icon / url  —— 展示与再打开用
-//   firstSeenAt / lastOpenedAt —— 排序与「多久没用了」的提示
-//
-// 为什么仍然要持久化而不是每次扫目录：小程序是远程 HTML，没有「安装」概念，
-// 目录里也不会留下 tarball。打开过就是唯一可靠的「这个 appId 存在过」的证据。
-// 但目录扫描仍然被当作**补充来源**（用户手工往 appfiles 里放东西也算数），
-// 只是它补进来的条目不会带图标与名字，只有 id。
 
 import 'dart:convert';
 
@@ -51,10 +32,6 @@ class RegisteredApp {
   /// 市场里的分类 id
   final String? category;
 
-  /// 小程序在 metadata.json 里声明的权限 id（原始字符串）。
-  ///
-  /// 存原始 id 而不是枚举：旧包可能声明了当前版本不认识的权限，
-  /// 直接丢掉会让「这个应用到底要过什么」永远查不出来。
   final List<String> permissionIds;
 
   final DateTime? firstSeenAt;
@@ -134,8 +111,6 @@ class ApplicationRegistry extends ChangeNotifier {
   static ApplicationRegistry init() =>
       _instance = ApplicationRegistry._(SettingsService.instance);
 
-  /// 持久化 key。沿用 perm.known_apps 的**新名字**，
-  /// 旧 key 由 [_migrateLegacy] 一次性搬过来（否则用户已有的应用清单会凭空消失）。
   static const String _kApps = 'apps.registry';
 
   /// 旧版权限服务用的 key
@@ -292,10 +267,6 @@ class ApplicationRegistry extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 清掉某个 appId 在权限侧的记录（决定 + 申请记录）。
-  ///
-  /// 刻意写在这里而不是让调用方自己拼 key：权限记录的 key 格式是权限服务的
-  /// 内部细节，应用管理只需要知道「把这个应用的一切抹掉」。
   Future<void> _clearPermissionRecords(String appId) async {
     final List<String> keys = <String>[];
     for (final String id in _permissionIds) {
@@ -307,11 +278,6 @@ class ApplicationRegistry extends ChangeNotifier {
     await _settings.removeMany(keys);
   }
 
-  /// 权限 id 清单。
-  ///
-  /// 这里刻意**硬编码**而不是 import MiniappPermission：应用管理要清的是
-  /// 「历史上写过的所有权限记录」，包括那些已经从枚举里删掉的旧权限 id ——
-  /// 如果只遍历当前枚举，旧版本的残留记录永远清不掉。
   static const List<String> _permissionIds = <String>[
     // 当前版本（与 MiniappPermission.values 的 id 保持一致）
     'camera',
@@ -420,8 +386,6 @@ class ApplicationRegistry extends ChangeNotifier {
         );
       }
       if (migrated.isEmpty) return;
-      // 这里不 await：迁移是「顺手补一下」，不该阻塞首次读取。
-      // 写失败也只是下次启动再迁一次，没有副作用。
       _write(migrated).then((_) {
         lemonLog('AppRegistry', '已从 perm.known_apps 迁移 ${migrated.length} 个应用');
       });
@@ -436,10 +400,6 @@ class ApplicationRegistry extends ChangeNotifier {
   }
 }
 
-/// 读权限声明：去重、去空、保序。
-///
-/// 放在顶层而不是某个类里：RegisteredApp 的反序列化与 ApplicationRegistry
-/// 的写入都要用，放两份等于以后改一处忘一处。
 List<String> _cleanList(Object? value) {
   if (value is! List) return const <String>[];
   return value

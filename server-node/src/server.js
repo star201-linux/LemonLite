@@ -40,11 +40,6 @@ if (config.http.trustProxy) app.set('trust proxy', true);
 app.use(requestId);
 app.use(securityHeaders);
 
-// CORS：客户端是 Android App（原生 HTTP 请求，不受同源限制），
-// 网页版调试 / 管理后台才需要。开发期放开，生产必须用 CORS_ORIGIN 限定。
-//
-// 生产环境没配 CORS_ORIGIN 时**不发** CORS 头（默认同源）：
-// 放行全部等于把 API 借给任意网站，而客户端根本不需要它。
 const corsOrigin = process.env.CORS_ORIGIN;
 const isProduction = process.env.NODE_ENV === 'production';
 app.use(
@@ -65,8 +60,6 @@ app.use(
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
-// 限流：全局按 IP 300 次/分钟，认证类接口 20 次/分钟（防撞库与验证码轰炸）。
-// 放在路由之前，被限的请求不会碰到数据库。
 app.use(
   '/api',
   rateLimit({
@@ -99,14 +92,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// ---------------------------------------------------------------- 用户数据目录
-
-// 只确保目录存在，**不**静态挂载。
-//
-// 为什么不挂 express.static：userdata/<id>/ 里有 data.json（用户私有数据），
-// 静态挂载等于把它们全部公开可下载 —— 而 id 是自增的，谁都能挨个试。
-// 头像走 /api/upload/avatar/:id 这个专用接口（它只回图片、带 ETag），
-// data.json 走需要登录的 /api/user/data。
 const userdataDir = join(config.root, config.userdata.dir);
 if (!existsSync(userdataDir)) mkdirSync(userdataDir, { recursive: true });
 
@@ -120,8 +105,6 @@ if (!existsSync(iconsDir)) mkdirSync(iconsDir, { recursive: true });
 app.use(
   '/icons',
   express.static(iconsDir, {
-    // 换图标时文件名不变（<appId>.png），所以不能设 immutable；
-    // 一天的缓存 + 客户端本地缓存已经够了。
     maxAge: '1d',
     index: false,
     dotfiles: 'deny',
@@ -148,14 +131,6 @@ app.get('/api/health', async (_req, res, next) => {
   }
 });
 
-// 包路由必须在 marketRouter **之前** 挂载。
-//
-// 原因：marketRouter 里有 `/app/:id` 这样的通配段，而包路由的
-// `/:appId/package` 与它是两种不同的两段路径。Express 按挂载顺序匹配，
-// 如果把 marketRouter 放前面，`/api/market/xxx/package` 不会命中
-// `/app/:id`（段数不同，实际不会冲突）—— 但 `/updates` 会先被
-// marketRouter 的兜底逻辑看到。把更具体的包路由放前面是稳妥做法，
-// 代价只是多一次路由表遍历。
 app.use('/api/market', packageRouter);
 app.use('/api/market', marketRouter);
 app.use('/api/auth', authRouter);
@@ -213,9 +188,6 @@ app.get('/', (_req, res) => {
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-// ---------------------------------------------------------------- 启动
-
-/** 扫一遍到期的注销申请。失败只记日志：清理不该挡住服务启动。 */
 async function runDeletionPurge(reason) {
   try {
     const removed = await purgeDueDeletions();
@@ -238,11 +210,6 @@ async function runDeletionPurge(reason) {
   }
 }
 
-/**
- * 递归排期而不是 setInterval：间隔来自 config，
- * 面板改完 `ACCOUNT_PURGE_INTERVAL_MINUTES` 之后，下一次排期就会用新值。
- * 间隔为 0 表示关掉定时清理（只靠启动时与 npm run prune）。
- */
 function scheduleDeletionPurge() {
   const minutes = Math.max(0, Number(config.account.purgeIntervalMinutes) || 0);
   if (minutes === 0) return;

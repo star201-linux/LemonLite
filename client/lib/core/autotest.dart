@@ -1,23 +1,3 @@
-// lib/core/autotest.dart
-//
-// 端到端自检用的**构建期开关**（默认完全关闭，正式包不受任何影响）。
-//
-// 为什么需要它：这台机器上的 Android 容器（Waydroid）没有 root，
-// 于是 adb / logcat / screencap / 输入注入全都不通 —— 我既看不到界面，
-// 也没法点按钮。唯一能拿到的通道是**容器数据分区在宿主机上可读**：
-//   ~/.local/share/waydroid/data/data/xyz.star201.lemonlite/
-// 所以自检的全部证据都落成这个目录里的文件：
-//   * app_flutter/autotest.log        每一步的时间线（谁被调用、弹窗是否显示、用户选了什么）
-//   * app_flutter/capture-*.png       用 RepaintBoundary 把 Flutter 界面自己截下来
-//   * files/appfiles/<appId>/…        小程序文件沙箱里真正写进去的东西
-//   * shared_prefs/*.xml              权限决定落盘的证据
-//
-// 三个 dart-define：
-//   --dart-define=LEMONLITE_AUTOTEST=1              开启自检并在启动时打开自检小程序
-//   --dart-define=LEMONLITE_AUTOTEST_ANSWER=allow   弹窗自动答「允许」（默认）
-//   --dart-define=LEMONLITE_AUTOTEST_ANSWER=deny    弹窗自动答「拒绝」（用来验证拦截路径）
-//
-// 正式交付的包不带这些参数，`autotestEnabled` 就是 false，下面的代码全是空转。
 
 import 'dart:io';
 import 'dart:typed_data';
@@ -112,12 +92,6 @@ Future<String> _dataDirPath() async {
   return docs.parent.path;
 }
 
-/// 把小程序沙箱里的文件镜像到应用私有目录。
-///
-/// 为什么要镜像：小程序的 appfiles 在**外部存储**上
-/// （/storage/emulated/0/Android/data/<包名>/files），而它的祖先目录
-/// /data/media/0 属于 media_rw(0770)，宿主机连进都进不去 —— 放开权限也没用。
-/// 所以自检时由宿主（同一个 uid，读得到）把它复制到私有目录，再放开私有目录。
 Future<List<String>> autotestMirrorSandbox() async {
   if (!autotestEnabled) return const <String>[];
   final List<String> copied = <String>[];

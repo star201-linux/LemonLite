@@ -1,16 +1,3 @@
-// lib/pages/home/widgets/app_card.dart
-//
-// 应用卡片（MD3 Expressive）。
-//
-// 视觉语言：
-//   * 28dp 大圆角填充卡片（surfaceContainerLow），不再用描边卡片；
-//   * 标题用 titleLarge + 600 字重，简介保持两行；
-//   * 版本号 / 标签都是药丸形 tonal chip；
-//   * 右侧一枚圆形箭头，明确「可点进去」；
-//   * 按压缩放 + Hero 图标，保留原来两处便宜但有效的反馈。
-//
-// 为什么仍是列表卡片而不是网格：中文长名称 + 简介 + 标签在网格里极易溢出，
-// 列表在手机一屏也能放 4~5 个，信息密度与可读性更好。
 
 import 'package:flutter/material.dart';
 

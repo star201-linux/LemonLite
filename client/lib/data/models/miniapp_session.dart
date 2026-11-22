@@ -1,17 +1,3 @@
-// lib/data/models/miniapp_session.dart
-//
-// 一个「正在运行的小程序」。
-//
-// 为什么它是个模型而不是页面状态：
-//   小程序可以退到后台继续运行，于是「会话」必须活得比页面 widget 久。
-//   桥接层（setPageOrientation / setKeepScreenOn / runInBackground）也要读写它，
-//   把会话放在 data/models 下，桥接层就只依赖模型、不依赖 pages，层次是干净的：
-//
-//     models ← services ← bridge
-//     models ← pages（host / session view）
-//
-// 它刻意只用可变的裸字段（而不是状态机）：会话状态只有「前台/后台」「方向」「常亮」
-// 三件小事，再造一层状态机只会让阅读成本变高，而不会更安全。
 
 import 'package:flutter/foundation.dart';
 
@@ -103,10 +89,6 @@ class MiniappSession {
   String get entry =>
       installedPackage?.entryUri ?? localAsset ?? '（无入口）';
 
-  /// WebView 要加载的虚拟 https 地址（本地包时非空）
-  ///
-  /// 为什么不用 file://：包里的 `<script type="module">` 在 file:// 下
-  /// 会被 CORS 拦掉，见 core/miniapp_web_origin.dart 的完整说明。
   Uri? get webUri => installedPackage?.webUri;
 
   /// 入口的 file:// 地址。只用来给 bundle 的 matches 做「本地包」判断 ——
@@ -134,10 +116,6 @@ class MiniappSession {
     if (isForeground) await NativeBridge.setKeepScreenOn(value);
   }
 
-  /// 把「方向 + 常亮」落到系统窗口上。
-  ///
-  /// 只有前台的会话才允许影响窗口；后台会话一律恢复默认，
-  /// 否则会出现「小程序在后台，整个 App 却还锁着横屏 / 常亮」。
   Future<void> applyWindowFlags() async {
     if (!NativeBridge.isSupported) return;
     if (isForeground) {

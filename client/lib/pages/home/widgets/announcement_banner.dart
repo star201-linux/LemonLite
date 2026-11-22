@@ -1,14 +1,3 @@
-// lib/pages/home/widgets/announcement_banner.dart
-//
-// 市场页顶部的公告横幅（级别 2）。
-//
-// 为什么是「横幅」而不是 SnackBar / 顶部弹层：
-//   * SnackBar 会被「网络错误」「更新提示」挤掉，也可能正好遮住底部的操作栏；
-//   * 浮层（Overlay）要自己算导航栏高度，平板/折叠屏上容易压到内容。
-//   横幅插在列表里，滚动时跟着走，不抢任何人的位置。
-//
-// 配色只用 `ColorScheme`：公告横幅最怕「一眼看上去像第三方广告」，
-// 用 primaryContainer 它就永远和 App 的主题色同族，深浅色模式也自动跟随。
 
 import 'package:flutter/material.dart';
 

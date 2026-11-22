@@ -331,8 +331,6 @@ class _PermissionControllerPageState extends State<PermissionControllerPage> {
     final ColorScheme scheme = Theme.of(context).colorScheme;
     final KnownMiniapp? app = report.appById(appId);
 
-    // 只展示「声明过的 ∪ 真正用过的」。九项全摊开会让用户误以为
-    // 这个小程序什么都想要，见 PermissionScanReport.relevantOf。
     final List<MiniappPermission> relevant = report.relevantOf(appId);
     final Set<MiniappPermission> declared = app?.declaredPermissions.toSet() ??
         <MiniappPermission>{};
@@ -783,10 +781,6 @@ class _ScanPermissionTile extends StatelessWidget {
   }
 }
 
-/// 单应用视图里的一项权限：三态选择 + 申请记录。
-///
-/// 用 SegmentedButton 而不是 Switch：开关只有两态，会把"还没问过"错画成
-/// "已允许"或"已拒绝"，而这一版里"还没问过"是默认状态，必须能一眼看出来。
 class _PermissionDecisionTile extends StatelessWidget {
   const _PermissionDecisionTile({
     required this.appId,
@@ -868,9 +862,6 @@ class _PermissionDecisionTile extends StatelessWidget {
                   onChanged(selection.first),
             ),
           ),
-          // 定位：一项权限、两个独立维度。精度与后台开关放在同一张卡里，
-          // 是因为它们和「允不允许」是同一个决定的三个面 —— 分到别处用户
-          // 找不到，也容易以为改了精度等于改了授权。
           if (permission.isLocation) ...<Widget>[
             const SizedBox(height: 12),
             _LocationControls(appId: appId, initial: _locationGrant),
@@ -1008,9 +999,6 @@ class _ErrorBody extends StatelessWidget {
   }
 }
 
-/// 「运行时请求」标记：声明里没写，但真的调用过。
-///
-/// 这个标记不能省：用户看到的每一行都该能回答「它凭什么出现在这里」。
 class _RuntimeChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -1031,13 +1019,6 @@ class _RuntimeChip extends StatelessWidget {
   }
 }
 
-/// 定位的两个独立维度：精度 + 后台。
-///
-/// 为什么要单独一块而不是复用三态分段：
-///   「允许定位」只回答了「能不能」，没回答「给多准」「后台还给不给」。
-///   Android 12+ 的授权框就是三段：允许 / 仅这次 / 拒绝 + 精确/大致，
-///   后台再单列一个开关。这里照同一套语义做，规则也一致：
-///   **后台精度永远不超过前台** —— 所以只有一个精度选择，后台只是一个开关。
 class _LocationControls extends StatefulWidget {
   const _LocationControls({required this.appId, required this.initial});
 
@@ -1116,8 +1097,6 @@ class _LocationControlsState extends State<_LocationControls> {
           contentPadding: EdgeInsets.zero,
           dense: true,
           value: _grant.background,
-          // 没允许定位时后台开关没有意义，置灰而不是隐藏 ——
-          // 隐藏会让用户不知道还有这个维度。
           onChanged: enabled
               ? (bool value) => _set(background: value)
               : null,

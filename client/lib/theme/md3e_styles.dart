@@ -1,26 +1,3 @@
-// lib/theme/md3e_styles.dart
-//
-// 注入到每个小程序的 **MD3 Expressive 基础样式**。
-//
-// 为什么需要它：
-//   小程序可以完全不写 CSS（一个只有 h1 / p / button 的 HTML）。
-//   这时 WebView 会按浏览器默认样式渲染 —— 蓝紫色链接、灰色按钮、
-//   16px 的旧式排版，和宿主明显的 MD3 界面完全不像同一个 App。
-//   这份样式表给「没有自己写样式的原生元素」一套 MD3E 的外观：
-//   大圆角、药丸按钮、层次分明的表面色、Expressive 的字重与字距。
-//
-// 两层配合：
-//   1. 元素选择器（`:where()`，零优先级）：给所有原生元素一个「不至于难看」的
-//      底线，页面自己的 `.my-btn {}` / `body {}` 永远能覆盖；
-//   2. 属性选择器（`[data-md3e-role=...]`）：DOM 拦截脚本确认「作者完全没管过」
-//      之后才打标记，用来压过浏览器 UA 样式里那些顽固的 appearance / 边框。
-//      作者补上 class 或外观 style，脚本会撤标记，规则随之失效。
-//
-//   真正的主题色仍然来自 `--md-*` 变量（由 ThemeInjector / 文档拦截注入），
-//   所以浅色/深色/动态壁纸色都会自动跟随。
-//
-// 参考：Material 3 Expressive（m3.material.io）—— 形状层级、字重对比、
-// 药丸按钮、容器色与表面色的搭配，都在下面这些规则里。
 
 import 'dart:convert';
 
@@ -845,15 +822,6 @@ dialog::backdrop {
 }
 ''';
 
-  /// document-start 注入脚本：把上面的样式表插到 `<head>` 的最前面。
-  ///
-  /// 为什么先插到 head 的第一位而不是最后：
-  ///   页面自己的 `<style>` 在 DOM 顺序上排在我们后面，同优先级时由它覆盖；
-  ///   反过来（插到最后）反而会让「页面写了 body 颜色」被我们的兜底色盖住。
-  ///
-  /// document-start 时 `<head>` 可能还没被解析出来：这时退回
-  /// `documentElement`，样式依旧会生效（style 元素放在 html 下也参与层叠）；
-  /// 再兜底一个 DOMContentLoaded，防止极端 WebView 版本下样式元素丢失。
   static String buildInjectScript() =>
       '''
 (function () {
@@ -877,23 +845,6 @@ dialog::backdrop {
 })();
 ''';
 
-  /// DOM 拦截脚本：给「作者没管过」的原生控件打 MD3E 标记。
-  ///
-  /// 判定「作者没管过」的三条（全部满足才算）：
-  ///   1. 没有 id，没有 class —— 有任何一个都说明作者按自己的结构组织过；
-  ///   2. 没有和外观相关的内联 style（背景/颜色/边框/圆角/字体/内边距/阴影/
-  ///      appearance）。只写 width / margin 这类布局属性的仍然接管 —— 那是排版，
-  ///      不是外观；
-  ///   3. 没有显式的 `role` 属性（作者自己在管语义，通常也配了样式）。
-  ///
-  /// 命中后就地打 `data-md3e-role`，CSS 里的属性选择器规则接管外观；
-  /// 作者一旦补上 class 或外观 style，观察器会把标记撤掉，绝不和作者抢。
-  ///
-  /// 为什么不用「计算样式等于 UA 默认值」来判断：
-  ///   `getComputedStyle` 每个元素都要触发布局，一个几百节点的页面在低端机上
-  ///   会卡出白屏；而且不同 WebView 版本的 UA 默认值并不一致，判起来很脆。
-  ///   结构判定（class/id/style）是 O(1) 的，误判的方向也安全 ——
-  ///   最多是「本来能接管但没接管」，不会破坏作者的设计。
   static String buildDomScript() => r'''
 (function () {
   if (window.__LEMONLITE_MD3E_DOM__) { return; }

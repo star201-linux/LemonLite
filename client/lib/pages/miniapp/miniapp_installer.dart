@@ -63,12 +63,6 @@ class MiniappInstaller {
     final ValueNotifier<PackageProgress?> progress =
         ValueNotifier<PackageProgress?>(null);
 
-    // 存 NavigatorState 而不是 BuildContext。
-    //
-    // 为什么：这个值要在多个 await 之后使用，而 lint
-    //（use_build_context_synchronously）会正确地把「await 之后用 context」
-    // 判为危险 —— 页面可能在下载期间被销毁。NavigatorState 没有这个问题：
-    // 它有自己的 mounted 语义，而且 pop 一个已经不在栈上的对话框是无害的。
     NavigatorState? dialogNavigator;
     if (showProgress && context.mounted) {
       final NavigatorState navigator = Navigator.of(context);
@@ -202,12 +196,6 @@ class MiniappInstaller {
     }
   }
 
-  /// 关掉进度对话框。
-  ///
-  /// 参数是 NavigatorState 而不是 BuildContext —— 这样就不存在
-  /// 「await 之后还在用 context」的问题（见 ensureInstalled 里的说明）。
-  /// 对话框是 barrierDismissible: false 的，下载结束前一定还在栈上，
-  /// 所以能 pop 就直接 pop；不能 pop（已经被别处关掉）就什么都不做。
   static void _closeDialog(NavigatorState? navigator) {
     if (navigator == null) return;
     if (!navigator.mounted) return;

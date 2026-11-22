@@ -117,14 +117,6 @@ class BridgeApi {
   /// 弹窗里显示的小程序名字（空则用 appId）
   final String appName;
 
-  /// 权限确认弹窗的注入点。
-  ///
-  /// 为什么由调用方注入而不是直接 import PermissionPromptService：
-  /// 桥接层不应该依赖 pages/（层级方向是 pages → bridge）。注入之后，
-  /// 测试里可以直接塞一个「永远允许 / 永远拒绝」的假实现。
-  ///
-  /// 为 null 时按 [PermissionService] 里**已经保存的决定**判断：
-  /// 只有「已允许」才放行，其余一律拒绝（fail closed）。
   final PermissionPrompter? permissionPrompter;
 
   final ThemeController themeController;
@@ -344,9 +336,6 @@ class BridgeApi {
           );
       }
     } on AppFileException catch (e) {
-      // 文件类失败都是可预期的（路径越界、文件过大、base64 不合法…），
-      // 统一转成 10001 参数错误，而不是掉进「内部错误 90001」的兜底里 ——
-      // 小程序需要能区分「我参数写错了」和「框架炸了」。
       throw LemonBridgeException(BridgeErrorCode.invalidArgument, e.message);
     }
   }
@@ -923,8 +912,6 @@ class BridgeApi {
   Future<Map<String, dynamic>> bluetoothDisconnect(
     Map<String, dynamic> params,
   ) async {
-    // 断开连接是**清理动作**，不设权限闸门：用户中途撤权、或权限弹窗被拒时，
-    // 也仍然应该允许它把已经建立的连接关掉，而不是留一个泄漏的 GATT。
     final String address = _requireAddress(
       params,
       'bluetooth.disconnect(address)',
@@ -1068,8 +1055,6 @@ class BridgeApi {
         permission,
         appName: appName.isEmpty ? null : appName,
       );
-      // 留痕：桥接层的能力不一定写在 metadata.json 里，但「它真的调了」
-      // 这件事必须能在权限管理里看到（否则用户无法撤销一个看不见的授权）。
       unawaited(
         PermissionService.instance.recordUse(
           appId,
@@ -1219,11 +1204,6 @@ class BridgeApi {
     return LemonBridgeException(BridgeErrorCode.internal, e.message);
   }
 
-  // ------------------------------------------------------ 音量 / 亮度
-
-  /// 取媒体音量。宿主通过平台通道问 Android 的 AudioManager，
-  /// 拿不到（非 Android / 系统拒绝）就按「不支持的能力」明确报错，
-  /// 而不是返回一堆 0 让小程序以为音量为零。
   Future<Map<String, dynamic>> getVolume() async {
     final VolumeInfo? info = await NativeBridge.getVolume();
     if (info == null) {
@@ -1268,11 +1248,6 @@ class BridgeApi {
     };
   }
 
-  /// 取亮度。window 是本 App 的窗口亮度（-1 表示跟随系统），system 是系统亮度参考值。
-  ///
-  /// 为什么只给「窗口亮度」：改系统亮度需要 WRITE_SETTINGS 这个特殊权限
-  /// （要去系统设置页里手动授予），而窗口亮度不需要任何权限、只影响本 App，
-  /// 对小程序来说已经够用，也不会有「一个小程序把整机亮度改了」的越权感。
   Future<Map<String, dynamic>> getBrightness() async {
     final BrightnessInfo? info = await NativeBridge.getBrightness();
     if (info == null) {
@@ -1329,13 +1304,6 @@ class BridgeApi {
     };
   }
 
-  /// 把小程序的「本页面应该是横屏 / 竖屏 / …」标记落到宿主 Activity 上。
-  ///
-  /// 这是**页面标记**而不是用户设置：小程序在自己的代码里调（类似安卓调 SDK）。
-  /// 它仍然要过权限闸门（第一次调用会弹窗确认），只是风险等级是「常规」——
-  /// 权限的默认状态没有例外，否则"没问过就问"这条规则就开始有漏洞了。
-  /// 标记跟着会话走：会话切到后台时会自动恢复成 auto，
-  /// 不会出现「小程序退到后台了，整个 App 还锁着横屏」。
   Future<Map<String, dynamic>> setPageOrientation(
     Map<String, dynamic> params,
   ) async {
@@ -1540,18 +1508,6 @@ class BridgeApi {
     return info.toJson();
   }
 
-  // --------------------------------------------------------------- 下载
-
-  /// 把 http(s) 文件保存到系统下载目录。
-  ///
-  /// 为什么不由宿主自己下载：Android 10 起写公共「下载」目录需要
-  /// MANAGE_EXTERNAL_STORAGE 或 MediaStore，而这两条路都和本项目
-  /// 「不申请管理所有文件」的原则冲突。系统 DownloadManager 代为落盘
-  /// 不需要任何权限，还能在下完时给系统通知。
-  ///
-  /// 支持 fileName / filename（前者优先）；都不传就按 URL 推断。
-  /// 不支持 blob: / data: —— 那类内容没有可供下载器拉取的地址，
-  /// 页面应该自己把它转成 http(s) 链接再调这里。
   Future<Map<String, dynamic>> downloadSave(Map<String, dynamic> params) async {
     final String url = _string(params['url']).trim();
     if (url.isEmpty) {
@@ -1642,14 +1598,6 @@ class BridgeApi {
   Future<Map<String, dynamic>> pluginsList() =>
       PluginService.instance.summary();
 
-  // --------------------------------------------------------- 模块方法
-
-  /// 执行模块声明的方法。
-  ///
-  /// **为什么不执行模块自带的代码**：宿主是 Flutter，模块只能带 JS/CSS，
-  /// 没有办法在 Dart 侧跑任意代码。于是把「新增能力」收敛成一组**声明式 action**，
-  /// 由宿主用自己已有的实现去组合 —— 模块最多是换个 url、加个提示，
-  /// 不可能借此拿到宿主没有的能力。这既是安全边界，也让权限一目了然。
   Future<Object?> _runModuleMethod(
     BundleBridgeMethod method,
     Map<String, dynamic> params,

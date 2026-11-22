@@ -178,9 +178,6 @@ mailRouter.put(
       patch['auth.loginCode'] = Boolean(body.loginCode);
     }
 
-    // ---- 先校验再落盘：写坏配置的后果比「保存失败」严重得多
-    // updateConfigFile 自己会在写之前反解析一次并逐项核对，
-    // 所以这里只要 catch 住、不要把内存改成一半就行。
     try {
       updateConfigFile(CONFIG_PATH, patch);
     } catch (e) {

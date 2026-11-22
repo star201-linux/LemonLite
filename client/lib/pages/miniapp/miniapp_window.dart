@@ -1,23 +1,3 @@
-// lib/pages/miniapp/miniapp_window.dart
-//
-// 小程序**独立窗口**的 Dart 侧入口。
-//
-// 背景（为什么要多一个入口）：
-//   宿主里的小程序是「覆盖层」—— 一张上下文里的小程序，最近任务里只有宿主
-//   那张卡。用户要的是微信小程序那种形态：宿主一张卡，小程序一张卡，
-//   在系统切换器里并存、各自切换。那需要一个**独立任务**，也就是另一个
-//   Activity + 另一个 Flutter 引擎（见 MiniappTaskActivity）。
-//
-// 所以这个进程的启动路径有两条：
-//   * `defaultRouteName == "/"`                → 宿主（main.dart 的常规流程）
-//   * `defaultRouteName == "/miniapp-window…"` → 本文件：只渲染一个小程序
-//
-// 两条路径的隔离是**天然的**：Flutter 的每个引擎有自己的 Dart isolate，
-// `MiniappHost` 单例在两边互不可见。窗口里打开的那个小程序是一份独立的
-// 运行状态，宿主不会因为它而改变任何东西 —— 这正是「独立窗口」该有的语义。
-//
-// 初始化刻意比宿主轻：窗口只需要「主题 + 权限 + 已安装包索引」，
-// 不读账号、不拉市场、不恢复下载队列（那些是宿主的事）。
 
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
@@ -48,10 +28,6 @@ class MiniappWindowArgs {
   static bool matches(String route) =>
       route == routePrefix || route.startsWith('$routePrefix?');
 
-  /// 解析路由；不是窗口路由 / 缺 appId 时返回 null（调用方按宿主流程继续）。
-  ///
-  /// 解析失败**不抛异常**：这是启动路径，抛出去只会变成一块黑屏，
-  /// 而「当成宿主启动」至少能让用户看到界面。
   static MiniappWindowArgs? parse(String route) {
     if (!matches(route)) return null;
     try {

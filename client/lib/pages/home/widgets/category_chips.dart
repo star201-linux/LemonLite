@@ -1,12 +1,3 @@
-// lib/pages/home/widgets/category_chips.dart
-//
-// 分类筛选 chips（横向滚动，MD3 Expressive）。
-//
-// 为什么不用 Material 的 FilterChip 了：
-//   M3E 的 chip 是更大的药丸（更高、更圆的角），选中态用 primaryContainer，
-//   未选中用 surfaceContainerHigh；默认 FilterChip 的描边 + 勾选图标
-//   在这里显得偏「表单」，不像一个可横向浏览的筛选带。
-//   自己画一个 AnimatedContainer 反而更可控，也能做颜色过渡。
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';

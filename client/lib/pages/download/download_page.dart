@@ -1,17 +1,3 @@
-// lib/pages/download/download_page.dart
-//
-// 下载管理页。
-//
-// 三件事：下载目录（可改子目录）、逐条记录（进度/打开/取消/重试/删除）、
-// 以及老系统上的「存储权限」入口。
-//
-// 为什么目录只有一个「子目录」可改：落盘是系统 DownloadManager 干的，
-// 它只允许写到公共目录（Downloads / Documents）下的相对路径 —— 这是
-// Android 的硬约束，不是我们的简化。所以这里能选的是「放在 Download/
-// 根下」还是「放在 Download/<子目录> 下」，目标根目录固定是系统下载目录。
-//
-// 页面不自己轮询：进度由 DownloadService 统一查（它跨页面存活），
-// 这里只监听它的变化重绘。
 
 import 'package:flutter/material.dart';
 

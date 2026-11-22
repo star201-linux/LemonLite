@@ -1,25 +1,3 @@
-// lib/pages/account/avatar_cropper.dart
-//
-// 头像裁剪器：正方形裁切 + 缩放 + 拖动 + 导出 PNG。
-//
-// 为什么自己写而不是引 image_cropper：
-//   那个包要加原生依赖（Android 侧是 uCrop），为了一个正方形裁切
-//   多一层原生构建风险不值得 —— 尤其是这个工程已经因为 AGP 9
-//   在 plugin 版本上踩过坑（见 README 的兼容性说明）。
-//   纯 Flutter 实现只有一件事要小心：**导出时的坐标换算**。
-//
-// 坐标模型（理解这个就能理解整个文件）：
-//
-//   图片以「cover」方式铺满裁切框：
-//     scale = 裁切框边长 / min(图片宽, 图片高)
-//   用户再叠一个缩放手势 zoom（>= 1）与一个平移 offset。
-//
-//   屏幕上看到的那一块 = 图片的一个矩形区域。
-//   导出时用 ui.PictureRecorder 重画同一块区域，
-//   所以「看到什么就得到什么」—— 不需要反推变换矩阵。
-//
-// 导出尺寸固定 512×512：头像在客户端最大显示 96dp（3x 屏 = 288px），
-// 512 已经留了余量，同时把上传体积压在几十 KB。
 
 import 'dart:math' as math;
 import 'dart:ui' as ui;
@@ -345,8 +323,6 @@ class _AvatarCropperState extends State<AvatarCropper> {
               value: _zoom,
               min: 1,
               max: 6,
-              // 缩放时把偏移一起收进新范围：否则放大后再缩小，
-              // 图片会偏出裁切框。
               onChanged: (double v) {
                 setState(() {
                   _zoom = v;

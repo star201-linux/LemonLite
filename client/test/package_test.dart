@@ -109,16 +109,6 @@ void main() {
     });
   });
 
-  // ========================================================== 解压安全
-
-  //
-  // _extractTo 是私有方法，所以这里通过「构造一个恶意 zip 喂给 install」
-  // 来间接验证。但 install 要联网，测试里跑不了 ——
-  // 于是改为直接测「解压产物落在哪」这件事的等价逻辑：
-  // 用 archive 包解出条目名，断言我们的路径判定会拒绝它们。
-  //
-  // 这也是为什么把路径校验写成纯判断（normalize + isWithin）而不是
-  // 揉在写文件里 —— 可测。
   group('解压路径安全（等价逻辑）', () {
     /// 与 MiniappPackageService._extractTo 里那段判断完全一致
     bool isRejected(String entryName) {

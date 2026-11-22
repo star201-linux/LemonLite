@@ -1,18 +1,3 @@
-// lib/data/repositories/market_repository.dart
-//
-// 远端应用市场数据源（**只走 LemonLite 服务端**）。
-//
-// 两个接口：
-//   GET /api/market/feed     主页推荐（游标分段加载）
-//   GET /api/market/search   搜索（关键词 + 标签）
-//
-// 0.4 之前还支持「静态部署」——拉 `{server}/index.json` 全量解析。
-// **0.5 起移除了那条路**：两套后端意味着两套分页语义、两套错误处理、
-// 两套搜索实现（一个在服务端、一个在本地），维护成本远大于它带来的便利。
-// 现在只有一个后端，所以这里没有任何「探测 → 分支」的逻辑。
-//
-// 服务器地址**每次请求都从 SettingsService 实时读取**，
-// 所以开发者在设置页改完地址后，下一次刷新立刻生效。
 
 import 'package:dio/dio.dart';
 
@@ -57,8 +42,6 @@ class MarketRepository {
 
   static const Duration _defaultTimeout = Duration(seconds: 12);
 
-  /// 「打开小程序前查版本」这类**会挡住用户操作**的请求用更短的超时：
-  /// 服务端没响应时宁可让用户先打开本机已装的版本，也不要干等 12 秒。
   static const Duration _quickTimeout = Duration(seconds: 8);
 
   final Dio _dio;
@@ -206,18 +189,6 @@ class MarketRepository {
     }
   }
 
-  /// 检查已装小程序的升级。
-  ///
-  /// [installed] 是「本机已装的 (appId, version)」列表。
-  /// 返回**确实需要更新**的条目（版本不一致就算，不比较大小 ——
-  /// 版本号没有强制语义，猜「哪个更大」会出错）。
-  ///
-  /// 用 POST 而不是 GET：要带一组已装版本，放查询串会很长，
-  /// 也更容易被日志记下来。
-  ///
-  /// 失败时**抛异常**（不再返回空列表）：调用方需要区分「检查了，没有更新」
-  /// 与「检查失败」—— 后者不能把界面上已有的小红点清掉。
-  /// 是否打扰用户由调用方决定（启动检查会静默吞掉）。
   Future<List<PackageUpdate>> checkUpdates(
     List<({String id, String version})> installed,
   ) async {

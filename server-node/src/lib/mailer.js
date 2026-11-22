@@ -1,20 +1,3 @@
-// server/src/lib/mailer.js
-//
-// 邮件发送的唯一出口。
-//
-// 需求是「邮箱可以选择自部署还是用第三方服务」，所以这里做了一层
-// 传输通道抽象：调用方只写 `sendMail({to, subject, text, html})`，
-// 具体走哪条路由 `MAIL_DRIVER` 决定：
-//
-//   smtp      自建 / 任何兼容 SMTP 的邮箱（Postfix、企业邮、QQ/163 授权码）
-//   resend    Resend（API Key，一个 POST 就完事，海外最省事）
-//   sendgrid  Twilio SendGrid（API Key）
-//   aliyun    阿里云邮件推送 DirectMail（AK/SK + RPC 签名，国内送达率最好）
-//   console   不发信，只在服务端日志里打印内容（**仅开发用**）
-//
-// 为什么把「通道」做成配置而不是抽象类继承：
-//   运维要改的只是一个环境变量，不需要改代码、不需要重新构建镜像。
-//   切换通道的代价应该是「改一行 .env 再重启」。
 
 import { createHmac, randomUUID } from 'node:crypto';
 import { config } from '../config.js';

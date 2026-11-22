@@ -1,18 +1,3 @@
-// server/src/routes/packages.js
-//
-// 小程序包的托管：上传 / 下载 / 版本检查。
-//
-// 为什么包由服务端托管而不是让作者自己放 CDN：
-//   * 客户端要校验 SHA-256 才能保证「下载的和上架的是同一份」，
-//     哈希必须有一个可信来源（服务端）；
-//   * 版本号与包必须是原子的一体 —— 「版本号是 1.2.0 但包是 1.1.0」
-//     这种错配由服务端在一个事务里写，客户端无从出错。
-//
-// 目录布局：
-//   packages/<appId>/<version>.zip
-// 用「appId/版本号」而不是用一个随机文件名，是为了：
-//   * 保留历史版本，客户端回滚/多设备版本不一致时还能下载对应版本；
-//   * 清理时按版本比大小很直观。
 
 import { Router } from 'express';
 import multer from 'multer';
@@ -52,20 +37,6 @@ const upload = multer({
   },
 });
 
-// ================================================================ 上传
-
-/**
- * POST /api/market/:appId/package
- * multipart：file（zip）、version、entry?、sha256?
- *
- * 需要登录（先用管理员账号）。**没有做角色系统** —— 这个服务端假设
- * 「部署者只给自己用」，要开放给第三方上架需要另加权限模型。
- *
- * 服务端自己算 SHA-256（不信客户端传的），并把 apps 表里的
- * package_url / package_entry / package_sha256 / package_bytes / version
- * 一次性写进去 —— 五件事必须原子，否则「版本号变了但包没变」这类错配
- * 会让客户端反复提示升级却升不上去。
- */
 packageRouter.post(
   '/:appId/package',
   requireAuth,
@@ -133,17 +104,6 @@ packageRouter.post(
   }),
 );
 
-// ================================================================ 下载
-
-/**
- * GET /api/market/:appId/package?version=1.2.0
- *
- * version 省略时给当前上架版本。带 ETag（内容哈希），客户端可以用
- * If-None-Match 复用本地缓存 —— 但**客户端不应该依赖这个**：
- * 真正的完整性保证是下载后自己算 SHA-256 并和 DTO 里的值比对。
- *
- * 不要求登录：包是公开内容（就像 APK 一样）。
- */
 packageRouter.get(
   '/:appId/package',
   wrap(async (req, res) => {
@@ -180,27 +140,6 @@ packageRouter.get(
   }),
 );
 
-// ================================================================ 版本检查
-
-/**
- * POST /api/market/updates
- *
- * 注意：本 router 挂在 `/api/market` 下，所以这里的路径写 `/updates`，
- * 不是 `/market/updates` —— 写成后者会变成 /api/market/market/updates。
- * body: { installed: [{ id, version }] }
- *
- * 返回需要升级的条目。客户端在启动时（或用户下拉刷新时）调一次。
- *
- * 为什么是 POST 而不是 GET：要带的是一组「已装版本」，
- * 放查询串会很长（几十个应用就爆 URL 长度限制），也更容易被日志记下来。
- *
- * 返回 shape：
- *   { updates: [{ id, latestVersion, installedVersion, ...推送信息 }] }
- *
- * 只返回**确实需要更新**的：版本不同就算需要（不做「比较大小」）。
- * 理由：版本号没有强制语义（有人用 1.0.1，有人用 2026.10），
- * 猜「哪个更大」会出错；「不一致就更新」是唯一不会误判的规则。
- */
 packageRouter.post(
   '/updates',
   wrap(async (req, res) => {
@@ -255,22 +194,6 @@ packageRouter.post(
   }),
 );
 
-// ================================================================ 单个版本
-
-/**
- * GET /api/market/:appId/version
- *
- * 「每次打开一个小程序都问一次有没有新版本」用的接口。
- * 只回版本与包信息（附带图标与名字），不下载 —— 客户端拿它跟本地已装版本
- * 比一下就能决定是直接打开还是先提示更新。
- *
- * 为什么单独开一个接口而不是复用 /updates：
- *   /updates 是批量（一次问全部已装应用），这一条是单发（打开某个应用时问）。
- *   单发不带请求体、可以被 HTTP 缓存，语义也更清楚。
- *
- * 返回里的 packageUrl 一定走下载接口（见 packageDownloadUrl）；
- * 没有上架包时 hasPackage=false、packageUrl 为空。
- */
 packageRouter.get(
   '/:appId/version',
   wrap(async (req, res) => {
@@ -302,14 +225,6 @@ packageRouter.get(
   }),
 );
 
-// ================================================================ 元信息
-
-/**
- * GET /api/market/:appId/package/meta
- *
- * 只查「当前上架的是哪一版、多大、什么哈希」，不下载。
- * 客户端在决定要不要下载之前先问它，省一次大文件传输。
- */
 packageRouter.get(
   '/:appId/package/meta',
   wrap(async (req, res) => {

@@ -1,27 +1,3 @@
-// lib/pages/detail/app_detail_page.dart
-//
-// 应用详情页。
-//
-// 现在有两个入口：
-//   1. 主页 / 搜索页点卡片 —— 纯详情页（看介绍、打开小程序）；
-//   2. 应用管理点某个已装应用 —— 同一个详情页，但右上角多一颗**扳手**，
-//      进「应用管理」的二级页（权限、数据、移除）。
-//
-// 为什么应用管理不直接跳到权限页了：
-//   用户点进来最想看的通常是「这是个什么应用、装的是哪一版」，而不是权限开关。
-//   权限/数据是**管理动作**，收在扳手后面；而详情页本身是用户熟悉的那个页面，
-//   从主页和应用管理进来看到的是同一份东西。
-//
-// 底部动作条随状态变化：
-//   * 没装 / 已装且最新 → 一枚「打开」（没装时写「下载并打开」）；
-//   * 已装且有新版本   → 两枚：「更新」和「打开」。
-//     「打开」打开的是**本机现在这一版**；想升级点「更新」。
-//     这个区分很重要：以前只有一枚按钮，版本对不上就必须先下载，
-//     用户明明只想用一下旧版也会被强制更新。
-//
-// 每次点「打开」都会向服务端问一次最新版本（UpdateService.checkOne）——
-// 详情页可能已经开了很久，服务端在这期间发版是常态。发现更新时给三个选择：
-// 取消 / 直接打开 / 更新并打开，不偷偷替用户做决定。
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -87,10 +63,6 @@ class _AppDetailPageState extends State<AppDetailPage> {
   /// 本地缓存的图标路径
   String? _localIcon;
 
-  /// 这个小程序声明申请的权限。
-  ///
-  /// 装了包就读包里的 metadata.json（它是应用自己的声明，比市场数据可信），
-  /// 没装才退回市场数据 —— 详情页在「打开之前」也要能说清要什么权限。
   List<MiniappPermission> get _declaredPermissions =>
       _installed?.metadata?.declaredPermissions ?? widget.app.declaredPermissions;
 
@@ -263,9 +235,6 @@ class _AppDetailPageState extends State<AppDetailPage> {
             style: textTheme.bodyLarge?.copyWith(height: 1.6),
           ),
 
-          // ---------------- 声明的权限 ----------------
-          // 市场数据里的 permissions 字段在这里露出：用户点「打开」之前就能知道
-          // 这个小程序会碰哪些能力，而不是等它开始弹窗。
           const SizedBox(height: 20),
           Text('申请的权限', style: textTheme.titleMedium),
           const SizedBox(height: 8),
@@ -531,8 +500,6 @@ class _AppDetailPageState extends State<AppDetailPage> {
         AppTheme.showToast('「${app.name}」还没有上架安装包', isError: true);
         return;
       }
-      // 刚查到的服务端版本比详情数据新时，按服务端这一版下载（否则会装到旧包，
-      // 打开后又立刻提示更新）。
       final bool ok = (latest != null && latest.hasPackage)
           ? await MiniappInstaller.forceInstall(
               context,
@@ -585,16 +552,6 @@ class _AppDetailPageState extends State<AppDetailPage> {
       // 选「直接打开」就继续用本机这一版
     }
 
-    // 「打开」= 把小程序作为**独立任务**打开：系统最近任务里多一张卡，
-    // 宿主那张卡原样不动（见 MiniappTaskActivity 的文件头）。
-    //
-    // 图标先确保落盘再拉起窗口：窗口的卡片要在第一帧就显示小程序的图标，
-    // 那是个原生 Bitmap，等窗口自己去下载就晚了，而且窗口里也没有
-    // 「应用市场」那套网络上下文。
-    //
-    // 优先级：包内图标 → 已缓存的市场图标 → 现下载。包内那张是作者自己放的，
-    // 离线也有；只认市场图标的话，断网打开时卡片会退回宿主图标（看起来就像
-    // 「主应用」而不是这个包）。
     String? iconPath = _localIcon;
     iconPath ??= await IconCacheService.instance.pathOf(app.id);
     iconPath ??= await IconCacheService.instance.ensure(
@@ -662,8 +619,6 @@ class _AppDetailPageState extends State<AppDetailPage> {
     for (final AppCategory category in app.categories) {
       if (category.id == id) return category.name;
     }
-    // 用 chipCategories 而不是「分类列表」原样：它是首页 chip 的数据源，
-    // 已经带上了「全部」而且只保留有内容的分类。
     for (final AppCategory category
         in context.watch<HomeController>().chipCategories) {
       if (category.id == id) return category.name;
@@ -793,13 +748,6 @@ class _RegisteredAppDetailPageState extends State<_RegisteredAppDetailPage> {
   }
 }
 
-/// 详情页的权限摘要：列出市场数据里声明的受控权限。
-///
-/// 四种情况都要有明确说法，不能留白：
-///   * 声明了 → 逐条列出（带风险等级）
-///   * 没声明 → 提示"用到时会逐个弹窗询问"
-///   * 声明了已退役的旧权限 → 说明它现在不需要授权（老数据里很常见，不是错误）
-///   * id 真正写错了 → 明确指出，方便市场数据维护者发现
 class _PermissionSummary extends StatelessWidget {
   const _PermissionSummary({required this.app, required this.declared});
 

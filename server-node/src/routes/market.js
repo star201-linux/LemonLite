@@ -1,21 +1,3 @@
-// server/src/routes/market.js
-//
-// 市场接口：两个。
-//
-//   GET /api/market/feed     主页推荐（按更新时间倒序，游标分页）
-//   GET /api/market/search   搜索（关键词 + 标签筛选，返回命中的标签）
-//
-// 为什么拆成两个而不是一个 /apps?q=：
-//   * 主页要的是「稳定、可无限下拉」的流，排序规则固定，适合游标分页；
-//   * 搜索要的是「相关度 + 标签聚合」，还可能换排序，适合另一种分页方式。
-//   合成一个接口的结果是两组语义相反的参数挤在同一个签名里，
-//   客户端每次调用都要想「我现在是哪一种」。
-//
-// 分页为什么用**游标**而不是 offset：
-//   应用列表会随时更新。offset 分页时，如果第 1 页之后有新应用插到最前面，
-//   第 2 页会把第 1 页的最后几条**重复**返回一次（用户看到重复卡片）。
-//   游标（上一页最后一条的 updated_at + id）不会出现这个问题。
-//   代价是「不能跳到第 N 页」—— 但无限下拉本来就不需要跳页。
 
 import { Router } from 'express';
 import { query } from '../db.js';
@@ -62,13 +44,6 @@ function parseCategoryPairs(value) {
     .filter((item) => item.id);
 }
 
-/**
- * 数据库行 → 客户端 AppItem 的字段名。
- *
- * 为什么要在服务端做这个映射而不是直接返回列名：
- * 客户端的数据模型（AppItem）是围绕 index.json 的字段设计的，
- * 保持字段名一致，客户端就不用为「服务端版本」再写一套解析。
- */
 function toAppDto(row, origin = '') {
   // 包地址补成绝对地址：客户端要直接拿它去下载，没有 base 可拼。
   //
@@ -131,13 +106,6 @@ function originOf(req) {
   return host ? `${proto}://${host}` : '';
 }
 
-/**
- * 游标编解码。
- *
- * 格式 `<sort_weight>_<updated_at>_<id>` 的 base64url。
- * 用 base64 而不是明文，是为了让客户端**不要**尝试理解它 ——
- * 它是不透明令牌，将来改排序规则时不需要改客户端。
- */
 function encodeCursor(row) {
   const raw = `${row.sort_weight}|${row.updated_at}|${row.id}`;
   return Buffer.from(raw, 'utf8').toString('base64url');
@@ -199,8 +167,6 @@ marketRouter.get(
     }
 
     if (cursor) {
-      // 游标条件必须与 ORDER BY **严格对应**，否则会漏/重。
-      // 三元组比较：(w, t, id) < (w0, t0, id0) 的展开写法。
       where.push(
         `(
            a.sort_weight < ?
@@ -271,32 +237,6 @@ marketRouter.get(
   }),
 );
 
-// ================================================================ 2. 搜索
-
-/**
- * GET /api/market/search?q=记事&tag=效率&limit=20&offset=0
- *
- * 返回：
- * {
- *   ok: true,
- *   data: {
- *     apps: [...],
- *     // 命中的标签（用于搜索页上方的筛选 chip）
- *     tags: [{ name, slug, count }],
- *     total: n
- *   },
- *   meta: { limit, offset, hasMore }
- * }
- *
- * 为什么搜索用 offset 而不是游标：
- *   搜索结果的数量级小（几十到几百条），offset 的性能问题不存在；
- *   而用户会想「跳到第 2 页看看」—— 游标做不到。这是一个刻意的例外。
- *
- * 为什么返回 tags：
- *   需求原文「把应用加一个标签，搜索时返回标签」。
- *   返回**命中结果里实际出现过的**标签（不是全量标签表），
- *   这样 chip 上不会出现「点了没结果」的标签。
- */
 marketRouter.get(
   '/search',
   wrap(async (req, res) => {
@@ -311,10 +251,6 @@ marketRouter.get(
     const params = [];
 
     if (keyword) {
-      // 关键词匹配：名称 / 简介 / 作者 / 标签名。
-      // 用 LIKE 而不是全文索引：中文分词需要 ngram parser，
-      // 而这里的量级（几百条）LIKE 完全够用，且部署时零配置。
-      // 真要上十万条再换 FULLTEXT + ngram。
       const like = `%${keyword}%`;
       where.push(
         `(a.name LIKE ? OR a.description LIKE ? OR a.author LIKE ?
@@ -380,9 +316,6 @@ marketRouter.get(
       [...orderParams, ...params, limit, offset],
     );
 
-    // 命中结果里的标签聚合：只统计这一批结果？
-    // 不 —— 统计**全部命中结果**。否则用户翻到第 2 页时 chip 会变，
-    // 人会觉得界面在乱跳。
     const tagRows = await query(
       `SELECT t.name, t.slug, COUNT(DISTINCT a.id) AS count
          FROM apps a

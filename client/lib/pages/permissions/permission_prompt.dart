@@ -1,33 +1,3 @@
-// lib/pages/permissions/permission_prompt.dart
-//
-// 权限确认弹窗（这一版权限模型的核心）。
-//
-// 规则只有一条：**没问过就必须问**。
-// 受控权限第一次被调用时，宿主弹窗让用户选「允许 / 拒绝」，然后把选择落盘；
-// 之后同一个小程序再调这个权限就不再打断。用户的选择随时可以在
-// 「设置 → 应用 → 权限管理器」里改回「询问」，那之后就重新开始问。
-//
-// 弹窗的形态（这一版按需求重做）：
-//   /小程序图标/                        ← 顶部的应用图标
-//   允许 xx 使用 xx 权限吗？             ← 一句话标题
-//   允许 / 拒绝                          ← 两个按钮
-//   [✓] 仅本次生效                       ← 复选框，**默认选中**
-//
-// 「仅本次生效」默认选中意味着：直接点「允许」不会留下任何持久记录，
-// 下次调用照问。要让它长期生效，用户必须**主动取消勾选**。
-// 这是刻意的默认值 —— 权限弹窗最容易被当成拦路虎，手一快点掉「允许」，
-// 而这个决定会一直生效；默认不记住就把长期授权变成一个有意识的选择。
-//
-// 为什么把弹窗逻辑单独放一个服务，而不是写在桥接层里：
-//   1. **串行化**：对话框是模态的，同时弹两个会让人不知道在答哪一个。
-//      所有弹窗走同一个队列，一次只显示一个。
-//   2. **去重**：同一个小程序在同一瞬间可能连着调两次同一个权限，
-//      那应该共用同一个弹窗与同一个答案，而不是让用户答两遍。
-//   3. 桥接层要能在测试里被注入一个"假弹窗"，否则每条断言都要起一个真实的 Widget 树。
-//
-// 两条触发路径：
-//   * [ensure]          —— 单个权限被调用时（兜底，保证"绝不静默放行"）
-//   * [requestDeclared] —— 打开小程序时按 index.json 里的声明批量确认一次
 
 import 'dart:async';
 
@@ -57,23 +27,10 @@ class PermissionPromptService {
   /// 已经弹过几次（自检日志用）
   int _shownCount = 0;
 
-  /// 对话框自己的截图边界（自检用）。
-  /// 只框住对话框而不是整屏：它是纯 Flutter 图层，截图一定成功。
   final GlobalKey _dialogBoundaryKey = GlobalKey();
 
   int get shownCount => _shownCount;
 
-  // ------------------------------------------------- WebView 权限请求入口
-
-  /// 网页（小程序）发起浏览器权限请求时，逐个权限问用户，返回**被允许的集合**。
-  ///
-  /// 这是 `onPermissionRequest` 的落地实现：调用方（miniapp_page）把 Chromium
-  /// 的资源列表翻译成框架权限后交给这里，我们保证每一项都经过用户本人同意 ——
-  /// 「仅本次生效」的那次同意同样只对当前这次请求有效（它不会落盘，
-  /// 下次 getUserMedia 还会再问）。
-  ///
-  /// 之所以**逐项**问而不是合成一个弹窗：摄像头与麦克风是两项独立的能力，
-  /// 用户完全可能只想给麦克风。合成一个「允许/拒绝」会强迫他全给或全不给。
   Future<Set<MiniappPermission>> ensureAll(
     String appId,
     Iterable<MiniappPermission> permissions, {
@@ -91,10 +48,6 @@ class PermissionPromptService {
     return granted;
   }
 
-  /// 纯函数：从"声明过的权限"里挑出还需要问的。
-  ///
-  /// 输出顺序固定按 [MiniappPermission.values] 走，而不是按 index.json 的书写顺序 ——
-  /// 弹窗里的条目顺序稳定，用户第二次看到同样的清单不会觉得界面在乱跳。
   static List<MiniappPermission> pendingDeclared({
     required String appId,
     required Iterable<MiniappPermission> declared,
@@ -164,8 +117,6 @@ class PermissionPromptService {
 
     final BuildContext? context = _overlayContext();
     if (context == null) {
-      // 拿不到可以弹窗的地方：**拒绝**（fail closed），并且不写决定 ——
-      // 下次有界面时还能正常询问，而不是被这次意外永久拒绝。
       await autotestLog('弹窗无法显示（无可用 Navigator），${permission.id} 本次按拒绝处理');
       AppTheme.showToast('无法弹出权限确认，本次调用已拒绝', isError: true);
       return PermissionAnswer.denyOnce;
@@ -201,8 +152,6 @@ class PermissionPromptService {
         permission,
         answer.allowed ? PermissionDecision.granted : PermissionDecision.denied,
       );
-      // 定位的精度 / 后台只在「记住」时落盘：选「仅本次」本来就不该
-      // 留下任何痕迹，否则用户会以为自己只是这一次让步。
       if (permission.isLocation && answer.allowed) {
         await PermissionService.instance.setLocationOptions(
           appId,
@@ -221,12 +170,6 @@ class PermissionPromptService {
     return answer;
   }
 
-  // ------------------------------------------------------------ 批量入口
-
-  /// 打开小程序时，按 index.json 里声明的权限一次性确认。
-  ///
-  /// 声明过的权限合并成一个弹窗，是为了让"用户要答几次"变成常数 1，
-  /// 而不是随着小程序用了多少 API 增长。没声明的权限仍然走 [ensure] 兜底。
   Future<void> requestDeclared({
     required String appId,
     required String appName,
@@ -317,8 +260,6 @@ class PermissionPromptService {
       boundaryKey: _dialogBoundaryKey,
     );
     if (context.mounted) {
-      // 自检也走「仅本次」路径（remember: false），
-      // 于是它验证的正是默认那条分支，而不是一个用户很难触发的分支。
       Navigator.of(context).pop(
         PermissionAnswer(allowed: autotestAllows, remember: false),
       );
@@ -399,11 +340,6 @@ class PermissionPromptService {
     );
   }
 
-  /// 这项权限有没有写在包里的 metadata.json（声明）里。
-  ///
-  /// 读应用清单就够了：安装 / 导入时会把包里的声明同步进去。拿不到清单
-  /// （未初始化的极端情况）时按「已声明」处理 —— 宁可少一句提示，
-  /// 也不要对每个小程序都喊「它没声明」。
   bool _declared(String appId, MiniappPermission permission) {
     final RegisteredApp? app = ApplicationRegistry.instance.byId(appId);
     if (app == null) return true;
@@ -498,10 +434,6 @@ class PermissionPromptService {
   }
 }
 
-/// 权限弹窗的共用外壳：图标 + 标题 + 正文 + 两个按钮 + 「仅本次生效」。
-///
-/// 抽出来是因为单个权限与批量声明要走**完全一样的形态** ——
-/// 用户不该因为触发路径不同就面对两种风格的权限询问。
 class _PromptDialog extends StatefulWidget {
   const _PromptDialog({
     required this.appId,
@@ -639,11 +571,6 @@ class _AppAvatar extends StatelessWidget {
   }
 }
 
-/// 提醒用户「应用内授权」之外还有一层「Android 运行时权限」。
-///
-/// 不写的话用户会以为点「允许」就完事了，然后在真正调用时失败得莫名其妙 ——
-/// 摄像头与麦克风都需要系统层再给一次。这里必须说清楚，
-/// 否则那是最难排查的一类故障：弹窗点了允许，画面却一直是黑的。
 class _SystemSettingsHint extends StatelessWidget {
   const _SystemSettingsHint();
 
@@ -678,11 +605,6 @@ class _SystemSettingsHint extends StatelessWidget {
   }
 }
 
-/// 定位弹窗里的两个独立维度：精度 + 后台。
-///
-/// 与权限管理页的控件保持同一套语义（那里管长期设置，这里管这一次），
-/// 唯一区别是这里的「后台」默认关着 —— 后台定位是更高一档的授权，
-/// 用户不该因为点了一次「允许」就顺带把它给出去了。
 class _PromptLocationOptions extends StatelessWidget {
   const _PromptLocationOptions({
     required this.precision,

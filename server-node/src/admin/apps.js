@@ -86,8 +86,6 @@ function appToDto(row) {
   };
 }
 
-/** 分类名 + 标签名 + 多分类，一次查完。
- *  新建/保存后的响应必须和列表同一个口径，否则前端会以为没存上。 */
 const APP_SELECT = `
   SELECT a.*, c.name AS category_name,
          (SELECT GROUP_CONCAT(t.name ORDER BY t.name)

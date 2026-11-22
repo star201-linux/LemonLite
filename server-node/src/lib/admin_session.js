@@ -1,17 +1,3 @@
-// server/src/lib/admin_session.js
-//
-// 管理面板的登录态：签名 cookie 的签发与校验。
-//
-// 会话是**无状态**的（不落库），但签名密钥里混进了该管理员的
-// password_hash —— 这不是多余的：
-//   * 只签 `id + 过期时间` 的话，改完密码，别人偷走的旧 cookie 还能用 7 天；
-//   * 混进 password_hash 之后，改密码 = 该账号所有旧 cookie 立刻失效，
-//     不需要再维护一张 admin_sessions 表。
-// 代价是每次校验都要按 id 查一次管理账号（面板流量极小，完全值得）。
-//
-// cookie 长这样：
-//   v1.<id>.<过期毫秒>.<HMAC-SHA256 base64url>
-// 前缀 v1 是为了将来换格式时能明确拒绝旧格式，而不是靠「解析失败」猜。
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 

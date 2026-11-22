@@ -1,26 +1,3 @@
-// lib/core/bluetooth_bridge.dart
-//
-// 蓝牙（BLE）原生能力的 Dart 侧封装。
-//
-// 为什么单独一个文件而不是塞进 NativeBridge：
-//   NativeBridge 管的是「窗口级、失败就静默降级」的能力（音量 / 亮度 / 方向）。
-//   蓝牙的失败**必须告诉小程序**——「没开蓝牙」「没给权限」「连不上这个设备」
-//   是三种完全不同的处理路径，静默返回 null 会让页面无从下手。
-//   所以这里的方法失败时抛 [BluetoothException]，由桥接层转成结构化错误码。
-//
-// 跨平台怎么接（重要）：
-//   公共 API（BluetoothBridge.xxx）只依赖 [BluetoothBackend] 这个窄接口。
-//   Android 用 `lemonlite/bluetooth` 平台通道实现；将来 iOS / 桌面 / Web
-//   只要实现同一个接口并在启动时 `BluetoothBridge.registerBackend(...)`，
-//   桥接层、JS SDK、权限弹窗、页面都不需要改一行。
-//   通道的方法名与事件名是一份跨平台契约（见 MethodChannelBluetoothBackend）。
-//
-// 能力范围：
-//   * BLE：扫描（可带服务过滤 / 实时 scanResult 事件）、连接、GATT 服务、
-//     特征值 read/write、notify/indicate 订阅、RSSI、MTU、连接状态事件；
-//   * 经典蓝牙：扫描、配对（createBond）、配对状态事件；
-//   * 请求打开蓝牙、当前连接列表。
-//   经典蓝牙的 SPP 字节流没有适合网页的通用语义，所以只做发现与配对。
 
 import 'dart:async';
 

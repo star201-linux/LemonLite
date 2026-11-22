@@ -1,29 +1,8 @@
-// lib/theme/motion.dart
-//
-// 可复用的动效组件。
-//
-// 为什么单独一个文件而不是塞进 app_theme.dart：
-//   app_theme 负责「配色 / 字阶 / 转场」，是**配置**；
-//   这里是**行为**（一段会跑起来的动画），两者改动频率完全不同。
-//
-// 两条自我约束：
-//   1. 只用合成器负担得起的属性 —— 位移（Transform）与透明度（Opacity）。
-//      整页缩放、逐帧变化的圆角裁剪都会让每一帧重新光栅化整屏，
-//      在中间档手机上直接体现为掉帧。
-//   2. 尊重系统的「减弱动态效果」（无障碍）：开了就跳过动画直接给结果。
 
 import 'package:flutter/material.dart';
 
 import 'app_theme.dart';
 
-/// 一次性入场动画：淡入 + 轻微上移。
-///
-/// 用 `TweenAnimationBuilder` 而不是 `AnimationController`：
-/// 列表项会随滚动反复创建，每个都持有 controller 的话要管 dispose、
-/// 还要担心 Ticker 泄漏；隐式动画由框架自己管生命周期。
-///
-/// [index] 用来做错峰：第 0 个立刻开始，第 1 个晚 [delay]，以此类推。
-/// 只对前 [maxStagger] 个生效 —— 否则第二页的第一条要等半秒才出现。
 class StaggeredEntrance extends StatelessWidget {
   const StaggeredEntrance({
     super.key,
@@ -115,10 +94,6 @@ class PressableScaleState extends State<PressableScale> {
   }
 }
 
-/// 四态视图（加载 / 空 / 错误 / 内容）之间的交叉淡入。
-///
-/// 直接套一个 AnimatedSwitcher 就够，但切换时**位移方向**要一致：
-/// 统一「新内容从下往上 3% 浮入」，不要一会儿横一会儿竖。
 class StateTransition extends StatelessWidget {
   const StateTransition({super.key, required this.child});
 

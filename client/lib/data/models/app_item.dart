@@ -1,18 +1,3 @@
-// lib/data/models/app_item.dart
-//
-// 应用市场里的一个应用（对应 index.json 的 apps[] 元素）。
-//
-// 字段对应关系（含可选增补）：
-//   id / name / description / category / version / author / url / size / updated_at / tags
-//   icon         图标地址（可写相对路径，如 "icons/demo.png"，会基于服务器地址解析）
-//   screenshots  截图列表（可选）
-//   homepage     项目主页（可选）
-//   permissions  这个小程序会用到哪些受控能力（可选，见 miniapp_permission.dart）
-//
-// `permissions` 是 0.2 之后加的字段，也是"权限"这件事在**市场侧**的表达：
-// 小程序把自己的能力需求写在市场数据里，宿主在打开它之前就能一次性问清楚，
-// 而不是等它悄悄调到第三个 API 时才开始一个个弹窗。声明只是"提前告知"，
-// 不等于授权 —— 用户仍然要确认（见 pages/permissions/permission_prompt.dart）。
 
 import 'category.dart';
 import 'json_utils.dart';
@@ -52,10 +37,6 @@ class AppItem {
   final String version;
   final String author;
 
-  /// 小程序包的下载地址（0.6 起）。
-  ///
-  /// 为空表示这个条目还没上架包 —— 客户端显示「暂不可用」而不是白屏。
-  /// 这是一个绝对地址（服务端拼好的）。
   final String packageUrl;
 
   /// 包内入口文件的相对路径（默认 index.html）
@@ -103,8 +84,6 @@ class AppItem {
       category: asString(json['category'], fallback: 'uncategorized'),
       version: asString(json['version'], fallback: '1.0.0'),
       author: asString(json['author'], fallback: '未知作者'),
-      // 字段名与服务端 DTO 一致（camelCase）。旧的 `url` 字段不再读取 ——
-      // 远程网页那条路已经删了，留着它只会让「为什么打不开」更难查。
       packageUrl: asString(json['packageUrl']),
       packageEntry: asString(json['packageEntry'], fallback: 'index.html'),
       packageSha256: asString(json['packageSha256']),
@@ -148,13 +127,6 @@ class AppItem {
     return '${(packageBytes / (1024 * 1024)).toStringAsFixed(1)} MB';
   }
 
-  /// 声明里能识别出来的受控权限。
-  /// 顺序按 [MiniappPermission.values] 固定，保证界面上清单不会因数据书写顺序而跳动。
-  ///
-  /// 注意：这一版只有摄像头 / 麦克风 / 手机存储三项是「权限」。
-  /// 市场数据里如果还写着 network、storage 这类旧 id，它们会落进
-  /// [unknownPermissionIds] —— 那是**预期行为**：那些能力已经不需要授权了，
-  /// 详情页会明确说明「已不再需要授权」，而不是假装它们还是权限。
   List<MiniappPermission> get declaredPermissions {
     final Set<MiniappPermission> wanted = permissions
         .map((String id) => MiniappPermission.byId(id))
@@ -165,12 +137,6 @@ class AppItem {
         .toList(growable: false);
   }
 
-  /// 声明里认不出来的 id。
-  ///
-  /// 分成两类，因为它们的含义完全不同：
-  ///   * [retiredPermissionIds] —— 曾经是权限、现在已不需要授权（network / storage …）。
-  ///     老数据里写着很正常，不该当成错误；
-  ///   * [unknownPermissionIds] —— 真正拼错的 id（例如 camra），需要提醒维护者。
   List<String> get unknownPermissionIds => permissions
       .where(
         (String id) =>

@@ -126,12 +126,6 @@ class _SettingsPageState extends State<SettingsPage> {
           // 可配置项，对普通用户没有意义，留着就是个「这里好像能改点什么」的暗示。
           // 未解锁时这一整行不渲染，做到字面意义上的「看不出任何开发者相关的东西」。
           _section(context, '市场', <Widget>[
-            // 公告放在最前面：它不需要开发者模式，普通用户就该能翻到。
-            // 启动弹窗只显示最新一条，关掉之后唯一的入口就是这里。
-            //
-            // 红点（级别 1 的提醒方式）挂在这里：不打断任何人，但「有东西没看」
-            // 这件事必须一直可见，否则用户永远不知道运营发过话。
-            // 数字是**未读条数**，进一次公告页就全清（见 AnnouncementsPage）。
             ListTile(
               leading: Badge.count(
                 count: unread,
@@ -292,11 +286,6 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 }
 
-/// 账号分组里的账号卡：头像 + 名字 / 邮箱 + 状态胶囊 + 箭头。
-///
-/// 这套版式原来在主页顶部（未登录时是「登录 / 注册」入口）。挪到这里是因为
-/// 「我现在是谁」属于账号而不是市场：主页首屏该留给应用列表，而设置里
-/// 账号相关的操作本来就集中在这一屏，不用再来回跳。
 class _AccountHeader extends StatefulWidget {
   const _AccountHeader();
 

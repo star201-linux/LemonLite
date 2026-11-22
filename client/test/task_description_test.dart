@@ -1,19 +1,3 @@
-// test/task_description_test.dart
-//
-// 「最近任务」卡片（TaskDescription）的契约测试。
-//
-// 背景：宿主的全部小程序都跑在**同一个 Activity、同一个任务**里。
-// 用户打开小程序后按 Home，最近任务里原来只有一张写着「轻柠」的卡片，
-// 点回来时分不清那是宿主还是刚才那个小程序。所以前台会话变化时要把卡片
-// 换成小程序自己的名字和图标，回到宿主再换回去 —— 这正是微信小程序的做法。
-//
-// 这条链路的坑不在 Dart 也不在 Kotlin，而在**时序**：
-//   1. 打开 / 切前台必须立刻改（用户就在看着最近的卡片）；
-//   2. 标题变化要合并（setTitle 可能逐字改，不该每字跨一次 Binder 传 Bitmap）；
-//   3. 取图标是 async 的，await 期间用户可能已经切走 —— 不能把旧名字盖回去。
-//
-// 这里用 mock 通道把「Dart 侧到底下了什么指令」固定下来，
-// Kotlin 侧只要照约定执行就行。
 
 import 'dart:io';
 
@@ -83,10 +67,6 @@ void main() {
       )
       .toList();
 
-  /// 让 unawaited 的那条异步链（图标缓存 → 平台通道）跑完。
-  ///
-  /// 用 pump 驱动测试的假时钟，而不是 runAsync 等真实时间：
-  /// 那些 Future 是在 fake async zone 里创建的，真实时间对它们没有意义。
   Future<void> settle(WidgetTester tester) async {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
@@ -126,8 +106,6 @@ void main() {
     await MiniappHost.instance.close('com.example.ledger');
     await settle(tester);
 
-    // 窗口没有「空窗口」状态：这张卡马上会被 finishTask 移除。
-    // 关之前先把它改回「轻柠」只会闪一下宿主卡 —— 用户会以为开错了东西。
     expect(
       taskCalls().length,
       before,
@@ -141,8 +119,6 @@ void main() {
   });
 
   testWidgets('宿主模式（内嵌 / 降级）：一张卡都不动', (WidgetTester tester) async {
-    // 宿主那张卡永远叫「轻柠」—— 用户明确要求「主程序不变」。
-    // 内嵌打开只是宿主里多一层页面，系统卡片不该被改成小程序名。
     MiniappHost.instance.windowMode = false;
     final int before = taskCalls().length;
 
@@ -200,9 +176,6 @@ void main() {
   });
 
   testWidgets('包内有图标时，卡片用包内那张（而不是宿主图标）', (WidgetTester tester) async {
-    // 窗口的卡片代表的就是这个包：市场图标缓存里没有（离线装包 / 本地导入）时，
-    // 也该用包里 metadata.json 声明的图标。否则整张卡看着就是「轻柠」，
-    // 用户以为打开了主应用。
     final Directory root = Directory.systemTemp.createTempSync('ll-task-');
     addTearDown(() {
       MiniappPackageService.instance.debugRootOverride = null;

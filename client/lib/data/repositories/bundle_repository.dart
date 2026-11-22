@@ -1,21 +1,3 @@
-// lib/data/repositories/bundle_repository.dart
-//
-// 模块与插件包的落盘与读取。
-//
-// 目录布局（<应用私有目录> = path_provider 的 documents 目录）：
-//   <docs>/lemonlite/extensions/<id>/lemonlite.json + inject.js + inject.css
-//   <docs>/lemonlite/modules/<id>/...
-//
-// **为什么以「扫描目录」而不是「往 SharedPreferences 里存一份清单」作为真相来源**：
-// 用户手动把包拷进目录、或用文件选择器导入后，如果不落盘成清单就同步不到；
-// 反过来只信目录就不会出现「清单说有、文件没了」的幽灵条目。
-// SharedPreferences 只存「哪些被停用了」这种轻量状态。
-//
-// 安全约束（解压外部文件必须做的事）：
-//   1. 拒绝带 `..` 或绝对路径的条目 —— 否则一个精心构造的 zip 能写到目录外
-//   2. 限制条目数与解压后总大小 —— 防 zip 炸弹把设备内存/磁盘打满
-//   3. 落盘前用 manifest 里的 id / 引用的 js、css 文件做闭环校验，
-//      不通过就整包丢弃，不留半截目录
 
 import 'dart:convert';
 import 'dart:io';
@@ -198,8 +180,6 @@ class BundleRepository {
   Future<BundleImportResult> installArchive(BundleArchive raw) async {
     final BundleManifest manifest = raw.manifest;
 
-    // manifest 引用的脚本必须真实存在，否则装完是哑的。
-    // 直接查解出来的文件表，不拼路径；每条规则也要独立闭环校验。
     final Iterable<String> references = <String>[
       ...manifest.jsFiles,
       ...manifest.cssFiles,
@@ -291,10 +271,6 @@ class BundleRepository {
     await SettingsService.instance.writeRaw(_kDisabledKey, jsonEncode(sorted));
   }
 
-  // ------------------------------------------------------------ 读取内容
-
-  /// 读取一批包的实际内容（注入前调用）。读不到的脚本记日志后跳过，不影响其它包。
-  /// 按 URL 逐条筛注入规则，不能把不同站点的规则拍平。
   Future<List<BundlePayload>> readPayloads(
     List<BundleManifest> manifests, {
     String? url,

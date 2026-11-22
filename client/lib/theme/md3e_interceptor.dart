@@ -1,36 +1,3 @@
-// lib/theme/md3e_interceptor.dart
-//
-// WebView 拦截层：把小程序**原生 HTML 的默认样式**改造成 MD3 Expressive。
-//
-// 为什么从「注入器」改成「拦截器」
-// ---------------------------------------------------------------
-// 0.x 的做法是往页面里**追加**一段 `<style>`（Md3eStyles.buildInjectScript）。
-// 这条路有三个绕不过去的问题：
-//   1. 时机：document-start 时 `<head>` 可能还不存在，只能挂到 `documentElement`
-//      上；页面自己的样式表稍后解析，同优先级时会把我们盖掉，首帧还会闪一下
-//      浏览器默认样式（蓝链接、灰按钮、3D 边框）。
-//   2. 覆盖：页面若写了 `button { background:#eee }` 或 CSS reset，我们的
-//      `:where(button)` 零优先级规则一条都不生效 —— 明明「没设计过」的页面，
-//      看起来仍然像 2003 年的网页。
-//   3. CSP：有的页面带 `style-src` 限制，动态插入的 style 会被直接拒绝。
-//
-// 现在改成两层拦截：
-//   A. **文档拦截**：`shouldInterceptRequest` 在主文档进入解析器之前拿到 HTML，
-//      把 MD3E 样式表与 DOM 拦截脚本**写进 `<head>` 最前面**再交还给 WebView。
-//      样式先于任何作者样式存在，不会 FOUC；连 CSP 都绕开了（它就是文档的一部分）。
-//   B. **DOM 拦截**：DOM 拦截脚本用 MutationObserver 盯着页面，凡是「作者没管过」
-//      的原生控件（无 class / 无 id / 无外观类内联样式），打上 `data-md3e-role`
-//      标记，由属性选择器规则接管。作者一旦自己写样式（加 class / 加外观 style），
-//      我们就退出，绝不和作者抢。
-//
-// 为什么不是「改写作者 CSS」：
-//   那需要 CSS 解析器 + 优先级重排，改错一次就是整页错乱，收益却只是「更好看」。
-//   标记原生元素的风险面小得多：最坏情况是某个控件没被标记，退回浏览器默认样式。
-//
-// 跨平台说明：
-//   文档拦截依赖 `shouldInterceptRequest`（Android / Windows 支持，iOS 未实现）。
-//   没有该能力的平台会自然回落到 A 的 UserScript 版本（同一份 HTML 注入逻辑，
-//   只是没有「解析前」这个时机），DOM 拦截脚本则与平台无关。
 
 import 'dart:convert';
 import 'dart:io';
@@ -64,11 +31,6 @@ class Md3eInterceptor {
   static const int _maxCache = 8;
   static final Map<String, _CacheEntry> _cache = <String, _CacheEntry>{};
 
-  /// 该请求要不要走拦截。
-  ///
-  /// 只拦**主文档**。子资源（图片 / 脚本 / 字体）改写没有意义，还会让内存翻倍；
-  /// 小程序的页面是本地包里的 .html，由虚拟源 `miniapp.lemonlite.local` 提供
-  /// （见 core/miniapp_web_origin.dart），外链页面不该动。
   static bool shouldIntercept(Uri url) =>
       MiniappWebOrigin.owns(url) && MiniappWebOrigin.isDocument(url);
 

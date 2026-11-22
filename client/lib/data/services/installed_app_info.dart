@@ -1,22 +1,3 @@
-// lib/data/services/installed_app_info.dart
-//
-// 「这台设备上装了什么」的展示信息 —— **只从包自己身上读**。
-//
-// 为什么要单独一层：
-//   应用市场（首页 / 搜索 / 详情）里的名字、图标、简介来自服务端 API，
-//   那是「上架信息」；而「应用管理」里列的是本机装的东西，应当以包里
-//   的 metadata.json 为准 —— 作者改了包里的名字、换了包内图标，
-//   应用管理就该跟着变，不需要等市场数据刷新，断网也一样。
-//
-// 两个来源的优先级：
-//   1. 包内 metadata.json（name / version / description / author / icon / permissions）
-//   2. 应用清单（ApplicationRegistry）里留的名字与图标地址（老包没有 metadata.json）
-//   3. appId 本身（什么都没有时的最后兜底）
-//
-// 图标：
-//   * 包内声明了 `icon` 且文件真的在 → 用这个本地文件（`AppIcon.localPath`）；
-//   * 否则退回清单里缓存的市场图标地址（断网时 AppIcon 会退回首字占位）。
-//   * `..` 之类越界的声明一律忽略 —— 图标路径来自包，不能让它指到包外面。
 
 import 'dart:io';
 

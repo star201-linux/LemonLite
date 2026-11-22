@@ -1,35 +1,3 @@
-// lib/core/miniapp_web_origin.dart
-//
-// 小程序包的「虚拟站点」：把本机解压目录暴露成
-//   https://miniapp.lemonlite.local/<appId>/<version>/<包内相对路径>
-//
-// 为什么不再用 file://
-// ---------------------------------------------------------------
-// 现在的小程序包会用 `<script type="module" src="app.js">` + `import './icons.js'`。
-// ES module 的获取**走 CORS 模式**，而 Chromium 明确只允许
-// chrome / chrome-untrusted / data / http / https 这几种 scheme，
-// file:// 页面的 origin 又是 null，于是控制台只会留下一行：
-//
-//   Access to script at 'file:///…/app.js' from origin 'null'
-//   has been blocked by CORS policy
-//
-// 主文档照样渲染（骨架、样式都在），脚本却一行不跑 —— 看起来像「页面空了」，
-// 实际是整包哑了。把 allowFileAccessFromFileURLs 打开也救不了：
-// 那道闸管的是「页面能不能读别的本地文件」，module script 走的是另一条 CORS 规则。
-//
-// 所以给每个包一个真正的 https 源，由 shouldInterceptRequest 从磁盘喂内容：
-//   * 同源 → module / 动态 import / fetch / Worker / localStorage 都按正常网页工作；
-//   * 安全上下文（https）→ getUserMedia 等需要 secure context 的能力才谈得上可用；
-//   * 依然是纯本地：这个 host 只在本进程的拦截器里存在，永远不会真的发 DNS 请求。
-//
-// 代价是「页面里的相对路径必须能映射回文件」，所以路径规则要严格：
-//   * 只接受 /<appId>/<相对路径> 且每段都非空、不是 . / ..；
-//   * 规范化之后必须仍在 app/<appId>/ 里（p.isWithin），否则当 404 ——
-//     目录穿越在这里是「读到别的应用的文件」，不能只靠前端不写坏路径。
-//
-// 版本号不再是路径的一部分（安装布局是 app/<appId>/ 平铺，见
-// data/services/miniapp_package_service.dart）：它退化成 `?v=` 查询参数，
-// 只用来让 WebView 在升级后不会复用旧的内存缓存。
 
 import 'dart:io';
 
@@ -69,10 +37,6 @@ class MiniappWebOrigin {
   /// 这个请求是不是「我们自己的」。
   static bool owns(Uri url) => url.scheme == scheme && url.host == host;
 
-  /// 这个请求是不是**指定应用**的资源。
-  ///
-  /// 包里的脚本可以随便拼 URL，拼到别的应用身上必须当 404：
-  /// 包里没有秘密，可「A 能读到 B 的文件」这种边界不该靠自觉。
   static bool belongsTo(Uri url, {required String appId}) {
     if (!owns(url)) return false;
     final List<String> segments = url.pathSegments;

@@ -1,20 +1,3 @@
-// lib/theme/theme_injector.dart
-//
-// 把 Flutter 的 ColorScheme「翻译」成注入到 WebView 的 CSS 变量与主题快照。
-//
-// 这是阶段一「主题继承」的关键：小程序页面里只要写
-//     background: var(--md-surface); color: var(--md-on-surface);
-// 就自动跟随用户当前的 MD3 主题；小程序若想自定义主题，
-// 直接在自己的 <style> 里覆盖同名变量即可，框架不强制。
-//
-// 为了实现后半句，注入**不能**写 <html> 的行内 style（优先级高于任何选择器，
-// 页面就再也覆盖不掉了，连自己的黑白切换都会失效）。注入只写一条
-// `:root{...}` 样式表并插在 head 最前，页面样式表排在后面 → 同优先级下页面胜。
-// 详见 injected_js.dart 的 applyTheme。
-//
-// 变量命名统一 `--md-*` 前缀，*全部* 由 ColorScheme 推导，Dart 侧不存在硬编码色值。
-// 注意：真正「把变量写进页面」的动作在 bridge/injected_js.dart 的 JS SDK 里
-// （`window.lemonlite.__applyTheme`），本文件只负责生成数据。
 
 import 'dart:convert';
 
@@ -83,12 +66,6 @@ class ThemeInjector {
     return '#${(argb & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}';
   }
 
-  /// Color → CSS 颜色。**保留 alpha**。
-  ///
-  /// 为什么不能一律 `#rrggbb`：`ColorScheme.scrim` 是纯黑色，而网页里
-  /// `--md-scrim` 的用法是 `background: var(--md-scrim)` 铺一层遮罩。
-  /// 把 alpha 丢掉 = 遮罩变成纯黑不透明 —— 弹层一开，整页变黑，
-  /// 看起来像「小程序崩了」。这类问题在小程序作者那边完全无法自查。
   static String toCss(Color color) {
     final int argb = color.toARGB32();
     final int a = (argb >> 24) & 0xFF;

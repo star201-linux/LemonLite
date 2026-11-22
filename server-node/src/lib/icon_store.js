@@ -1,20 +1,3 @@
-// server/src/lib/icon_store.js
-//
-// 小程序图标的落盘。
-//
-// 为什么需要它：应用管理列表要显示每个小程序的图标，而图标是管理员在面板里
-// 上传的一份图片。让它留在「图标 URL」这个字段里、由管理员自己找图床，
-// 对一个自建的私有市场来说太别扭了 —— 换台服务器所有图标就全挂。
-// 现在管理面板可以直接传一张图，服务端托管在 /icons/<appId>.<ext>。
-//
-// 与 packages/ 分开的理由：
-//   * 包是「可执行内容」（要校验哈希、要解压），图标只是图片；
-//   * 包按 appId/version 存多份，图标每个 appId 只有一张（覆盖式更新）；
-//   * 清理策略完全不同（包可以留历史版本，图标永远只留最新的）。
-//
-// 目录：icons/<appId>.<png|jpg|webp|gif>
-// 给客户端的地址是相对路径 `icons/<appId>.<ext>`：客户端会按服务器地址
-// 解析成绝对 URL。存完整地址的话，换域名就全坏了。
 
 import { existsSync } from 'node:fs';
 import { mkdir, readdir, rename, unlink, writeFile } from 'node:fs/promises';
@@ -78,14 +61,6 @@ function safeAppId(appId) {
   return value;
 }
 
-/**
- * 保存一张图标，返回可入库的相对地址。
- *
- * 覆盖式：先写 `.tmp` 再 rename（原子替换），并删掉同 appId 的旧扩展名文件
- * （png 换 jpg 时旧文件要清掉，否则目录里会留两份、清理时也漏）。
- *
- * @returns {Promise<{relUrl: string, file: string, bytes: number, mime: string}>}
- */
 export async function storeIcon({ appId, buffer }) {
   const id = safeAppId(appId);
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {

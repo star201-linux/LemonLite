@@ -16,21 +16,6 @@ import io.flutter.plugin.common.MethodChannel
 import java.io.IOException
 import java.util.concurrent.Executors
 
-/**
- * NFC 原生桥（Reader Mode）。
- *
- * 为什么用 Reader Mode 而不是前台调度（enableForegroundDispatch）：
- *   Reader Mode 专门为「应用在前台读卡」设计，能指定只关心哪些技术，
- *   并且可以在没有 Activity 的 Intent 过滤的情况下工作；它也不会让系统
- *   弹出「用哪个应用打开」的选择器。对小程序这种「我现在想读一张卡」的
- *   语义来说，它是唯一的正确模型。
- *
- * 一次调用只等一张卡：read()/writeText() 返回时 Reader Mode 自动关闭，
- * 不会出现「页面退出了还在监听」的泄漏。超时 / 取消由 Handler 兜底。
- *
- * NFC 是安装期权限（normal），不需要运行时授权；但应用内的权限弹窗仍然
- * 由 Dart 层在调用前负责 —— 这一层只处理「设备有没有 NFC、开没开」。
- */
 class NfcBridge(private val activity: Activity) {
 
     companion object {

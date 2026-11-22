@@ -1,10 +1,3 @@
-// test/miniapp_metadata_test.dart
-//
-// metadata.json 的解析与「权限该显示哪些」的判定。
-//
-// 这两块是同一件事的两面：包自己声明了什么，权限页就显示什么。
-// 一旦解析或取并集的逻辑错了，用户会在权限页上看到不该出现的条目，
-// 或者看不到自己其实用过的能力 —— 都不是能靠肉眼发现的问题。
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:lemonlite/data/models/miniapp_metadata.dart';

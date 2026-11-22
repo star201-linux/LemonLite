@@ -130,8 +130,6 @@ class _LoggedInViewState extends State<_LoggedInView> {
   /// 正在补拉资料（只在本地没有资料缓存时发生）
   bool _loadingProfile = false;
 
-  /// 补拉失败的原因（网络不通等）。有它就不能再转圈：
-  /// **无限加载圈是这次要修的 bug**，不是「加载中」的样子。
   String? _profileError;
 
   @override
@@ -139,8 +137,6 @@ class _LoggedInViewState extends State<_LoggedInView> {
     super.initState();
     _loadAvatar();
     if (context.read<AccountService>().profile == null) {
-      // 本地可能只有 token（老版本升级上来、缓存被清过、上次拉取失败）：
-      // 这时必须主动拉一次，否则页面会永远停在加载态。
       WidgetsBinding.instance.addPostFrameCallback((_) => _ensureProfile());
     }
   }
@@ -510,10 +506,6 @@ class _LoggedInViewState extends State<_LoggedInView> {
     );
   }
 
-  /// 资料没拉下来时的兜底视图：说明原因 + 重试 + 退出登录。
-  ///
-  /// 为什么要给「退出登录」：如果 token 已经作废而服务端又连不上，
-  /// 用户手上就没有任何能回到可用状态的按钮了。
   Widget _profileErrorView(BuildContext context, String message) {
     final ColorScheme scheme = Theme.of(context).colorScheme;
     return Center(
@@ -870,18 +862,6 @@ class _LoginPageState extends State<LoginPage> {
   }
 }
 
-// ================================================================ 注册页
-
-/// 注册：用户名 + 邮箱 + **邮箱验证码** + 密码。
-///
-/// 加验证码这一步的原因是「邮箱地址不是秘密」：
-/// 没有验证就注册，别人可以拿你的邮箱建号；一旦以后做了
-/// 「邮箱找回密码」，这个账号就等于随时能被接管。
-///
-/// 交互上的几个细节：
-///   * 「获取验证码」按钮有冷却倒计时，冷却秒数**跟服务端要**，不写死；
-///   * 邮箱没填对时按钮只是提示，不发请求（省一次无谓往返）；
-///   * 服务端若开了开发模式（MAIL_DEV_ECHO_CODE），会把码直接带回来自动填上。
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key});
 

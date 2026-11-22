@@ -116,10 +116,6 @@ void main() {
   // 等价的容错逻辑现在在 MarketFeedPage 里，所以测试也搬过去。
   group('MarketFeedPage 结构容错', () {
     test('apps 不是数组 / 缺失时按空列表处理，不抛异常', () {
-      // 注意：与服务端约定的信任边界不同。静态 index.json 时用户可能手改文件，
-      // 所以当年是「结构性错误就抛 FormatException」。现在数据来自我们自己的
-      // 服务端，apps 缺失只可能是空市场 —— 按空列表处理更合理，
-      // 让用户看到「市场里还没有应用」而不是一个错误页。
       final MarketFeedPage missing = MarketFeedPage.fromJson(
         <String, dynamic>{},
         <String, dynamic>{},
@@ -212,8 +208,6 @@ void main() {
     });
 
     test('带 alpha 的颜色保留 alpha：遮罩不能变成纯黑', () {
-      // 之前的实现一律输出 #rrggbb，把 scrim 的 alpha 丢掉了 ——
-      // 小程序里 `background: var(--md-scrim)` 的弹层会变成纯黑一整屏。
       expect(
         ThemeInjector.toCss(const Color(0x52000000)),
         anyOf('rgba(0, 0, 0, 0.322)', 'rgba(0, 0, 0, 0.320)'),

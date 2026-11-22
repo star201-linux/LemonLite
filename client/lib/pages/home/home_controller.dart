@@ -1,16 +1,3 @@
-// lib/pages/home/home_controller.dart
-//
-// 主页状态机。
-//
-// 0.5 起**只走服务端**：主页是「先拿第一页 → 滚到底再拿下一页」。
-// 之前还支持静态 index.json 的全量加载，两条路让这个文件到处是
-// 「是静态还是服务端」的分支；现在只有一条路。
-//
-// 单独抽一个 ChangeNotifier（而不是把状态塞在 StatefulWidget 里）的原因：
-// 1. 详情页返回、切 Tab 回来都不需要重新请求；
-// 2. 开发者页改完服务器地址后，可以直接 `context.read<HomeController>().load()`
-//    让新地址立即生效（验收标准第 4 条）；
-// 3. 后续要给主页加单元测试时不需要 pump widget。
 
 import 'dart:async';
 
@@ -113,10 +100,6 @@ class HomeController extends ChangeNotifier {
     return <AppCategory>[all, ..._categories];
   }
 
-  /// 某个分类下的**已加载**应用数。
-  ///
-  /// 注意这是「已加载」而不是「总数」—— 服务端分页时客户端并不知道
-  /// 全部数量。chip 上显示它仍然有用（用户能看到当前分类有没有内容）。
   int countFor(String categoryId) {
     if (categoryId == AppCategory.allId) return _apps.length;
     return _apps.where((AppItem app) => app.category == categoryId).length;
@@ -144,12 +127,6 @@ class HomeController extends ChangeNotifier {
   /// 有数据，但被筛选条件过滤空了（与「市场本身没数据」是两种提示）
   bool get isFilteredEmpty => hasData && visibleApps.isEmpty;
 
-  /// 首次进入时加载一次。
-  ///
-  /// 顺序：**先给缓存（如果有）→ 再静默刷新**。
-  /// 这样冷启动看到的是上次的列表，而不是一屏加载圈；
-  /// 刷新成功后列表会就地替换，用户的滚动位置也不会被清掉
-  ///（因为列表长度通常不变，滚动位置由 ScrollPosition 自己保持）。
   Future<void> ensureLoaded() async {
     if (_status != HomeStatus.initial) return;
 
@@ -170,12 +147,6 @@ class HomeController extends ChangeNotifier {
     await load(silent: _apps.isNotEmpty);
   }
 
-  // ------------------------------------------------------------- 加载
-
-  /// 加载 / 刷新第一页。下拉刷新与按钮重试都走这里。
-  ///
-  /// [silent] = true 时不切到 loading 态（列表里已经有缓存/旧数据时用），
-  /// 否则用户每次下拉刷新都会看到整屏闪一下。
   Future<void> load({bool silent = false}) async {
     if (!silent || _apps.isEmpty) {
       _status = HomeStatus.loading;
@@ -195,8 +166,6 @@ class HomeController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// 静默重载第一页（保持列表可见，不闪 loading 态）——
-  /// 切换分类时用它，否则每次点 chip 都会整屏闪一下。
   Future<void> _reloadFirstPage() async {
     try {
       await _loadFirstPage();
@@ -216,8 +185,6 @@ class HomeController extends ChangeNotifier {
 
     // 分类只在第一页返回；后续页不带，所以这里要保留旧值。
     if (page.categories.isNotEmpty) _categories = page.categories;
-    // 服务端说了算的每页条数：后续页按同一个数请求，
-    // 否则会出现「第一页 20 条、第二页 50 条」的跳变。
     if (page.limit > 0) _pageLimit = page.limit;
     _apps = page.apps;
     _nextCursor = page.nextCursor;

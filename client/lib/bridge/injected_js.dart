@@ -232,25 +232,6 @@ class LemonJsSdk {
     }
   }
 
-  /**
-   * 把主题快照写成 CSS 变量。
-   *
-   * 只写一条 `:root{...}` 样式表，**不写 <html> 的行内 style**。
-   *
-   * 早先这里两种都做（样式表 + 行内 setProperty），结果是行内变量把页面
-   * 自己的样式全压住了：小程序若在 `<style>` 里写
-   *     [data-theme="dark"] { --md-surface: #1C1B1F; }
-   * 来做自己的黑白切换，那条规则永远输给 `<html style="--md-surface:#FFFBFE">`，
-   * 于是「点了切换按钮什么也没变」（数据变了、像素没变）。
-   * 行内 style 的优先级高于任何选择器，页面无法在不写 !important 的情况下覆盖。
-   *
-   * 现在只留样式表，并且**插在 head 最前面**：页面自己的样式表在它之后，
-   * 同优先级（`:root` 与 `[data-theme]` 都是 0,1,0）时后来者胜 —— 这正好是
-   * 文档里承诺的「小程序想自定义主题，直接覆盖同名变量即可」。
-   * 页面完全不管主题时，这条 :root 就是唯一来源，宿主配色照常生效。
-   *
-   * color-scheme 也放进这条规则里（而不是行内）：页面要改也改得动。
-   */
   function applyTheme(payload) {
     if (!payload || typeof payload !== 'object') { return; }
     currentTheme = payload;
@@ -1166,10 +1147,6 @@ class LemonJsSdk {
     /** 内部使用：宿主把原生事件送进页面时调用，小程序不要直接调用 */
     __dispatchEvent: dispatchEvent,
 
-    /**
-     * 内部使用：模块（manifest.bridge 声明的方法）通过它转发到宿主。
-     * 小程序不要直接调用 —— 那是给框架生成的包装函数用的。
-     */
     __invoke: invoke
   };
 

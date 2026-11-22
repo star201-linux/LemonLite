@@ -1,16 +1,3 @@
-// server/src/lib/http.js
-//
-// 统一的响应格式与错误处理。
-//
-// 契约（客户端与服务端只认这一份）：
-//   成功：{ "ok": true,  "data": ... ,  "meta": { ... }? }
-//   失败：{ "ok": false, "error": { "code": "xxx", "message": "人话" } }
-//
-// 为什么用 ok 而不是裸数据：
-//   裸数据无法区分「成功返回 null」和「失败了」—— 客户端得靠 HTTP 状态码
-//   猜，而状态码在代理/CDN 那一层经常被改写。显式 ok 字段最稳。
-
-/** 业务错误：抛它，由 errorHandler 统一转成 JSON */
 export class ApiError extends Error {
   constructor(status, code, message, detail) {
     super(message);

@@ -1,12 +1,3 @@
-// server/src/admin/settings.js
-//
-// 面板的「站点」页：几条影响**所有用户**的策略。
-//
-// 为什么单独一页而不是继续塞进「邮件」：邮件页的语义是「信从哪发出去」，
-// 而这里的东西（注销冷静期、市场每页条数）跟邮件没有关系。
-// 混在一起的结果是运维要找一个「市场分页」的设置得先想到去点「邮件」。
-//
-// 所有值都写回 config.yaml 并立即应用到内存，不需要重启（同 admin/mail.js）。
 
 import { Router } from 'express';
 import { join } from 'node:path';
@@ -54,10 +45,6 @@ settingsRouter.put(
       24 * 60,
     );
     const marketMaxPage = intIn(body.marketMaxPage, config.market.maxPageSize, 5, 200);
-    // 每页条数不能超过上限，否则「默认值」本身就会请求一个被夹掉的数，
-    // 客户端 meta.limit 与实际条数对不上。
-    // 超出时**夹住而不是报错**：面板保存后会把夹过的值回读出来，
-    // 用户看到 5 就明白发生了什么；报错则要先改上限再改条数，两步都卡着。
     const marketPageSize = Math.min(
       marketMaxPage,
       intIn(body.marketPageSize, config.market.defaultPageSize, 5, 200),

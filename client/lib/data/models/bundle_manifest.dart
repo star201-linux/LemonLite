@@ -1,53 +1,3 @@
-// lib/data/models/bundle_manifest.dart
-//
-// 「模块 / 插件」包（bundle）的 manifest 解析。
-//
-// 两种包共用一套格式，靠 manifest 里的 type 区分：
-//
-//   type = "module" —— mod 式的**模块**：往匹配的小程序页面注入 CSS / JS，
-//                      并能通过 manifest.bridge 声明自己的 JSBridge 方法
-//                      （由宿主用已有能力组合实现）。
-//   type = "plugin" —— **插件**：不注入任何代码，而是给宿主**增加能力**。
-//                      它必须声明自己支持哪些平台（多平台架构），宿主只在
-//                      匹配的平台上启用它。
-//
-// 一句话区别：**模块改页面，插件改宿主**。README 的「插件与模块」一节
-// 有对照表，写包之前先看一眼。
-//
-// 包形态：一个 zip，或一个目录。根目录（或最外层子目录）必须有 lemonlite.json：
-//
-//   lemonlite.json        （manifest，名字固定）
-//   inject.js             （被 manifest 的 js 字段引用）
-//   inject.css            （被 manifest 的 css 字段引用）
-//
-// manifest 示例（模块）：
-//   {
-//     "type": "module",
-//     "id": "com.example.demo-module",
-//     "name": "示例模块",
-//     "version": "1.0.0",
-//     "matches": ["*"],
-//     "js": ["inject.js"],
-//     "bridge": [
-//       { "name": "ping", "action": "const", "params": { "pong": true } },
-//       { "name": "fetchConfig", "action": "http.get",
-//         "params": { "url": "https://example.com/config.json" } }
-//     ]
-//   }
-//
-// manifest 示例（插件）：
-//   {
-//     "type": "plugin",
-//     "id": "com.example.camera-helper",
-//     "name": "相机辅助",
-//     "version": "1.0.0",
-//     "platforms": ["android", "ios"],
-//     "capabilities": ["camera.helper"]
-//   }
-//
-// 解析原则与 index.json 一致：**宽松读取 + 结构性错误才抛**。
-// 但这里比 index.json 严格一点：id / type / version 缺失会直接判为非法包，
-// 因为它们决定落盘目录名与是否覆盖已有包，猜错会留下坏数据。
 
 import 'json_utils.dart';
 
@@ -163,8 +113,6 @@ class BundleBridgeMethod {
   }
 }
 
-/// 一条注入规则。matches 与脚本/样式按规则成组，
-/// 不能把多个规则的资源拍平，否则会把只应命中特定站点的脚本注入到其它页面。
 class BundleContentScript {
   const BundleContentScript({
     required this.matches,
@@ -403,12 +351,6 @@ class BundleManifestException implements Exception {
   String toString() => '$field：$message';
 }
 
-/// URL 匹配：把带 `*` 的模式翻译成「分段按顺序子串匹配」。
-///
-/// 为什么不直接用正则全匹配：小程序的 URL 通常是
-/// `https://host/apps/hello/index.html`，作者更习惯写
-/// `*apps/hello/*` 或 `*hello*` 这种片段模式，而不是完整协议+主机名。
-/// 分段匹配同时支持 `*`、`apps/hello/*`、`https://*.example.com/*` 三种写法。
 bool matchesBundlePattern(String url, String pattern) {
   final String target = url.trim();
   final String rule = pattern.trim();

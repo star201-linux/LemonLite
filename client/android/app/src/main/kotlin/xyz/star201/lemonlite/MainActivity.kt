@@ -22,18 +22,7 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import kotlin.math.roundToInt
 
-/**
- * 宿主 Activity：承载 Flutter 引擎，并暴露 `lemonlite/native` 通道。
- *
- * 为什么是 `open`：MiniappTaskActivity（小程序独立窗口）直接继承它，
- * 这样 `lemonlite/native` 通道的所有能力在两个 Activity 里是同一份实现，
- * 不会出现「宿主能用、窗口里用不了」的漂移。
- *
- * 为什么这些能力做在 MainActivity 而不是做成一个独立 Flutter Plugin：
- * 亮度、常亮、屏幕方向都是**窗口级**状态，必须拿到当前 Activity 的 Window 才能改。
- * 做成插件就得走 ActivityAware 生命周期、再让插件反向持有 Activity，凭空多出一层
- * 「attach/detach 时序」状态；而宿主只有这一个 Activity，直接放在这里最省事、最少状态。
- */
+/** 宿主 Activity：承载 Flutter 引擎，并提供 `lemonlite/native` 通道。 */
 open class MainActivity : FlutterActivity() {
 
     private companion object {
@@ -74,13 +63,6 @@ open class MainActivity : FlutterActivity() {
     /** 是否因为数据目录锁冲突而启用了独立的 WebView 数据目录（Dart 侧启动时会查询并写日志）。 */
     private var webviewSuffixApplied = false
 
-    /**
-     * 下载桥。
-     *
-     * 单独一个类而不是继续堆在 MainActivity 里：下载与窗口级能力（亮度/方向）
-     * 没有任何共享状态，分开之后 MainActivity 只负责「注册」，逻辑各归各的。
-     * 这里持一下引用是为了让生命周期跟 Activity 对齐（通道本身也会持有它）。
-     */
     private var downloadBridge: DownloadBridge? = null
 
     /** 蓝牙 / NFC 原生桥。与下载桥同理：各自一个通道，生命周期跟 Activity 对齐。 */
@@ -90,36 +72,10 @@ open class MainActivity : FlutterActivity() {
     /** 预检用的探针 WebView，[preflightWebView] 的 finally 里销毁。 */
     private var webviewProbe: android.webkit.WebView? = null
 
-    /**
-     * 正在等待系统授权框返回的 Dart 回调。
-     *
-     * 为什么要有这个字段：Android 的运行时授权是**异步 + 回调**模型
-     *（ActivityCompat.requestPermissions 只负责弹框，结果从 onRequestPermissionsResult 回来），
-     * 而 MethodChannel 的 result 必须恰好被回一次。于是先把 result 存下来，
-     * 等系统回调到达时再回 —— 这样 Dart 侧看到的仍是一个普通的 await。
-     *
-     * 同时只能有一个：用户不可能同时看到两个系统授权框，
-     * 若真的并发来了第二次请求，直接把旧的按「拒绝」结掉，避免泄漏。
-     */
     private var pendingPermissionResult: MethodChannel.Result? = null
 
-    /**
-     * 「最近任务」卡片的默认样子（轻柠的图标 + 名字）。
-     *
-     * 懒计算：只有真的改过卡片（用户打开过小程序）才需要它来恢复，
-     * 冷启动路径上不该为此多画一次图标。
-     */
     private var defaultTaskDescription: ActivityManager.TaskDescription? = null
 
-    /**
-     * 上一次真正写给系统的卡片图标。
-     *
-     * 为什么要留着：Dart 侧刷新卡片时经常只有标题、没有图标（图标缓存异步、
-     * 或者这个包本来就没有市场图标）。早先的实现遇到 iconPath=null 就退回
-     * **宿主图标**，于是「窗口刚打开时卡片上是小程序图标，Dart 一刷新就变成
-     * 轻柠的图标」—— 用户看到的就是「小程序的卡显示的是 Lemon Lite 图标」。
-     * 现在 null 表示「图标不变」，沿用上一次那张。
-     */
     private var lastTaskIcon: Bitmap? = null
 
     /**
@@ -131,8 +87,6 @@ open class MainActivity : FlutterActivity() {
     private var appliedTaskKey: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // 必须放在 super.onCreate 之前：configureFlutterEngine 会触发插件初始化，
-        // 任何 WebView 的创建都必须等预检做完。
         preflightWebView()
         super.onCreate(savedInstanceState)
     }
@@ -188,15 +142,6 @@ open class MainActivity : FlutterActivity() {
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
-        // 插件注册：交回给 super。
-        //
-        // FlutterActivity.configureFlutterEngine() 的实现就是调用
-        // GeneratedPluginRegister.registerGeneratedPlugins()（已用 javap 核对 Flutter 3.47.7
-        // 的 android-arm64-release/flutter.jar），所以 super 已经完成了注册。
-        // 这里**不要**再自己调一次 GeneratedPluginRegistrant.registerWith()：
-        // 那是同一个入口，写两遍等于把所有插件注册两遍 —— in_appwebview 的
-        // platform view factory 重复注册会直接抛异常。用 super 的另一个好处是
-        // 将来 Flutter 改默认注册方式时不用跟着改这里。
         super.configureFlutterEngine(flutterEngine)
 
         val nativeChannel =
@@ -216,15 +161,10 @@ open class MainActivity : FlutterActivity() {
         }
 
         nativeChannel.setMethodCallHandler { call, result ->
-            // 通道回调不保证在主线程，而 screenBrightness / FLAG_KEEP_SCREEN_ON /
-            // requestedOrientation 都只能在主线程改；MethodChannel.Result 也要求回到主线程回调。
-            // 所以整个处理逻辑统一切到 UI 线程，只切一次，不做「按 method 判断要不要切」的分支。
             runOnUiThread {
                 try {
                     handleNativeCall(call, result)
                 } catch (e: Exception) {
-                    // 任何原生异常都转成错误码回给 Dart，绝不让 Activity 崩掉：
-                    // 小程序里一次亮度设置失败不该把整个宿主一起带走。
                     result.error("native_error", e.message ?: e.toString(), null)
                 }
             }
@@ -273,8 +213,6 @@ open class MainActivity : FlutterActivity() {
 
             "openAppSettings" -> result.success(openAppSettings())
 
-            // 小程序切到前台：把「最近任务」里的卡片换成**它的**图标和名字，
-            // 而不是晃着一个「轻柠」让用户以为自己回到了宿主。
             "setTaskDescription" -> {
                 val label = call.argument<String>("label") ?: ""
                 val iconPath = call.argument<String>("iconPath")
@@ -293,20 +231,11 @@ open class MainActivity : FlutterActivity() {
                 result.success(openMiniappWindow(appId, title, iconPath))
             }
 
-            // 只对窗口 Activity 生效：结束这张任务卡（宿主调它什么也不做，
-            // 否则一次误调就把整个 App 关了）。
             "finishTask" -> {
                 if (!isTaskWindow) {
                     result.success(false)
                 } else {
                     result.success(true)
-                    // 只有「这张卡的根就是窗口自己」时才连带任务一起移除。
-                    // isTaskRoot() 是 Activity 自带的、最直接的那个判断：
-                    // 它只看「本 Activity 是不是所在任务的栈底」，
-                    // 不依赖 appTasks 查询（个别 ROM 会返回空列表）。
-                    // 万一窗口真被塞进宿主任务（栈底是 MainActivity），
-                    // 这里为 false，只 finish 自己 —— 宁可留一张空卡，
-                    // 也不能把宿主一起带走。
                     if (isTaskRoot()) {
                         finishAndRemoveTask()
                     } else {
@@ -323,17 +252,6 @@ open class MainActivity : FlutterActivity() {
             // 这样导出的日志里能看出「这次是走了独立数据目录启动的」。
             "getWebviewPreflight" -> result.success(webviewSuffixApplied)
 
-            // 自检专用（只在传了 --dart-define=LEMONLITE_AUTOTEST 的包里会被调用）。
-            //
-            // 为什么需要它：开发机上的 Android 容器（Waydroid）没有 root，
-            // adb / logcat / screencap 全部不可用，而应用私有目录是 0700 + 应用 uid，
-            // 宿主机读不到 —— 于是"自检到底跑成什么样"这件事没有任何出口。
-            // 这个方法把本应用自己的数据目录改成「其它用户可读可进入」，
-            // 让宿主机能取走自检日志、权限决定与对话框截图。
-            //
-            // 作用范围被硬限制在 applicationInfo.dataDir 之内：即便被恶意调用，
-            // 也只能放开这个 App 自己的数据；而 Android 的 SELinux 本来就阻止
-            // 其它 App 读它，所以在真机上这不会额外泄露给任何第三方应用。
             "makeReadable" -> {
                 val path = call.argument<String>("path") ?: ""
                 if (path.isEmpty()) {
@@ -366,15 +284,6 @@ open class MainActivity : FlutterActivity() {
         super.onDestroy()
     }
 
-    /**
-     * 申请 Android 运行时权限，结果通过 [pendingPermissionResult] 异步回给 Dart。
-     *
-     * 为什么必须由宿主来做：WebView 的 onPermissionRequest 只告诉宿主
-     * 「网页想要摄像头」，它**不会**替宿主申请系统权限。Chromium 真正开设备时
-     * Android 还会再拦一道，所以顺序必须是「先拿到系统权限，再回 ALLOW」。
-     *
-     * 已经全部授予时不弹框、立刻回 true（常见于用户之前同意过）。
-     */
     private fun requestRuntimePermissions(
         permissions: Array<String>,
         result: MethodChannel.Result,
@@ -450,21 +359,7 @@ open class MainActivity : FlutterActivity() {
         result.success(allGranted)
     }
 
-    /**
-     * 把「最近任务」里的卡片改成 [label] + [iconPath] 指向的图标。
-     *
-     * 为什么需要这个：整个宿主只有一个 Activity、一个任务。用户打开小程序后
-     * 按 Home 键，最近任务里原本只有一个写着「轻柠」的卡片 —— 他再点回来时
-     * 根本分不清那是宿主还是刚才那个小程序，也和「小程序像独立应用」的预期不符。
-     * TaskDescription 正好是系统给的、唯一的「这张卡叫什么、长什么样」的入口。
-     *
-     * @param iconPath 本地图片绝对路径（图标缓存里那张）；为空表示**图标不变**：
-     *   沿用上一次写上去的那张（见 [lastTaskIcon]），第一次写卡片时还没有上次，
-     *   才退回宿主自己的图标 —— 而不是留一个空白方块。
-     * @param force 内容没变也重写一次。窗口在 `onPostResume` 用它覆盖
-     *   ROM 在可见那一刻用 `ActivityInfo` 重置出来的标题（vivo 上会出现
-     *   「窗口卡写着 Lemon Lite」就是这条路径）。
-     */
+    /** 写入最近任务卡片的标题与图标；`iconPath` 为空表示沿用上一次那张。 */
     @Suppress("DEPRECATION")
     protected fun applyTaskDescription(
         label: String,
@@ -478,21 +373,9 @@ open class MainActivity : FlutterActivity() {
         val key = "$title|${path ?: ""}"
         if (!force && key == appliedTaskKey) return true
 
-        // 有路径就按路径解码；解不出来（路径失效 / 不是图片）也**不要**降级成
-        // 宿主图标 —— 那会让「小程序卡」突然变成「轻柠卡」，用户以为打开了别的东西。
         val decoded = path?.let { decodeTaskIcon(it) }
         val icon = decoded ?: lastTaskIcon ?: appIconBitmap()
         return try {
-            // 这里**不用** TaskDescription.Builder。
-            //
-            // 原因：`Builder.setIcon` 只暴露了 `setIcon(int iconRes)` 这一个
-            // 重载（拿资源 ID），没有接收 Bitmap 的版本 —— 传 Bitmap 会编译失败
-            // （actual type is 'Bitmap', but 'Int' was expected）。而我们手上的
-            // 图标是运行时解码出来的 Bitmap（本地文件/上次缓存），没有资源 ID 可用。
-            //
-            // 老构造器 `TaskDescription(label, bitmap)` 虽然被标了 deprecated，
-            // 但在所有 API 级别上都能用，且一直是设置「任务卡标题 + 位图图标」
-            // 的可靠方式。deprecated 只是警告，不影响行为。
             @Suppress("DEPRECATION")
             val description = ActivityManager.TaskDescription(title, icon)
             setTaskDescription(description)
@@ -597,34 +480,6 @@ open class MainActivity : FlutterActivity() {
         return Bitmap.createScaledBitmap(source, width, height, true)
     }
 
-    /**
-     * 把小程序作为独立任务打开。
-     *
-     * 为什么不是「在宿主里再叠一层」：那样最近任务里只有一张卡，
-     * 要么写着「轻柠」（用户看不出这是哪个小程序），要么被改名成小程序
-     * （宿主那张卡就没了）。用户要的是「宿主一张卡、小程序一张卡」——
-     * 也就是微信小程序的做法：两个任务在切换器里并存，各自独立切换。
-     *
-     * 实现上只有一条路：**另一个 Activity 实例**。Flutter 的一个引擎只能
-     * 对应一个 View，所以新窗口会创建自己的引擎（独立 isolate），
-     * 从已安装包重新加载那个小程序 —— 两边的运行状态互不干扰，
-     * 这也正是「独立窗口」应有的语义。
-     *
-     * 任务独立性不再依赖 `documentLaunchMode`：那套 document task 机制在
-     * 部分国产 ROM（vivo OriginOS 上被反复证实）里会被忽略，结果窗口落进
-     * 宿主任务栈 —— 卡片名变成「Lemon Lite」、关闭窗口回到主界面。
-     * 现在改用最古老、普及率最高的那两个 flag：
-     *
-     *   `NEW_TASK | MULTIPLE_TASK`
-     *
-     * `MULTIPLE_TASK` 的意思是「即使已有同 affinity 的任务，也再起一条」，
-     * 配合 manifest 里那个独立 taskAffinity，每个窗口必然是新任务。
-     *
-     * 「同一个 appId 只留一张卡」改由 [focusExistingWindow] 保证：
-     * 起新任务之前先看看有没有这张卡，有就 `moveToFront()`。
-     * 这比 documentLaunchMode 的复用更可控 —— 它是普通的任务查询与排序，
-     * 不依赖厂商对 document task 的实现。
-     */
     private fun openMiniappWindow(appId: String, title: String, iconPath: String?): Boolean {
         if (appId.isBlank()) return false
         // 文档标识：同一个小程序 = 同一个 data = 同一张卡
@@ -656,17 +511,6 @@ open class MainActivity : FlutterActivity() {
         }
     }
 
-    /**
-     * 这个 appId 是否已经有一张打开着的卡；有就把那张卡提到前台。
-     *
-     * 为什么用 `data` 而不是 extras 匹配：`TaskInfo.baseIntent` 不保证保留
-     * extras（不同 ROM 的裁剪程度不一样），而 data URI 是任务身份的一部分，
-     * 一直都会在。
-     *
-     * `moveToFront()` 需要 `REORDER_TASKS`（normal 权限，已在清单里声明）。
-     * 查询失败时返回 false，让调用方正常起一个新任务 —— 最坏结果是一张多余的卡，
-     * 比「点了没反应」好。
-     */
     private fun focusExistingWindow(documentUri: Uri): Boolean {
         return try {
             val manager = getSystemService(ActivityManager::class.java) ?: return false
@@ -685,12 +529,6 @@ open class MainActivity : FlutterActivity() {
         }
     }
 
-    /**
-     * 跳到本应用在系统设置里的详情页。
-     *
-     * 用于「拒绝且不再询问」之后的兜底：那时应用再也弹不出系统框，
-     * 只能让用户自己去设置里打开。个别 ROM 没有这个 Activity，此时返回 false。
-     */
     private fun openAppSettings(): Boolean {
         return try {
             val intent =
@@ -705,11 +543,6 @@ open class MainActivity : FlutterActivity() {
         }
     }
 
-    /**
-     * 递归把权限放开到「其它用户可读 + 可进入」。
-     * 目录必须同时给 x，否则宿主机连列目录都做不到。
-     * 返回处理过的条目数（自检日志里会打出来，便于确认真的生效了）。
-     */
     private fun relaxPermissions(file: File): Int {
         file.setReadable(true, false)
         if (file.isDirectory) {
@@ -733,14 +566,6 @@ open class MainActivity : FlutterActivity() {
         )
     }
 
-    /**
-     * 设置媒体音量。
-     *
-     * flags 传 0 而不是 FLAG_SHOW_UI：后者会弹出系统音量条，那是「系统 UI 抢焦点」，
-     * 会把小程序自己画的音量面板盖住 —— 我们只需要改数值，不需要系统提示。
-     *
-     * STREAM_MUSIC 的读写不需要任何运行时权限（新版本 Android 上受限的只是铃声/系统音量流）。
-     */
     private fun writeVolume(percent: Double): Map<String, Any> {
         val audio = audioManager()
         val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)

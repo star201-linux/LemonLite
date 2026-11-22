@@ -1,22 +1,3 @@
-// lib/app.dart
-//
-// App 根组件：Provider 装配 + MD3 主题接线 + 响应式外壳。
-//
-// 主题链路（这是本工程最重要的一条链）：
-//   SettingsService（持久化的偏好）
-//     → ThemeController（合成最终 ColorScheme）
-//     → DynamicColorBuilder（注入 Android 12+ 壁纸色）
-//     → MaterialApp.theme / darkTheme（全 App 生效）
-//     → ThemeInjector（同一份配色注入 WebView 的 --md-* 变量）
-// 全程只有一份配色来源，所以宿主与小程序不会出现「不同步」。
-//
-// 外壳布局（0.4 新增）：
-//   按屏幕**最短边 dp** 区分手机与平板（Material 3 的 window size class）：
-//     最短边 < 600dp  → 手机：底部 NavigationBar
-//     最短边 ≥ 600dp  → 平板/大屏：左侧 NavigationRail（底部栏放到侧面）
-//   为什么用最短边而不是 dpi：dpi 只说明像素密度，400+ dpi 的旗舰手机
-//   一大堆，按 dpi 判会把它们全判成平板。最短边（逻辑像素）才真正对应
-//   「这块屏幕能放多少内容」。
 
 import 'dart:async';
 
@@ -75,8 +56,6 @@ class LemonLiteApp extends StatelessWidget {
         ChangeNotifierProvider<AnnouncementService>(
           create: (BuildContext ctx) => AnnouncementService(settings: settings),
         ),
-        // 主页状态。放在 App 根部而不是 HomePage 内部，
-        // 这样切到「设置」再切回来时列表、搜索词、分类筛选都还在。
         ChangeNotifierProvider<HomeController>(
           create: (BuildContext ctx) =>
               HomeController(ctx.read<MarketRepository>()),
@@ -119,29 +98,13 @@ class _ThemedApp extends StatelessWidget {
   }
 }
 
-/// 平板判定阈值（dp）。取 Material 3 window size class 的 compact/medium 分界。
-///
-/// 用**最短边**而不是宽度：横屏手机宽度可以到 900dp 以上，但它的最短边
-/// 仍是 400 左右 —— 那种尺寸上放侧边栏会把内容区挤得很窄，还不如用底部栏。
 const double kTabletMinShortestSide = 600;
 
-/// 是否按「平板 / 大屏」布局渲染。
-///
-/// 用 `MediaQuery.size` 的最短边，而不是 `MediaQuery.orientation`：
-/// 设备横竖屏切换时布局不应该跳变（用户把平板转一下，导航栏从左跑到下面）。
 bool useWideLayout(BuildContext context) {
   final Size size = MediaQuery.sizeOf(context);
   return size.shortestSide >= kTabletMinShortestSide;
 }
 
-/// 宿主外壳：导航（手机底部栏 / 平板侧边栏）+ 三个 Tab + 小程序层。
-///
-/// 三个 Tab 用 IndexedStack 保活，避免来回切换时丢失滚动位置与搜索状态。
-///
-/// 小程序层（MiniappHost）叠在**外壳内容之上**、但仍在 MaterialApp 之内：
-/// 这样它盖住底部/侧边导航，而 push 出来的页面（权限管理等）作为真实路由
-/// 天然压在它上面 —— 菜单点开的新页面能看见。
-/// 为什么不用 Navigator Overlay：见 miniapp_host.dart 文件头那段警告。
 class AppShell extends StatefulWidget {
   const AppShell({super.key});
 
@@ -162,12 +125,6 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   /// 上一次校验登录态的时间。前后台来回切时用得上（见 [_checkSessionLater]）。
   DateTime _lastSessionCheck = DateTime.fromMillisecondsSinceEpoch(0);
 
-  /// App 退出（detached）时清掉市场缓存。
-  ///
-  /// 为什么不用 didChangeAppLifecycleState：那个回调在 Android 上
-  /// 「被用户从最近任务里划掉」时不一定能跑到；detached 是 Flutter 明确
-  /// 给出的「这个引擎要没了」的信号，能跑到就清。清不掉也不影响正确性 ——
-  /// 缓存里存的是公开的市场数据，没有账号隐私；退出登录时一定会清。
   AppLifecycleListener? _appLifecycle;
 
   @override
@@ -220,13 +177,9 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state != AppLifecycleState.resumed) return;
-    // 从后台回来补一次校验：被踢下线之后用户最可能做的就是「切回 App」，
-    // 这时候发现得早，弹窗才赶在他点进账号页之前出现。
     unawaited(_checkSession());
   }
 
-  /// 校验本地登录态。20 秒内只查一次 —— 前后台频繁切换不该把 /me
-  /// 打成轮询，但「切回来就发现被踢了」这个体验要保住。
   Future<void> _checkSession() async {
     final DateTime now = DateTime.now();
     if (now.difference(_lastSessionCheck) < const Duration(seconds: 20)) return;
@@ -234,17 +187,6 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     await AccountService.instance.validateSession();
   }
 
-  /// 启动公告：拉一次公告列表，按级别决定要不要弹窗 / 挂横幅。
-  ///
-  /// 注意这里**不直接读 `/latest`**：判断未读数与「有没有更早的未确认弹窗」
-  /// 都需要整份列表，而 `/latest` 只有一条。拉完由 AnnouncementService
-  /// 自己算好 `popup` / `banner`，这里只负责把弹窗显示出来；
-  /// 横幅由市场页监听同一个 service 渲染（它得跟着市场页一起出现）。
-  ///
-  /// 为什么要等 500ms 而不是立刻弹：启动瞬间还可能有「账号已下线」的弹窗
-  ///（[ _maybeShowOfflineDialog ] 走的是同一个 post-frame）。
-  /// 两个对话框同时压上来时，用户是来解决问题的，不是来看公告的 ——
-  /// 所以让位给下线提示，这一次就先不弹公告了。
   Future<void> _maybeShowAnnouncement() async {
     await Future<void>.delayed(const Duration(milliseconds: 500));
     if (!mounted) return;
@@ -261,8 +203,6 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       await AnnouncementDialog.show(
         context,
         announcement: announcement,
-        // 点「确定」时才标记已读：点「历史公告」跳走不算确认，
-        // 下次启动还会弹（否则用户只是点了个链接就被当成看过了）
         onConfirm: () => service.confirmPopup(announcement),
       );
     } finally {
@@ -275,8 +215,6 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     _maybeShowOfflineDialog();
   }
 
-  /// 取出「被下线」提示并弹窗。没有提示就什么都不做 ——
-  /// 平时的登录/退出/改资料也会 notify，不能每次都弹。
   void _maybeShowOfflineDialog() {
     if (_offlineDialogOpen) return;
     final String? reason = AccountService.instance.takeOfflineNotice();
@@ -452,14 +390,6 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   }
 }
 
-/// 三个 Tab 的容器：保留 IndexedStack 的「保活」语义，额外加一段**切换动效**。
-///
-/// 为什么不是 AnimatedSwitcher：它一旦换 key 就会重建子树，
-/// 主页的滚动位置、搜索词、设置页的开关状态全都会丢。
-/// 这里只在切换的瞬间对新页面做一次「淡入 + 上浮」，子树始终是同一个
-/// IndexedStack，状态一点都不会丢。
-///
-/// 淡入从 0.35 起步而不是 0：整屏从全透明开始的一帧在 OLED 上像闪了一下。
 class _TabSwitcher extends StatefulWidget {
   const _TabSwitcher({required this.index, required this.children});
 
@@ -522,11 +452,6 @@ class _TabSwitcherState extends State<_TabSwitcher>
   }
 }
 
-/// 平板/大屏用的侧边导航。
-///
-/// 用 NavigationRail 而不是「把 NavigationBar 转 90 度」：
-/// Rail 会把标签放在图标右侧、整条栏收窄到 80dp 左右，比横过来的底部栏
-/// 省得多的高度/宽度，也是 M3 对大屏的推荐做法。
 class _SideNav extends StatelessWidget {
   const _SideNav({required this.index, required this.onSelected});
 

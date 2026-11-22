@@ -1,14 +1,3 @@
-// lib/pages/home/home_page.dart
-//
-// 应用市场主页：搜索框 + 分类 chips + 应用卡片列表 + 下拉刷新 + 四态视图。
-//
-// 滚动结构用 CustomScrollView：搜索框挂在 SliverAppBar.bottom 上，
-// 这样它会一直「钉」在顶部（市场页最常见的交互），而分类 chips 会随内容滚走，
-// 给列表让出更多空间。
-//
-// 标题栏用常规高度而不是 SliverAppBar.large：large 版展开时标题下面/上面
-// 会留出一大块只有背景的空白，首屏几乎看不到应用。账号信息也不在这里 ——
-// 它属于「我是谁」，放在设置页的账号分组里更合适。
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -138,14 +127,10 @@ class _HomePageState extends State<HomePage> {
     final HomeController controller = context.watch<HomeController>();
     final SettingsService settings = context.watch<SettingsService>();
     final ColorScheme scheme = Theme.of(context).colorScheme;
-    // watch 而不是 read：横幅会在启动后异步就绪（bootstrap 拉完才有），
-    // 也可能被用户点 × 关掉 —— 两种都要立刻重建。
     final AnnouncementService announcementService = context
         .watch<AnnouncementService>();
     final Announcement? banner = announcementService.banner;
 
-    // 待更新列表来自全局单例；用户点过「稍后再说」的同一批不重复弹提示条，
-    // 但应用管理里的小红点仍然保留（信息不能被「关掉」）。
     final List<PackageUpdate> allUpdates = UpdateService.instance.updates;
     final List<PackageUpdate> updates =
         _dismissedSignature == _signature(allUpdates)
@@ -198,10 +183,6 @@ class _HomePageState extends State<HomePage> {
                 preferredSize: const Size.fromHeight(72),
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
-                  // 只读的假搜索框：点一下进搜索页。
-                  //
-                  // 为什么不在主页边输入边过滤：搜索是服务端筛的
-                  // （不会把全部应用拉到本地），标签 chip 也要服务端返回计数。
                   child: GestureDetector(
                     onTap: () => Navigator.of(
                       context,
@@ -288,12 +269,6 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  /// 按状态返回内容 slivers。
-  ///
-  /// 「加载 / 空 / 错误」三者共用同一块 SliverFillRemaining，中间套
-  /// StateTransition 做交叉淡入。为什么值得多这一层：
-  /// 状态切换（转圈 → 错误、空 → 有数据）是这个页面**最频繁的重绘点**，
-  /// 硬切会让用户觉得「闪了一下」，而淡入只是合成一层透明度。
   List<Widget> _buildContent(BuildContext context, HomeController controller) {
     switch (controller.status) {
       case HomeStatus.initial:
@@ -359,8 +334,6 @@ class _HomePageState extends State<HomePage> {
             itemCount: apps.length,
             itemBuilder: (BuildContext ctx, int i) => Padding(
               padding: EdgeInsets.fromLTRB(20, i == 0 ? 4 : 0, 20, 10),
-              // 错峰入场：前几条依次浮现，后续的（滚出来的）直接出现。
-              // index 取 `i % 8` —— 分页加载的第 20 条不该等半秒才出现。
               child: StaggeredEntrance(
                 index: i % 8,
                 child: AppCard(
@@ -370,10 +343,6 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
           ),
-          // 滚到底部时自动取下一页。
-          // 用 SliverToBoxAdapter 而不是在 ScrollController 里判位置 ——
-          // 后者要额外管 dispose，而且「什么时候算到底」在
-          // 不同设备上很难调准。
           SliverToBoxAdapter(
             child: _LoadMoreTrigger(
               hasMore: controller.hasMore,
@@ -415,14 +384,6 @@ class _HomePageState extends State<HomePage> {
     Navigator.of(context).push(AppDetailPage.route(app));
   }
 
-  /// 底部那行统计文案。
-  ///
-  /// 两种情况，都不能让用户猜「为什么没有更多了」：
-  ///   * 还有更多 → 「已加载 N 个，继续下滑」
-  ///   * 到底了   → 「共 N 个应用」
-  ///
-  /// 注意这里说「已加载」而不是「共」：服务端分页时客户端**不知道总数**，
-  /// 谎报一个数字比不报更糟。
   String _footerLabel(HomeController controller, int visible) {
     // 缓存状态是瞬时的：静默刷新完成后 fromCache 会变回 false，
     // 所以这里只是给「刚打开、还没联网」的那几秒一个解释。
@@ -581,11 +542,6 @@ class _CustomServerBanner extends StatelessWidget {
   }
 }
 
-/// 「有 N 个小程序可更新」提示条。
-///
-/// 为什么做成 banner 而不是「自动静默升级」：
-///   包可能有几十 MB，在移动网络下静默下载是**用户的钱**。
-///   升级必须是一次显式的选择。
 class _UpdateBanner extends StatelessWidget {
   const _UpdateBanner({
     required this.updates,

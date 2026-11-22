@@ -1,25 +1,3 @@
-// lib/theme/app_theme.dart
-//
-// M3 Expressive（Material Design 3 表达性版式）主题生成。
-//
-// 规范来源（m3.material.io，2026-10 版 M3E）：
-//   * 形状：十级圆角刻度（none 0 / xs 4 / s 8 / m 12 / l 16 / l+ 20 /
-//     xl 28 / xl+ 32 / xxl 48 / full）。按钮默认映射到 full（胶囊）；
-//     信息密集的卡片保持 medium 12；导航栏 / 对话框 28；chips 8。
-//   * 色彩：整份配色由 `ColorScheme.fromSeed` / 动态取色推导，
-//     「强调容器化」—— secondary / tertiary 的 container 角色是
-//     视觉落点（选中态、导航指示器、hero 容器），而不是到处铺 primary。
-//   * 动效：M3E 的物理弹簧系统。Flutter 的路线转场按时间 / 曲线做，
-//     这里用 MDC-Web 给出的 M3E 弹簧近似曲线（带过冲的空间动效）：
-//       入场 ≈ cubic-bezier(0.3, 0, 0.2, 1.5)
-//       退场 ≈ cubic-bezier(0.3, 0, 0.7, 0.2)
-//     配合「缩放 + 圆角形变」的页面转场（M3E 形状形变特性）。
-//   * 排版：M3 基线字阶上叠加「强调」字重（emphasized type styles）：
-//     display / headline w800–w700，title w600，body / label 保持基线。
-//
-// 核心约定不变：整个 App 只有两个 ThemeData（light / dark），
-// 全部由 ColorScheme 推导，页面里不出现任何硬编码颜色，
-// 「切换主色 → 全 App 立即响应」天然成立。
 
 import 'package:flutter/material.dart';
 
@@ -431,16 +409,6 @@ class AppTheme {
     );
   }
 
-  /// 统一反馈入口：MD3 风格 Toast（浮动 SnackBar）。
-  /// JSBridge 的 `lemonlite.showToast` 也走这里，保证宿主与小程序反馈一致。
-  ///
-  /// 该用哪个 ScaffoldMessenger 取决于**谁在最上面**：
-  ///   * 小程序是覆盖在路由之上的一个层（Overlay），前台且没有路由压在它上面时，
-  ///     必须用小程序层的 messenger —— 宿主层的 SnackBar 会被覆盖层挡住；
-  ///   * 一旦有路由压在小程序之上（例如从悬浮菜单进入权限管理），
-  ///     就得换回宿主层，否则 SnackBar 会被那个页面挡住。
-  /// SnackBar 是由 Scaffold 渲染的，而路由栈顶上那个 Scaffold 属于宿主 messenger，
-  /// 所以这个判断用 `canPop()`（栈里是否还有别的路由）就够准确。
   static void showToast(
     String message, {
     bool isError = false,
@@ -456,9 +424,6 @@ class AppTheme {
     final String text = message.trim();
     if (messenger == null || text.isEmpty) return;
 
-    // 用「非空的错误配色」这个局部变量承接：
-    // Dart 的类型提升只认局部变量的 null 检查，不会因为另一个 bool 为 true 就把
-    // ColorScheme? 提升成 ColorScheme，所以这里不能直接写 scheme.onErrorContainer。
     final ColorScheme? errorScheme = (isError && currentColorScheme != null)
         ? currentColorScheme
         : null;
@@ -496,22 +461,6 @@ class AppTheme {
   }
 }
 
-// ============================================================
-// M3 Expressive 页面转场
-//
-// 这里做过一次**为了流畅度**的重写，值得记一下为什么：
-//
-// 上一版是「整页缩放 + 逐帧变化的圆角裁剪 + 淡入」，
-// 视觉上确实像 M3E 的 shape morph，但代价是每一帧都要：
-//   1. 用一个逐帧变化的圆角去 ClipRRect 整屏（要做路径裁剪）；
-//   2. Transform.scale 整屏（缩放值在变，光栅缓存失效，整屏重画）；
-//   3. FadeTransition 再套一层透明度。
-// 中端手机上导航一次就掉十几帧 —— 用户的感觉就是「点一下卡一下」。
-//
-// 现在只做**合成器友好**的两件事：位移（Transform.translate）与透明度。
-// 这两者都是 GPU 层的合成操作，不触发重绘，帧率能稳住 60/120。
-// 圆角形变交给 Android 自己的容器转场（系统级，比我们在 Dart 层算快得多）。
-// ============================================================
 
 class M3EPageTransitions extends PageTransitionsTheme {
   M3EPageTransitions()

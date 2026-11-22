@@ -1,11 +1,3 @@
-// lib/main.dart
-//
-// 应用入口。
-//
-// 两个初始化动作刻意放在 runApp 之前 await：
-//  1. SharedPreferences —— 主题偏好要在第一帧就拿到，否则会出现「先亮后暗」的闪烁
-//  2. PackageInfo       —— 版本号在设置页要同步显示
-// 两者都做了失败兜底，不会因为插件异常导致白屏。
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show MethodChannel;
@@ -32,14 +24,6 @@ Future<void> main() async {
   // 包里的 metadata.json 可能写 minFrameworkVersion；它要能和当前框架版本比。
   MiniappMetadata.currentFramework = kFrameworkVersion;
 
-  // 这个进程是「宿主」还是某个小程序开出来的「独立窗口」？
-  //
-  // 原生侧用两种方式启动同一个 Flutter 代码：
-  //   * Launcher → MainActivity → 路由 "/"                  → 宿主
-  //   * 打开小程序 → MiniappTaskActivity → 路由 "/miniapp-window?appId=…"
-  //                                                          → 只渲染那个小程序
-  // 判断放在这里、且在任何单例初始化之前：窗口走的是另一套更轻的启动流程，
-  // 让宿主那一整套（账号、市场、下载队列）在窗口进程里白跑一遍没有意义。
   final String initialRoute =
       WidgetsBinding.instance.platformDispatcher.defaultRouteName;
   final MiniappWindowArgs? windowArgs = MiniappWindowArgs.parse(initialRoute);
@@ -52,8 +36,6 @@ Future<void> main() async {
   // 市场本地缓存（主页 / 搜索的分页快照）。放在 SettingsService 之后：
   // 它本身只是 SharedPreferences 之上的一层，没有异步初始化成本。
   MarketCacheService.init(settings);
-  // 权限服务必须在任何小程序页面之前就绪：桥接层每次调用都会查它，
-  // 而它是同步单例（没有异步初始化成本），所以直接 init 不用 await。
   PermissionService.init();
   // 应用清单的唯一真相来源。应用管理、权限管理器与存储页都从它取应用列表，
   // 所以它必须比任何页面都早就绪。
@@ -61,8 +43,6 @@ Future<void> main() async {
   // 下载管理：先把落盘的记录读回来，再在后台回查未完成任务的真实进度。
   // start() 是同步的（读 SharedPreferences），不会拖慢启动。
   DownloadService.init().start();
-  // 账号：只从本地读 token，**不等网络**。
-  // 没网时不该让 App 卡在「正在校验登录态」上 —— 校验在后台静默做。
   await AccountService.instance.init(settings);
   await AppInfo.load();
 

@@ -1,19 +1,3 @@
-// test/miniapp_layer_test.dart
-//
-// 小程序层的「挂上去」回归测试。
-//
-// 这条测试的由来是一个真实崩溃/白屏 bug：
-//   MiniappHost.buildLayer() 里，空判断写在 ListenableBuilder **外面**：
-//
-//     if (_sessions.isEmpty) return const SizedBox.shrink();   // ← 在这里
-//     return ListenableBuilder(listenable: this, ...);
-//
-//   AppShell 不监听 MiniappHost，所以「打开第一个小程序」时
-//   _sessions 从空变非空，但 AppShell 不需要重建，buildLayer() 也不会重跑 ——
-//   这一层永远停在那块 SizedBox.shrink()。
-//   用户点「进入测试小程序」→ 什么都没发生 / 白屏 → 看起来就是崩了。
-//
-// 所以这里断言：打开会话之后，层必须真的把会话视图挂进 widget 树。
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -110,11 +94,6 @@ void main() {
     await tester.pump();
     expect(find.byType(MiniappSessionView), findsOneWidget);
 
-    // 这里用 resetForTest() 而不是 close()：
-    // close() 会 await NativeBridge.setOrientation / setKeepScreenOn，
-    // 测试环境里那两个平台通道没有实现，await 会一直挂着。
-    // 「关闭后层要变空」这件事本质上由 _sessions 变空触发，
-    // 用 reset 验证同一件事，且不依赖平台通道。
     MiniappHost.instance.resetForTest();
     await tester.pump();
 

@@ -1,19 +1,3 @@
-// server/src/lib/security.js
-//
-// 生产环境的几件小事，单独放一处：
-//   * 安全响应头（不引 helmet：这点量不值得多一个依赖）
-//   * 内存限流（单实例够用；多实例请换成 Redis 或交给网关）
-//   * 请求 ID（排障时把一条日志和一条客户端报错对上）
-//
-// 限流刻意做成「按窗口计数」而不是令牌桶：实现小、行为可预测，
-// 被限时能明确告诉客户端多久后重试（Retry-After）。
-
-/**
- * 基础安全响应头。
- *
- * 不开 CSP：管理面板用的是内联脚本与内联样式，一刀切的 CSP 会把它打坏；
- * 真需要 CSP 时应该在反向代理层按路径分别配置。
- */
 export function securityHeaders(req, res, next) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');

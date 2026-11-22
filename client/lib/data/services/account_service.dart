@@ -55,10 +55,6 @@ class AccountProfile {
 
   bool get hasAvatar => avatarUrl.trim().isNotEmpty;
 
-  /// 头像占位图用：取用户名第一个「字」。
-  ///
-  /// 用 `runes.first` 而不是 `substring(0,1)`：后者会把 emoji 或
-  /// 代理对字符切成半个码元，渲染出豆腐块。
   String get initial {
     final String name = username.trim();
     if (name.isEmpty) return '?';
@@ -183,11 +179,6 @@ class EmailCodeSent {
   );
 }
 
-/// 服务端的账号策略（`GET /api/auth/config`）。
-///
-/// 为什么这些开关要由服务端下发：注册/登录要不要验证码是**部署方**的决定
-/// （内网服务器可能根本发不出邮件）。客户端写死任何一边，都会出现
-/// 「客户端要验证码、服务端没开」这种永远登不进去的组合。
 @immutable
 class AuthServerConfig {
   const AuthServerConfig({
@@ -351,19 +342,12 @@ class AccountService extends ChangeNotifier {
   /// 上一次错误（UI 用，取完可以不清）
   AccountException? _lastError;
 
-  /// 服务端下发的账号策略。默认值 = 「注册要验证码、登录不要」，
-  /// 与 config.example.yaml 的默认一致；真正生效前会先拉一次 /api/auth/config。
   AuthServerConfig _authConfig = const AuthServerConfig();
 
   bool _authConfigLoaded = false;
 
-  /// 正在显式退出登录（自己点的「退出」，不是被别人踢）。
-  /// 期间收到的 401 不该弹「已下线」—— 那正是用户想要的结果。
   bool _loggingOut = false;
 
-  /// 「被下线」提示待消费。为什么用「待消费标记」而不是直接 showDialog：
-  /// 401 可能在任意时刻、任意页面到达（启动静默校验时甚至还没有监听者），
-  /// 所以先记在服务层，由外壳在能弹窗时取走。
   bool _offlinePending = false;
   String _offlineReason = '';
 
@@ -381,10 +365,6 @@ class AccountService extends ChangeNotifier {
   /// 是否有未消费的「被下线」提示
   bool get hasOfflineNotice => _offlinePending;
 
-  /// 取走「被下线」提示（一次消费，取过就清）。
-  ///
-  /// 返回提示语；没有待处理提示时返回 null。UI 据此决定要不要弹窗，
-  /// 所以这里必须是「读 + 清」一体，否则 rebuild 一次就会弹第二遍。
   String? takeOfflineNotice() {
     if (!_offlinePending) return null;
     _offlinePending = false;
@@ -393,11 +373,6 @@ class AccountService extends ChangeNotifier {
     return reason;
   }
 
-  /// 启动时调用：从本地拿 token，`withProfile: true` 时顺便校验它还有效。
-  ///
-  /// 为什么校验要单独一个开关：启动阶段网络可能还没好，
-  /// 没网就不该让 App 卡在「正在校验登录态」上。所以先本地认定「已登录」，
-  /// 后台再静默校验；校验失败（401）才清掉 token。
   Future<void> init(
     SettingsService settings, {
     bool withProfile = false,
@@ -491,15 +466,6 @@ class AccountService extends ChangeNotifier {
       if (err is Map) {
         final String code = (err['code'] ?? 'unknown').toString();
         final String message = (err['message'] ?? '操作失败').toString();
-        // 401 是**所有**账号接口共同的失效信号，所以只在这一个出口处理：
-        // 清本地 token 并记一条「已下线」提示，由外壳弹窗告知用户。
-        // 散在各处各写一遍的话，迟早会漏掉某个接口，用户就会看到
-        // 「顶栏还显示已登录、点进去一直转圈」这种自相矛盾的状态。
-        //
-        // `account_banned` / `account_disabled`（被管理员封禁或停用）走同一条路：
-        // 对用户来说「被踢下线」和「被封禁」都是「这个号在这台机器上不能用了」，
-        // 区别只在提示语里（封禁会带上原因与到期时间），
-        // 没必要让界面呈现成两种不同的破状态。
         if (auth &&
             (code == 'unauthorized' ||
                 code == 'account_banned' ||
@@ -537,12 +503,6 @@ class AccountService extends ChangeNotifier {
     }
   }
 
-  // ---------------------------------------------------------------- 登录/注册
-
-  /// 拉一次服务端策略（注册/登录要不要验证码）。
-  ///
-  /// 失败不抛：拿不到就按默认走，真正的判定在服务端 ——
-  /// 最坏情况是用户点登录后收到 `code_required`，登录页那时再展开验证码输入。
   Future<AuthServerConfig> loadAuthConfig({bool force = false}) async {
     if (_authConfigLoaded && !force) return _authConfig;
     try {
@@ -560,10 +520,6 @@ class AccountService extends ChangeNotifier {
     return _authConfig;
   }
 
-  /// 请求一封**登录**验证码。
-  ///
-  /// 必须先带对密码：服务端会先校验密码再发信，否则这就是个
-  /// 「知道邮箱就能轰炸对方」的接口。
   Future<EmailCodeSent> sendLoginCode({
     required String account,
     required String password,
@@ -639,10 +595,6 @@ class AccountService extends ChangeNotifier {
     });
   }
 
-  /// 让服务端给这个邮箱发一封验证码邮件。
-  ///
-  /// 发信是慢操作（SMTP 握手 + 投递可能几秒），所以不套 `_guard`：
-  /// 它不该把整个账号页的 busy 状态点亮，注册页自己管理按钮状态即可。
   Future<EmailCodeSent> sendEmailCode({required String email}) async {
     final String target = email.trim();
     if (!_emailPattern.hasMatch(target)) {
@@ -664,8 +616,6 @@ class AccountService extends ChangeNotifier {
       try {
         await _request('POST', '/api/auth/logout');
       } on AccountException catch (e) {
-        // 网络不通时也要能退出本地登录态 —— 否则用户会卡在
-        // 「退不出去」的状态里，而服务端那条会话到期后自然消失。
         lemonLog('Account', '退出登录请求失败，仍清本地状态：${e.message}');
       } finally {
         _loggingOut = false;
@@ -700,9 +650,6 @@ class AccountService extends ChangeNotifier {
       unawaited(_cacheProfile());
       notifyListeners();
     } on AccountException catch (e) {
-      // token 失效（401）已经由 _request 统一处理（清态 + 记提示）。
-      // 其它错误（网络）不该把用户踢下线 —— 那会让「飞机上打开 App」
-      // 变成「突然未登录」。
       if (!silent) rethrow;
       lemonLog('Account', '静默刷新资料失败：${e.message}');
     }
@@ -757,10 +704,6 @@ class AccountService extends ChangeNotifier {
     return EmailCodeSent.fromJson(data);
   }
 
-  /// 换绑邮箱：当前密码 + 新邮箱收到的验证码。
-  ///
-  /// 成功后服务端会撤销**其它**设备的会话（邮箱变了，等于账号的根换了），
-  /// 当前设备保留。
   Future<void> changeEmail({
     required String email,
     required String password,
@@ -914,13 +857,6 @@ class AccountService extends ChangeNotifier {
         .toList(growable: false);
   }
 
-  // ---------------------------------------------------------------- 头像
-
-  /// 下载头像字节。
-  ///
-  /// 不走 Dio 的 JSON 通道：这里要的是**二进制**。
-  /// 返回 null 表示没有头像（404）—— 调用方据此画占位图，
-  /// 不要把「没有头像」当成错误。
   Future<Uint8List?> downloadAvatar({String? url}) async {
     final String target = url ?? _profile?.avatarUrl ?? '';
     if (target.isEmpty) return null;
@@ -1079,8 +1015,6 @@ class AccountService extends ChangeNotifier {
         ),
       );
     }
-    // 刚登录成功：上一次残留的「已下线」提示必须清掉，
-    // 否则重新登录后还会弹一次「你被下线了」。
     _offlinePending = false;
     _offlineReason = '';
     unawaited(_cacheProfile());
@@ -1107,8 +1041,6 @@ class AccountService extends ChangeNotifier {
     _token = null;
     _profile = null;
     await _settings?.removeMany(<String>[_kToken, _kProfile]);
-    // 退出登录 / 被踢 / 注销：市场缓存是上一个登录态留下的痕迹，一并清掉。
-    // 清缓存失败不该影响退出，所以不 await 它的结果。
     unawaited(
       MarketCacheService.maybeInstance?.clear() ?? Future<void>.value(),
     );

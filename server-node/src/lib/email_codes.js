@@ -1,15 +1,7 @@
 // server/src/lib/email_codes.js
 //
-// 邮箱验证码的签发与核验。
-//
-// 这里管三件事，缺一件就会被刷：
-//   1. 生成：密码学随机数，不用 Math.random（后者可预测）。
-//   2. 限流：冷却（同一邮箱 60s 一次）+ 小时配额（邮箱 / IP 各一条线）。
-//   3. 核验：一次性、限次数、常量时间比较。
-//
-// 时间一律由 **应用进程** 算好再写库，不用 MySQL 的 NOW()。
-// 原因：DATETIME 没有时区信息，数据库与 Node 进程时区不一致时
-// 「过期了没有」会判错，而且这种错很难复现。统一用 UTC 字符串就没有歧义。
+// 邮箱验证码的签发与核验：生成（密码学随机数）、限流（同邮箱 60s 冷却 + 小时配额）、
+// 核验（一次性、限次数、常量时间比较）。时间由应用进程算好再写库，统一 UTC。
 
 import { createHash, randomInt, timingSafeEqual } from 'node:crypto';
 import { execute, query, queryOne } from '../db.js';
@@ -53,30 +45,12 @@ export function generateCode(length = config.mail.codeLength) {
   return out;
 }
 
-/**
- * 验证码的哈希：sha256(email|purpose|code)。
- *
- * 把 email 与 purpose 一起拌进去，是为了让「同一串数字发给不同人」
- * 得到不同哈希 —— 否则库里的哈希可以直接被拿去撞别人的码。
- */
 export function hashCode(email, purpose, code) {
   return createHash('sha256')
     .update(`${normalizeEmail(email)}|${purpose}|${String(code).trim()}`)
     .digest('hex');
 }
 
-/**
- * 开发环境把验证码打到**服务端日志**。
- *
- * 只在 MAIL_DEV_ECHO_CODE=true 时生效，且**不再通过接口返回** ——
- * 早先的做法是把 code 放进响应的 debugCode 字段，客户端再填进输入框。
- * 那有两个问题：
- *   1. 接口响应会经过代理、日志、抓包工具，等于把验证码又泄露一遍；
- *   2. 用户看到「验证码自己出现在输入框里」会以为被谁动过手。
- * 现在只落一行日志：本机开发时 `npm run dev` 的窗口里就能看到。
- *
- * 生产环境必须关掉（否则服务端日志里会长期留存可用的验证码）。
- */
 export function logDevCode({ code, email, purpose = 'register' }) {
   if (!config.mail.devEchoCode) return;
   const tag =
@@ -102,15 +76,6 @@ function digestEquals(a, b) {
   return timingSafeEqual(bufA, bufB);
 }
 
-/**
- * 签发一个验证码并写入数据库。
- *
- * 返回 { code, expiresAt } —— 明文 code 只在这里出现一次，
- * 调用方负责把它送进邮件；**不要**写进接口响应，日志也只能经
- * [logDevCode]（受 MAIL_DEV_ECHO_CODE 控制）。
- *
- * 限流失败抛 ApiError（429），调用方直接往外抛即可。
- */
 export async function issueCode({ email, purpose = 'register', ip = '' }) {
   const target = normalizeEmail(email);
   const now = new Date();
@@ -186,15 +151,6 @@ export async function issueCode({ email, purpose = 'register', ip = '' }) {
   return { id: result.insertId, code, expiresAt };
 }
 
-/**
- * 核验验证码，成功后立刻作废（一次性）。
- *
- * 抛的错都带明确 code，客户端据此决定「提示什么、要不要让用户重填邮箱」：
- *   code_missing   从没获取过
- *   code_expired   过期了
- *   code_locked    输错太多次，需要重新获取
- *   invalid_code   不正确
- */
 export async function consumeCode({ email, purpose = 'register', code }) {
   const target = normalizeEmail(email);
   const row = await queryOne(

@@ -1,36 +1,3 @@
-// lib/data/services/miniapp_package_service.dart
-//
-// 小程序包的下载 / 校验 / 解压 / 安装。
-//
-// 数据流（0.7 起）：
-//
-//   服务端 /api/market/feed  → 拿到 packageUrl / version / sha256
-//        ↓  比对本地已装版本
-//   /data/data/<包名>/app/<appId>/          ← 解压后的包，平铺在根
-//        ↓  需要更新就下载 zip → 校验 sha256 → 解到暂存目录 → 整体换入
-//   WebView 用虚拟 https 源打开 <dir>/<entry>（见 core/miniapp_web_origin.dart）
-//
-// 目录布局（就这一种，没有版本子目录）：
-//
-//   app/<appId>/index.html       ← 解压后的包内容，入口就在根上
-//   app/<appId>/app.zip          ← 原始包（重命名为 app.zip，便于人工取回）
-//   app/<appId>/.install.json    ← {version, entry, installedAt, sha256, source}
-//
-// 为什么这次改掉 `<appId>/<version>/`：
-//   * 我们要的是一个「应用目录」，不是一堆版本目录。设备上 /data/data/<pkg>/app/
-//     下每个小程序一个文件夹，用文件管理器点进去就能看到它自己的文件；
-//   * 原包必须留在本机（离线重装、排障、导出），版本子目录里再塞一份 zip
-//     会让「哪个是包、哪些是解出来的」混在一起；
-//   * 升级不再需要 `current` 指针：新内容整体换入，换成功才有新目录。
-//
-// 为什么仍然要「先解到暂存目录再整体换入」：
-//   直接往 app/<appId>/ 里解压，中途被杀就会留下「一半旧文件 + 一半新文件」——
-//   页面能打开、但脚本和样式不是同一版，是最难查的一类故障。
-//   暂存目录与目标同盘，rename 是原子的：要么全旧，要么全新。
-//
-// 为什么用「.install.json 标记」而不是「目录存在就算装好」：
-//   解压到一半被系统杀掉，目录会存在但不完整。没有标记的目录一律当作损坏，
-//   删掉重下 —— 而不是让用户面对一个白屏的图标。
 
 import 'dart:convert';
 import 'dart:io';
@@ -213,14 +180,6 @@ class MiniappPackageService {
 
   static final MiniappPackageService instance = MiniappPackageService._();
 
-  /// 「本机包集合」的版本号：安装 / 导入 / 移除 / 迁移后 +1。
-  ///
-  /// 为什么需要它：应用管理页是 IndexedStack 里的常驻页面，`initState` 只跑
-  /// 一次。装完一个小程序再切回去，页面还停在安装前的快照上 —— 用户看到的是
-  /// 「要重启 App 才有列表」。页面订阅这里，就能在包集合变化时立刻重读。
-  ///
-  /// 用计数器而不是「包列表」本身：订阅方需要的是「变了」这个事实，
-  /// 具体数据仍以磁盘为准（`installedAll()`），免得两处各存一份真相。
   static final ValueNotifier<int> revision = ValueNotifier<int>(0);
 
   static void _bumpRevision() {
@@ -270,13 +229,6 @@ class MiniappPackageService {
     }
     final Directory? cached = _rootCache;
     if (cached != null && cached.existsSync()) return cached;
-    // 应用私有根：Android 上是 /data/data/<包名>（getApplicationSupportDirectory
-    // 给的是它下面的 files/，取父目录才是应用根）。
-    //
-    // 直接用 <data>/app/ 而不是 <data>/files/app/：这是「装到哪」这件事对
-    // 用户和排障最直观的答案 —— 用文件管理器进 data/data/<包名>/ 就能看到
-    // 每个小程序一个文件夹。App 对自己整个 data 目录有写权限，这不是越界。
-    // 非 Android 平台没有这个约定，退回 support 目录下的 app/。
     final Directory files = await getApplicationSupportDirectory();
     final Directory dir = Directory(
       Platform.isAndroid
@@ -388,11 +340,6 @@ class MiniappPackageService {
     final Directory root = await _root();
     final String stamp = DateTime.now().millisecondsSinceEpoch.toString();
 
-    // ---- 1. 下载到临时文件 ----
-    //
-    // 为什么不整块读进内存：包上限 20MB，读进内存再校验也能跑，
-    // 但下载失败时内存里那坨东西没有任何价值；落盘能让断点续传
-    // （将来）与「校验前先确认大小」都更容易。
     final File tmp = File(p.join(root.path, '.download-$stamp.zip'));
     try {
       final Response<ResponseBody> res = await _dio.get<ResponseBody>(
@@ -449,14 +396,6 @@ class MiniappPackageService {
       try {
         await _extractTo(bytes, staging);
 
-        // 读 metadata.json（包自己的身份与权限声明）。
-        //
-        // 这一步在「确认入口」之前：入口路径以包自己的声明为准，
-        // 服务端那份 package_entry 只是没有 metadata.json 时的兜底。
-        //
-        // 允许 zip 外面再套一层目录（作者用「右键压缩文件夹」打出来的包
-        // 就是这样）：metadata.json 在唯一子目录里时，那个子目录就是包根，
-        // 入口要带上这层前缀 —— 与 Service 端 zip_meta.js 的规则保持一致。
         final File? metadataFile = _findMetadataFile(staging);
         final MiniappMetadata? metadata = metadataFile == null
             ? null
@@ -498,21 +437,6 @@ class MiniappPackageService {
     }
   }
 
-  // ---------------------------------------------------------------- 本地导入
-  //
-  // 开发者模式下「小程序测试」用的入口：直接选一个本地 zip 打开，
-  // 不用先传到服务端上架。
-  //
-  // 和上面 install() 的区别只在「包的来源」：
-  //   * 不校验 sha256（包是用户自己选的，没有可比的期望值）；
-  //   * 不比对版本号（调试时就是要覆盖，版本带时间戳）；
-  //   * 解压、路径穿越防护、入口确认、换入、app.zip **完全复用同一套** ——
-  //     本地包也是包，不该走一条更宽松的路径。
-  //
-  // appId 优先取包内 metadata.json 的 id（这样一个调试包和将来上架的同 id
-  // 应用共用沙箱，行为一致）；没有 metadata.json 就用文件名推一个。
-
-  /// 本地 zip 的大小上限。与服务端上传上限一致（20MB）。
   static const int maxLocalZipBytes = 20 * 1024 * 1024;
 
   /// 从 zip 字节安装一个包，返回可打开的 [InstalledPackage]。
@@ -615,14 +539,6 @@ class MiniappPackageService {
     }
   }
 
-  /// 把暂存目录变成正式的 `app/<appId>/`（顺带存一份 app.zip）。
-  ///
-  /// 顺序：
-  ///   1. 在暂存目录里写好 app.zip 与 .install.json（换入后目录就是完整的）；
-  ///   2. 旧目录 rename 到 `.trash-<ts>`（原子，不会出现「两边都不在」）；
-  ///   3. 暂存目录 rename 成 `app/<appId>`；
-  ///   4. 删掉回收站。
-  /// 任一步之前被杀：目标目录还是旧的，下次启动清理 .staging-* 即可。
   Future<InstalledPackage> _commit({
     required Directory staging,
     required String appId,
@@ -701,11 +617,6 @@ class MiniappPackageService {
     }
   }
 
-  /// 从旧的 `<files>/miniapps/<appId>/<version>/` 布局迁移到 `app/<appId>/`。
-  ///
-  /// 升级后不能让用户「所有小程序都变成没装」—— 那等于把离线可用这件事
-  /// 悄悄取消了。只迁移目标不存在的情况：新布局里已有的内容永远更权威。
-  /// 旧目录整体留着（迁移失败的条目下次还能重试），成功的会被删空。
   @visibleForTesting
   Future<int> migrateLegacyLayout(Directory legacy, Directory appRoot) async {
     if (!legacy.existsSync()) return 0;

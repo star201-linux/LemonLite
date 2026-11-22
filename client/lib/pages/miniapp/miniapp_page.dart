@@ -98,9 +98,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
     allowFileAccess: true,
     allowFileAccessFromFileURLs: false,
     allowUniversalAccessFromFileURLs: false,
-    // getUserMedia 要在页面内联播放（不跳系统播放器），否则摄像头预览出不来。
-    // 这两项与 onPermissionRequest 配合使用：前者决定「能不能内联播放」，
-    // 后者决定「采集设备给不给」——缺一个摄像头都用不了。
     allowsInlineMediaPlayback: true,
     // iframe 里也要能用摄像头/麦克风：小程序常把预览放进 iframe，
     // 不声明的话 Chromium 会直接拒绝，而且不给我们拦截的机会。
@@ -194,10 +191,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
     return grant.toJs(foreground: foreground);
   }
 
-  /// 把策略推给页面里的 shim（坐标取整与后台拦截都在那一边做）。
-  ///
-  /// 返回的 Future 可以 await：授权回调里**必须**等它落定再允许这次定位，
-  /// 否则这一帧拿到的还是旧策略（选了「近似」却给出米级坐标）。
   Future<void> _pushGeoPolicy() async {
     final InAppWebViewController? controller = _controller;
     if (controller == null) return;
@@ -223,10 +216,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
     unawaited(_pushGeoPolicy());
   }
 
-  /// 读取已启用的模块。
-  ///
-  /// 放在 initState 而不是 build 里：WebView widget 只构建一次，
-  /// 注入脚本必须在那一次构建时就齐备，所以必须提前拿到内容。
   Future<void> _loadBundles() async {
     try {
       final BundleRepository repo = BundleRepository.instance;
@@ -237,9 +226,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
       for (final BundleType type in <BundleType>[BundleType.module]) {
         all.addAll(await repo.scan(type));
       }
-      // matches 为 "*" 的包对所有小程序生效；带具体模式的按当前入口地址过滤。
-      // 本地包这里是 file:// 地址 —— 模块的 matches 模式通常写 http(s)，
-      // 所以本地包默认只吃 "*" 的模块（这是合理的行为：本地包不该按域名匹配）。
       final String? url = _session.fileUri;
       final List<BundleManifest> active = all
           .where((BundleManifest m) => !disabled.contains(m.id))
@@ -333,13 +319,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
     );
   }
 
-  /// 注入顺序：[主题数据] → [MD3E 基础样式] → [JS SDK] → [模块] → [包清单]
-  ///
-  /// 模块排在 SDK 之后，才能一上来就用 window.lemonlite.*；
-  /// 清单单独最早注入，方便小程序在任何时候读 window.__LEMONLITE_BUNDLES__。
-  ///
-  /// MD3E 样式放在 SDK 之前：它只依赖 `--md-*` 变量（主题数据已经先注入），
-  /// 并且必须在页面解析出第一个元素之前就位，否则默认元素会先闪一下旧样式。
   static List<UserScript> _buildUserScripts(
     Map<String, dynamic> payload,
     List<BundlePayload> bundles,
@@ -407,15 +386,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
       );
     }
 
-    // ⚠ 内置 asset 必须先释放成文件再建 WebView。
-    //
-    // 为什么：`_webViewWidget ??= _buildWebViewWidget(payload)` 只在**第一次**
-    // build 时执行。如果此时 _assetFileUri 还是 null（异步释放还没回来），
-    // WebView 会以 url=null 创建，之后再 setState 也不会重建它 ——
-    // 结果是页面上只剩那颗悬浮按钮，WebView 区域永远空白。
-    //
-    // 0.5 及之前这个问题被掩盖了：那时还有 initialUrlRequest（远程 url 不为
-    // null）兜底，所以 WebView 至少会加载点什么。删掉远程入口之后它才暴露。
     if (_session.localAsset != null && _loadingAsset) {
       return _shell(child: const LoadingView(message: '正在准备小程序…'));
     }
@@ -444,12 +414,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
       source: themeController.sourceLabel,
     );
 
-    // 0.4 起**没有 AppBar**：小程序页面占满整块屏幕（含状态栏下方），
-    // 宿主在这个页面上**只**有一颗悬浮「更多」按钮。
-    //
-    // 为什么连标题都不要：小程序自己会画顶部导航（标题、返回、操作），
-    // 宿主再显示一遍就是重复信息，而且用户刚点进来，本来就知道
-    // 自己打开的是什么。宿主需要的信息与操作全在那一颗按钮里。
     return Scaffold(
       // 让 WebView 铺满整块屏幕（含状态栏下方与手势条区域），
       // 页面自己用 env(safe-area-inset-*) / 100vh 处理留白。
@@ -482,10 +446,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
                 onRetry: _reload,
               ),
             ),
-          // 右上角悬浮「更多」按钮。
-          //
-          // 为什么这么小：它是宿主的入口，不是页面的元素 —— 34dp 圆形按钮
-          // 只在需要时被注意到，不需要时几乎透明。
           Positioned(
             top: 0,
             right: 8,
@@ -499,11 +459,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
     );
   }
 
-  /// 加载中 / 资源错误时的简单外壳。
-  ///
-  /// 同样保留那个悬浮按钮：否则加载完成的一瞬间按钮会「跳」出来。
-  /// 标题不再显示在界面上 —— 小程序自己会画；加载期间页面上也没有
-  /// 别的地方需要它（用户刚点进来的，知道自己在开什么）。
   Widget _shell({required Widget child}) => Scaffold(
     body: Stack(
       children: <Widget>[
@@ -559,32 +514,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
   }
 
   Widget _buildWebViewWidget(Map<String, dynamic> payload) {
-    //
-    // 入口选择（互斥，按优先级）：
-    //
-    //   1. 内置 asset → initialData 塞 HTML 字符串
-    //   2. 已安装的包 → initialUrlRequest + 虚拟 https 地址
-    //
-    // ⚠ 这几条路的取舍是**用真机日志换来的**（0.6.1 → 0.6.2 白屏排查）：
-    //
-    //   * `initialFile` **绝对不能用**：它走 `Util.getUrlAsset()`，
-    //     是 **Flutter asset 路径**语义（拼 file:///android_asset/flutter_assets/…）。
-    //     传文件系统绝对路径必然 404，且只在 logcat 留一行
-    //     "asset file cannot be found"。
-    //
-    //   * **内置 asset 用 initialData** 是 0.5 及之前一直在线上跑的路径，
-    //     是唯一被验证过可用的。0.6.2 曾把它改成「释放成临时文件 + file://」，
-    //     结果同样白屏（日志显示原生侧连 WebView 都没创建）—— 已回退。
-    //
-    //   * **本地包不能再用 file://**：包里的 `<script type="module">` 走 CORS 模式，
-    //     file:// 的 origin 是 null，Chromium 直接拒绝加载 app.js ——
-    //     页面骨架在、脚本不跑。改成虚拟 https 源
-    //     `https://miniapp.lemonlite.local/<appId>/<version>/…`，
-    //     由 shouldInterceptRequest 从磁盘喂内容：同源、安全上下文、纯本地。
-    //     详见 core/miniapp_web_origin.dart。
-    //
-    // 共同前提（见 build 里的 guard）：数据必须在建 WebView 之前就绪 ——
-    // `_webViewWidget ??= ...` 只执行一次，晚到的数据永远不会被用上。
     final String? assetHtml = _localHtml;
     final Uri? webUri = _session.webUri;
 
@@ -618,20 +547,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
       initialUserScripts: UnmodifiableListView<UserScript>(
         _buildUserScripts(payload, _payloads, _initialGeoPolicy()),
       ),
-      // -------------------------------------------------------- 本地资源服务
-      //
-      // 小程序的虚拟源 `https://miniapp.lemonlite.local/<appId>/<version>/…`
-      // 下**所有**请求都由这里从磁盘喂内容（详见 core/miniapp_web_origin.dart）：
-      //
-      //   页面（.html）→ 先做 MD3E 改写（主题变量 + 基础样式 + DOM 拦截脚本
-      //                  写进 <head> 最前面），再交给 WebView 解析；
-      //   其它子资源   → 原样返回字节 + 正确 MIME（字体、wasm 的 MIME 错了会被拒）。
-      //
-      // 为什么不在 onLoadStop 里注入样式：那时页面已经按浏览器默认样式画完第一帧，
-      // 用户会看到一次「旧样式 → 新样式」的跳变；页面 CSP 也可能拒绝动态 <style>。
-      // 改写文档没有这两个问题。
-      //
-      // 返回 null = 不接管（外链 / 其它 scheme），交给 WebView 默认流程。
       shouldInterceptRequest:
           (InAppWebViewController controller, WebResourceRequest request) =>
               _serveLocalResource(request, payload),
@@ -639,19 +554,10 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
         lemonLog('Miniapp', 'WebView 已创建');
         _onWebViewCreated(controller);
       },
-      // ---------------------------------------------------------------- 权限
-      // 网页请求摄像头 / 麦克风（getUserMedia）时，Chromium 会先走这里。
-      // 我们把它的资源列表翻译成框架权限，逐项问用户，再回一个响应 ——
-      // 采集本身完全交给 Chromium，宿主不写任何原生采集代码。
-      //
-      // 这个回调必须返回一个响应，否则请求会一直挂着（页面表现为
-      // getUserMedia 永远 pending，摄像头黑屏且没有报错）。
       onPermissionRequest:
           (InAppWebViewController controller, PermissionRequest request) async {
             final WebPermissionAsk ask = WebPermissionAsk.from(request);
 
-            // 我们不管理的资源（AUTOPLAY / GEOLOCATION …）：直接放行，
-            // 让 Chromium 用它的默认行为，而不是因为不认识就把页面功能掐掉。
             if (ask.isUnmanaged) {
               return PermissionResponse(
                 action: PermissionResponseAction.GRANT,
@@ -682,15 +588,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
               }
             }
 
-            // 第二层：Android 运行时权限。
-            //
-            // 顺序至关重要 —— 必须**先**拿到系统权限，再回 ALLOW。
-            // WebView 不会替宿主申请系统权限，而 Chromium 真正开设备时
-            // Android 还会拦一道；如果先回了 ALLOW 再去申请，用户会看到
-            // 「弹窗点了允许，摄像头却打不开且没有报错」。
-            //
-            // 只在用户已经同意之后才去申请：否则会先弹系统的框、再弹我们的框，
-            // 顺序反了，用户会觉得莫名其妙。
             final Set<MiniappPermission> systemGranted = <MiniappPermission>{};
             for (final MiniappPermission permission in granted) {
               if (!permission.needsRuntimePermission) {
@@ -717,23 +614,8 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
 
             return WebPermissionAsk.response(ask: ask, granted: systemGranted);
           },
-      // ------------------------------------------------------- 定位（另一条路）
-      //
-      // Android WebView 把定位权限从 onPermissionRequest 里**独立**出来了：
-      // 网页调 navigator.geolocation 时走的是这个回调，不是上面那个。
-      // 两个都要接，否则定位会静默失败（页面一直 pending）。
-      //
-      // 定位是「一项权限 + 两个维度」：
-      //   * 精度（精确 / 近似）—— 决定申请 FINE 还是 COARSE；
-      //   * 后台（允许 / 不允许）—— 决定切到后台后还能不能读，精度不超过前台。
-      // 系统权限只解决「能不能拿」，坐标模糊与后台拦截在页面侧做
-      // （见 bridge/geo_policy_js.dart），两者合起来才是完整的授权。
       onGeolocationPermissionsShowPrompt:
           (InAppWebViewController controller, String origin) async {
-            // 「谁在要什么」必须留痕：包里的 metadata.json 可能根本没写
-            // location，但页面调了 navigator.geolocation —— 这种情况下
-            // 它也得出现在权限管理里（标为「运行时请求」），否则用户
-            // 既看不到、也没法撤销。
             final PermissionAnswer answer = await PermissionPromptService.instance
                 .ensure(
                   _session.appId,
@@ -759,8 +641,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
               );
             }
 
-            // 「仅本次」的精度 / 后台选择不落盘，但必须对这一次生效，
-            // 所以这里用答案覆盖已存的那份，而不是直接读库。
             final PermissionService perms = PermissionService.instance;
             final LocationGrant stored = perms.locationOf(_session.appId);
             final LocationGrant grant = stored.copyWith(
@@ -779,9 +659,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
               ' · 后台 ${grant.background} · 系统层 $systemOk',
             );
 
-            // 页面侧立刻按新策略走：近似要取整、后台要拦。
-            // **必须 await**：策略只在这次定位的坐标投递之前落地，
-            // 才谈得上「选了近似就只给近似」。
             await _pushGeoPolicy();
 
             return GeolocationPermissionShowPromptResponse(
@@ -979,8 +856,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
     controller.evaluateJavascript(source: script);
   }
 
-  /// JSBridge 的 lemonlite.navigateBack()
-  /// 语义：先按小程序内部历史返回，退无可退时**转后台运行**（而不是直接销毁）
   Future<bool> _navigateBack(int delta) async {
     final InAppWebViewController? controller = _controller;
     if (controller != null && delta == 1 && await controller.canGoBack()) {
@@ -1051,14 +926,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
     }
   }
 
-  /// 加载完成后探一次页面实际状态，把结果写进日志。
-  ///
-  /// 为什么需要它：白屏有两种完全不同的原因，光看「有没有报错」分不出来 ——
-  ///   * 页面根本没加载（URL 错 / 404）→ body 是空的
-  ///   * 页面加载了但内容没渲染（脚本报错 / CSS 全白 / 高度 0）→
-  ///     body 有子节点但可视高度是 0
-  /// 所以这里直接问 WebView：文档标题、body 子节点数、body 尺寸、
-  /// 以及 SDK 有没有装上。四条一起看，基本能定位。
   Future<void> _probePageState(InAppWebViewController controller) async {
     try {
       final Object? raw = await controller.evaluateJavascript(
@@ -1101,12 +968,6 @@ class _MiniappSessionViewState extends State<MiniappSessionView>
     await _controller?.reload();
   }
 
-  /// 悬浮条菜单的总入口：会话类动作与「查看信息」类动作都在这里分发。
-  ///
-  /// 会话类（关闭 / 后台 / 权限 / 后台应用）会让当前 widget 可能已被销毁，
-  /// 所以每个 await 之前都要判断 mounted —— 之前那版直接把
-  /// `_FloatingHostMenu` 的 onSelected 与 AppBar 的 onSelected 分成两套，
-  /// 结果加菜单项时很容易漏掉一边。
   Future<void> _onHeaderMenuSelected(_HostMenuAction action) async {
     switch (action) {
       case _HostMenuAction.home:
@@ -1154,15 +1015,6 @@ enum _HostMenuAction {
   backgroundApps,
 }
 
-/// 右下角的悬浮「更多」按钮。
-///
-/// 为什么只有一颗按钮、没有标题栏：
-///   小程序自己通常已经画了顶部导航（标题、返回、操作）。宿主再压一条
-///   标题栏就是两条，既浪费纵向空间又很怪；而只放一个图标按钮时，
-///   页面上几乎没有「这是宿主画的」痕迹，需要时又随时够得着。
-///
-/// 为什么在右上角：这是宿主「回宿主界面」的入口，和系统返回、
-/// 页面标题在同一个视觉区（顶部），用户找它不会去屏幕底下找。
 class _FloatingMoreButton extends StatelessWidget {
   const _FloatingMoreButton({required this.onSelected});
 

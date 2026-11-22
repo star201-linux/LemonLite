@@ -1,13 +1,3 @@
-// test/miniapp_web_origin_test.dart
-//
-// 本地包的虚拟源（https://miniapp.lemonlite.local/<appId>/<包内路径>?v=<版本>）。
-//
-// 这里钉三件事：
-//   1. URL 生成与解析是同一套规则 —— 生成出来的地址必须能被解析回同一个文件，
-//      否则「小程序能打开」只是碰巧；
-//   2. **不能让路径爬出 app/<appId>/ 目录**：打包方（甚至恶意包）可以写任意
-//      entry / 相对引用，读到别的应用的数据就晚了；
-//   3. 字体 / wasm 的 MIME 必须给对，Chromium 对字体有白名单。
 
 import 'dart:io';
 
@@ -107,9 +97,6 @@ void main() {
     });
 
     test('各种点段写法都跑不出 app/ 根目录', () {
-      // Uri 在解析阶段就把明文与编码的点段一起规范化了，所以 resolve 拿到的
-      // 已经是「消过 ..」的段。这里要钉的性质只有一条：**结果永远在根目录里**。
-      // 「能不能读到别的应用」由 belongsTo 管（见下一条）。
       for (final String path in <String>[
         'https://miniapp.lemonlite.local/app/%2e%2e/%2e%2e/secret.txt',
         'https://miniapp.lemonlite.local/app/%2e%2e/%2e%2e/%2e%2e/tmp/x.txt',

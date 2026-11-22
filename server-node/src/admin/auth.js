@@ -70,12 +70,6 @@ export async function adminCount() {
   return Number(row?.n ?? 0);
 }
 
-/**
- * 确保有签名密钥。没有就生成一个并写回 config.yaml 的 `admin.secret`。
- *
- * 写不进去（只读文件系统）也不致命：内存里用着，重启后所有人重新登录。
- * 但不能**静默**失败 —— 那是「今天登录明天又要登录」这种玄学问题的来源。
- */
 export async function ensureAdminSecret() {
   if (config.admin.secret) return config.admin.secret;
   const secret = newAdminSecret();
@@ -132,12 +126,6 @@ export async function currentAdmin(req) {
   };
 }
 
-/**
- * 守卫：没登录就 401（接口）或渲染登录页（页面）。
- *
- * 挂在子路由之前，所以后面的每个接口都默认「已登录」，
- * 不用每个 handler 再写一遍 if (!req.admin)。
- */
 export const requireAdmin = wrap(async (req, res, next) => {
   const admin = await currentAdmin(req);
   if (!admin) {
