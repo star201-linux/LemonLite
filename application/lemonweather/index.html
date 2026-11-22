@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#FFFBFE" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1C1B1F" media="(prefers-color-scheme: dark)" />
+    <title>Lemon 天气</title>
+
+    <!-- Material Symbols Outlined（本地字体，离线可用） -->
+
+    <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+    <div class="app">
+        <!-- ===== Top App Bar（M3 标准） ===== -->
+        <header class="top-bar" role="banner">
+            <div class="headline">
+                <span class="material-symbols-outlined app-icon" aria-hidden="true">water</span>
+                <span class="headline-text">Lemon 天气</span>
+            </div>
+            <button class="md-icon-button" id="themeToggle" aria-label="切换主题">
+                <span class="material-symbols-outlined icon-sun" aria-hidden="true">light_mode</span>
+                <span class="material-symbols-outlined icon-moon" aria-hidden="true">dark_mode</span>
+            </button>
+        </header>
+
+        <!-- ===== 搜索栏（M3 胶囊 + outlined text field） ===== -->
+        <div class="search-field" id="searchField">
+            <span class="material-symbols-outlined search-icon" aria-hidden="true">search</span>
+            <div class="input-wrapper">
+                <input type="text" id="searchInput" placeholder=" " autocomplete="off" aria-label="搜索城市" />
+                <label for="searchInput">搜索城市</label>
+            </div>
+            <button class="md-icon-button search-clear" id="searchClear" aria-label="清除">
+                <span class="material-symbols-outlined" aria-hidden="true">close</span>
+            </button>
+            <button class="md-filled-button" id="searchBtn">
+                <span class="material-symbols-outlined" aria-hidden="true">search</span>
+                <span>搜索</span>
+            </button>
+        </div>
+
+        <!-- ===== 城市筛选 Chips（M3 assist/filter chips） ===== -->
+        <div class="city-chips" id="cityChips" role="list" aria-label="城市列表"></div>
+
+        <!-- ===== 主内容区 ===== -->
+        <main class="main-content">
+            <!-- 加载指示器（M3 Material Progress Indicator） -->
+            <div class="loading" id="loading" role="status" aria-live="polite">
+                <div class="md-spinner" aria-hidden="true">
+                    <div class="spinner-ring"></div>
+                </div>
+                <span class="loading-text">获取天气中…</span>
+            </div>
+
+            <!-- 错误状态 -->
+            <div class="error-card" id="errorCard" role="alert">
+                <span class="material-symbols-outlined error-icon" aria-hidden="true">warning_amber</span>
+                <span class="error-title" id="errorTitle">出错了</span>
+                <span class="error-desc" id="errorDesc"></span>
+                <button class="md-filled-button" id="retryBtn">
+                    <span class="material-symbols-outlined" aria-hidden="true">refresh</span>
+                    <span>重试</span>
+                </button>
+            </div>
+
+            <!-- 天气内容 -->
+            <div class="weather-content" id="weatherContent"></div>
+        </main>
+
+        <!-- ===== 底部说明 ===== -->
+        <footer class="page-footer">
+            <span class="material-symbols-outlined" aria-hidden="true">cloud</span>
+            数据来源：uapis.cn
+        </footer>
+    </div>
+
+    <!-- ===== 城市管理 Bottom Sheet（M3） ===== -->
+    <div class="sheet-overlay" id="citySheet" aria-hidden="true">
+        <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+            <div class="sheet-grabber" aria-hidden="true"></div>
+            <div class="sheet-header">
+                <h2 class="sheet-title" id="sheetTitle">管理城市</h2>
+                <button class="md-icon-button" id="sheetClose" aria-label="关闭">
+                    <span class="material-symbols-outlined" aria-hidden="true">close</span>
+                </button>
+            </div>
+            <div class="sheet-body">
+                <ul class="city-list" id="cityList" aria-label="收藏城市"></ul>
+                <div class="add-city-row">
+                    <div class="md-outlined-text-field add-field">
+                        <input type="text" id="addCityInput" placeholder="添加城市，如 成都" aria-label="添加城市" />
+                    </div>
+                    <button class="md-filled-button" id="addCityBtn">
+                        <span class="material-symbols-outlined" aria-hidden="true">add</span>
+                        <span>添加</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>

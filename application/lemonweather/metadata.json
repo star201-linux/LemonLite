@@ -1,0 +1,9 @@
+{
+  "id": "com.lemon.weather",
+  "name": "Lemon 天气",
+  "version": "1.0.0",
+  "entry": "index.html",
+  "description": "基于 MD3 设计规范的天气查询小程序，支持多城市管理、7天预报、生活指数",
+  "author": "LemonLite",
+  "permissions": []
+}
