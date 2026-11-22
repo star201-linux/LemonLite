@@ -2,57 +2,21 @@
         <!-- 访问远端 index.json 与小程序页面需要联网 -->
     <uses-permission android:name="android.permission.INTERNET"/>
 
-    <!--
-        网页受控资源对应的系统权限（与 lib/data/models/miniapp_permission.dart
-        里的 runtimePermissions 逐项对应）：
-
-        这些权限**只声明、不申请**。声明它们才能让
-        `packageManager.getPermissionInfo()` 认出来、让 Chromium 真的打开采集设备；
-        真正弹系统授权框的时机由用户在权限弹窗里点「允许」之后
-        （MainActivity.requestRuntimePermissions）。清单里不写的话，
-        申请会被系统立刻拒绝，表现是「用户点了允许但摄像头打不开」。
-    -->
+    <!-- 网页能力对应的系统权限：只声明，实际申请由权限弹窗触发 -->
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
 
-    <!--
-        定位：精确 + 大致两档都要声明。
-
-        Android 的规则是「申请 FINE 时必须同时声明 COARSE」，否则 FINE 会被
-        忽略；而只声明 COARSE 才是「我只要大致位置」。
-        运行时按用户在权限弹窗里选的那一档决定申请哪个（见 miniapp_page.dart
-        的 onGeolocationPermissionsShowPrompt）：精确 → FINE，近似 → COARSE。
-        坐标的模糊（近似位置取整到约 3 平方公里）在页面侧完成，
-        见 bridge/geo_policy_js.dart。
-    -->
+    <!-- 定位：FINE 必须同时声明 COARSE；精确/近似在运行时二选一 -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
 
-    <!--
-        后台定位（「允许后台定位」开关打开时才申请）。
-
-        注意 Android 10+ 的规则：后台定位必须**先拿到前台定位**，再单独申请；
-        Android 11+ 还会把用户带到系统设置里选「始终允许」，不能和前台权限
-        一次申请。这里的声明只是让系统知道有这个能力，实际申请时机在
-        miniapp_page.dart 的定位回调里。
-    -->
+    <!-- 后台定位：Android 10+ 必须先拿到前台定位 -->
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
 
     <!-- Android 13+：网页发通知（Notification.requestPermission）需要它 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
-    <!--
-        蓝牙 / NFC：宿主原生能力（lemonlite.bluetooth.* / lemonlite.nfc.*）。
-
-        蓝牙在 Android 12+ 拆成了 SCAN / CONNECT 两个运行时权限；
-        Android 11 及以下仍然用安装期的 BLUETOOTH / BLUETOOTH_ADMIN，
-        并且 BLE 扫描还需要定位权限（这就是为什么下面的 FINE_LOCATION
-        没有 maxSdkVersion —— 定位能力本来也要它）。
-        SCAN 标 neverForLocation：我们只用它发现设备，不做位置推断。
-
-        NFC 是 normal 权限（安装即授予），但应用内仍然会弹一次确认弹窗
-        （见 MiniappPermission.nfc 的说明）。
-    -->
+    <!-- 蓝牙 12+ 拆成 SCAN / CONNECT；SCAN 标 neverForLocation。NFC 是 normal 权限 -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
     <uses-permission
@@ -61,14 +25,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
     <uses-permission android:name="android.permission.NFC"/>
 
-    <!--
-        下载管理：目标目录是公共「下载」目录（Download/）。
-
-        Android 10（API 29）起，往公共下载目录写文件由系统 DownloadManager 负责，
-        **不需要任何存储权限**；所以这两条只对 Android 9 及以下生效，
-        用 maxSdkVersion 把声明范围收窄 —— 新系统上连声明都没有，
-        系统设置里也不会出现一个「已授权但没用」的存储权限。
-    -->
+    <!-- 写公共下载目录：只有 Android 9 及以下需要 -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28"/>
@@ -76,13 +33,10 @@
     <!-- 网页 navigator.vibrate()（MiniappPermission.vibrate） -->
     <uses-permission android:name="android.permission.VIBRATE"/>
 
-    <!-- 把「已打开的小程序任务」提到前台（AppTask.moveToFront）。
-         这是 normal 权限，安装即授予；没有它就只能新开一张卡，
-         同一个 appId 会越开越多。 -->
+    <!-- 把已打开的小程序任务提到前台（AppTask.moveToFront） -->
     <uses-permission android:name="android.permission.REORDER_TASKS"/>
 
-    <!-- 摄像头/麦克风属于「硬件可选」：没有摄像头的设备也能装，
-         装了之后调用 getUserMedia 会拿到 NotAllowedError，而不是装不上。 -->
+    <!-- 摄像头/麦克风等硬件均为可选 -->
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <uses-feature android:name="android.hardware.microphone" android:required="false"/>
     <uses-feature android:name="android.hardware.location" android:required="false"/>
@@ -95,9 +49,7 @@
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false"/>
     <uses-feature android:name="android.hardware.nfc" android:required="false"/>
 
-    <!-- allowBackup=false：token、账号资料、小程序沙箱都在应用私有目录里，
-         adb backup / 云备份会把它们整个拷走。小程序是「装好的代码」，
-         更不该跟着备份到另一台设备上。 -->
+    <!-- token 与小程序沙箱都在私有目录，禁止备份 -->
     <application
         android:label="轻柠"
         android:name="${applicationName}"
@@ -126,20 +78,7 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-        <!-- 小程序独立窗口：一个 Activity = 一张独立的任务卡。
-
-             taskAffinity 必须**显式给一个非空且与宿主不同**的值：
-             宿主那条任务的 affinity 是空字符串（见上面 MainActivity），
-             窗口若沿用包名默认值，部分 ROM 会把新 Activity 塞进宿主任务里，
-             于是最近任务只剩一张卡、卡片还被改成小程序名 —— 用户看到的就是
-             「打开小程序后主应用没了」。
-
-             这里**不用** documentLaunchMode：document task 是 Android 5 起的
-             机制，但部分国产 ROM（vivo 上被反复证实）会忽略它，窗口照样落进
-             宿主任务。改成 `NEW_TASK | MULTIPLE_TASK` + 独立 affinity ——
-             这是 API 1 就有的行为，没有任何厂商可以"没实现"。
-             「同一个 appId 只留一张卡」由 MainActivity.focusExistingWindow()
-             用 AppTask.moveToFront() 保证。 -->
+        <!-- 小程序独立窗口：一个 Activity 一条任务，affinity 与宿主不同 -->
         <activity
             android:name=".MiniappTaskActivity"
             android:exported="false"
