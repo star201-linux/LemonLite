@@ -52,14 +52,27 @@ class MiniappTaskActivity : MainActivity() {
 
     override fun onPostResume() {
         super.onPostResume()
-        if (cardRewrittenAfterVisible) return
-        cardRewrittenAfterVisible = true
+        val icon = intent?.getStringExtra(EXTRA_ICON)
         setTitle(extraTitle)
-        applyTaskDescription(extraTitle, intent?.getStringExtra(EXTRA_ICON), force = true)
+        applyTaskDescription(extraTitle, icon, force = true)
+        // 部分 ROM 在窗口可见后会用 ActivityInfo 重建卡片，延迟再补一次
+        window?.decorView?.postDelayed({
+            if (!isFinishing && !isDestroyed) {
+                applyTaskDescription(extraTitle, icon, force = true)
+            }
+        }, 300L)
     }
 
-    /** [onPostResume] 的「只强写一次」标记。 */
-    private var cardRewrittenAfterVisible = false
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) applyTaskDescription(extraTitle, intent?.getStringExtra(EXTRA_ICON), force = true)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // 用户按 Home 离开时再写一次，此时卡片即将被 Recents 取用
+        applyTaskDescription(extraTitle, intent?.getStringExtra(EXTRA_ICON), force = true)
+    }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)

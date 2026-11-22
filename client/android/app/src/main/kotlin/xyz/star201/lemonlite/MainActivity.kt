@@ -78,12 +78,10 @@ open class MainActivity : FlutterActivity() {
 
     private var lastTaskIcon: Bitmap? = null
 
-    /**
-     * 上一次真正写给系统的 `label|icon` 组合。
-     *
-     * 小程序 setTitle 可能逐字改标题（比如做打字机效果），每次都跨 Binder 传
-     * 一个 Bitmap 属于纯浪费；内容没变就直接返回。
-     */
+    /** [lastTaskIcon] 对应的文件路径；路径不变时直接复用已解码的位图。 */
+    private var lastTaskIconPath: String? = null
+
+    /** 上一次写进卡片的 `label|icon`，内容没变就跳过。 */
     private var appliedTaskKey: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -373,13 +371,20 @@ open class MainActivity : FlutterActivity() {
         val key = "$title|${path ?: ""}"
         if (!force && key == appliedTaskKey) return true
 
-        val decoded = path?.let { decodeTaskIcon(it) }
+        val decoded = when {
+            path == null -> null
+            path == lastTaskIconPath -> lastTaskIcon
+            else -> decodeTaskIcon(path)
+        }
         val icon = decoded ?: lastTaskIcon ?: appIconBitmap()
         return try {
             @Suppress("DEPRECATION")
             val description = ActivityManager.TaskDescription(title, icon)
             setTaskDescription(description)
-            if (decoded != null) lastTaskIcon = decoded
+            if (decoded != null) {
+                lastTaskIcon = decoded
+                lastTaskIconPath = path
+            }
             appliedTaskKey = key
             true
         } catch (e: Throwable) {
@@ -401,6 +406,7 @@ open class MainActivity : FlutterActivity() {
             // 卡片回到宿主了，上一次那张小程序图标就过期了：
             // 不清理的话，之后打开别的小程序、又恰好没图标时会把旧图贴上去。
             lastTaskIcon = null
+            lastTaskIconPath = null
             true
         } catch (e: Throwable) {
             android.util.Log.w("LemonLite", "恢复最近任务卡片失败", e)
